@@ -152,11 +152,11 @@ export class WebRTCManager {
         for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
         const average = sum / dataArray.length;
 
-        if (average > 35) {
+        if (average > 40) {
           lastSpokeTime = Date.now();
         }
 
-        const isSpeaking = (Date.now() - lastSpokeTime) < 400;
+        const isSpeaking = (Date.now() - lastSpokeTime) < 300;
 
         if (isSpeaking !== wasSpeaking) {
           wasSpeaking = isSpeaking;

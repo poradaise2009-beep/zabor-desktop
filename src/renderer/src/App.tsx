@@ -1094,10 +1094,12 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
                     <div key={f.id} onContextMenu={e => handleContextMenu(e, 'friend', f)}
                       onClick={() => { store.setSelectedProfileUser(f); setEditProfileDisplayName(f.displayName); store.setModal('profile', true); signalRService.viewProfile(f.id); }}
                       className="px-3 py-2 rounded-xl mb-1 cursor-pointer hover:bg-surfaceHover flex items-center gap-3 transition-colors">
-                      <div className="relative w-10 h-10 rounded-full shrink-0 overflow-hidden" style={{ backgroundColor: f.avatarColor }}>
-  <AvatarImg src={f.avatarBase64} size={40} />
-                        <div className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-[3px] border-panelBg ${f.isOnline ? 'bg-success' : 'bg-gray-500'}`} />
-                      </div>
+                      <div className="relative w-10 h-10 shrink-0">
+  <div className="w-full h-full rounded-full overflow-hidden" style={{ backgroundColor: f.avatarColor }}>
+    <AvatarImg src={f.avatarBase64} size={40} />
+  </div>
+  <div className={`absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full border-[3px] border-panelBg ${f.isOnline ? 'bg-success' : 'bg-gray-500'}`} />
+</div>
                       <span className={`font-semibold text-[15px] truncate ${f.isOnline ? 'text-white' : 'text-textMuted'}`}>{f.displayName}</span>
                     </div>
                   ))}
@@ -1412,10 +1414,12 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
           <div className="max-h-[350px] overflow-y-auto space-y-2 pr-2">
             {store.channelMembers.map(m => (
               <div key={m.id} onContextMenu={e => handleContextMenu(e, 'channelMember', m)} className="flex items-center gap-3 p-3 bg-surface rounded-xl hover:bg-surfaceHover transition-colors cursor-pointer">
-                <div className="relative w-10 h-10 rounded-full shrink-0 overflow-hidden" style={{ backgroundColor: m.avatarColor }}>
-  <AvatarImg src={m.avatarBase64} size={40} />
-                  <div className={`absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full border-[3px] border-surface ${m.isOnline ? 'bg-success' : 'bg-gray-500'}`} />
-                </div>
+                <div className="relative w-10 h-10 shrink-0">
+  <div className="w-full h-full rounded-full overflow-hidden" style={{ backgroundColor: m.avatarColor }}>
+    <AvatarImg src={m.avatarBase64} size={40} />
+  </div>
+  <div className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-[3px] border-surface ${m.isOnline ? 'bg-success' : 'bg-gray-500'}`} />
+</div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="font-semibold text-white truncate">{m.displayName}</span>

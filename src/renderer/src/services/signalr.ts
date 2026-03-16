@@ -13,10 +13,8 @@ class SignalRService {
   private intentionalDisconnect = false;
   private pingInterval: NodeJS.Timeout | null = null;
   private currentPing: number = 0;
+  private lastSpeakingState: boolean | null = null;
 
-  // Один переиспользуемый AudioContext для коротких UI-звуков
-  // (уведомления, рингтон, звук ачивок), чтобы не создавать
-  // новый контекст на каждое событие.
   private sfxContext: AudioContext | null = null;
 
   private pingCallbacks: Set<(ping: number) => void> = new Set();
@@ -72,7 +70,7 @@ class SignalRService {
       if (!this.isConnected()) { this.notifyPingUpdate(-1); return; }
       try {
         const start = performance.now();
-        await this.connection!.invoke("GetOnlineUsers");
+        await this.connection!.invoke("Ping");
         this.notifyPingUpdate(Math.round(performance.now() - start));
       } catch {
         this.notifyPingUpdate(-1);
@@ -144,14 +142,14 @@ class SignalRService {
     });
   }
 
- private scheduleReconnect() {
-  if (this.reconnectTimer || this.intentionalDisconnect) return;
-  this.reconnectAttempts++;
-  this.reconnectTimer = setTimeout(async () => {
-    this.reconnectTimer = null;
-    await this.connect();
-  }, 5000);
-}
+  private scheduleReconnect() {
+    if (this.reconnectTimer || this.intentionalDisconnect) return;
+    this.reconnectAttempts++;
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
+      await this.connect();
+    }, 5000);
+  }
 
   private async rejoinChannel(channelId: string) {
     try { await this.joinChannel(channelId); } catch {}
@@ -161,6 +159,7 @@ class SignalRService {
     this.intentionalDisconnect = true;
     this.isReconnecting = false;
     this.reconnectAttempts = 0;
+    this.lastSpeakingState = null;
     this.stopPingMeasurement();
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     if (this.connection) {
@@ -315,40 +314,33 @@ class SignalRService {
 
     // === Achievements ===
     this.connection.on("AchievementUnlocked", (achievementId: string) => {
-      // Показываем тост
       store().setAchievementToast(achievementId);
 
-      // Через 4.5 сек запускаем анимацию ухода, через 5 — убираем
       setTimeout(() => {
-        // Компонент проверит и запустит out-анимацию
         store().setAchievementToast('__hiding__' + achievementId);
       }, 4500);
       setTimeout(() => store().setAchievementToast(null), 5000);
 
-      // Звук повышения уровня (Minecraft-style)
       try {
         const sfx = this.getSfxContext(0.25);
         if (!sfx) throw new Error('no sfx context');
         const { ctx, master } = sfx;
 
-        // Первый аккорд — восходящий
         const notes1 = [
-          { freq: 523.25, time: 0 },      // C5
-          { freq: 659.25, time: 0.07 },    // E5
-          { freq: 783.99, time: 0.14 },    // G5
-          { freq: 1046.50, time: 0.21 },   // C6
+          { freq: 523.25, time: 0 },
+          { freq: 659.25, time: 0.07 },
+          { freq: 783.99, time: 0.14 },
+          { freq: 1046.50, time: 0.21 },
         ];
 
-        // Второй аккорд — выше, ярче (через паузу)
         const notes2 = [
-          { freq: 659.25, time: 0.45 },    // E5
-          { freq: 783.99, time: 0.52 },    // G5
-          { freq: 1046.50, time: 0.59 },   // C6
-          { freq: 1318.51, time: 0.66 },   // E6
+          { freq: 659.25, time: 0.45 },
+          { freq: 783.99, time: 0.52 },
+          { freq: 1046.50, time: 0.59 },
+          { freq: 1318.51, time: 0.66 },
         ];
 
         [...notes1, ...notes2].forEach(({ freq, time }) => {
-          // Основной тон
           const osc = ctx.createOscillator();
           const gain = ctx.createGain();
           osc.connect(gain);
@@ -362,7 +354,6 @@ class SignalRService {
           osc.start(t);
           osc.stop(t + 0.5);
 
-          // Обертон (октавой выше, тише)
           const osc2 = ctx.createOscillator();
           const gain2 = ctx.createGain();
           osc2.connect(gain2);
@@ -377,7 +368,6 @@ class SignalRService {
         });
       } catch {}
 
-      // Обновляем данные ачивок если модалка открыта
       const currentData = store().achievementsData;
       if (currentData && !store().achievementsViewUserId) {
         const updated = {
@@ -531,34 +521,34 @@ class SignalRService {
 
   // === Achievements ===
   public async getMyAchievements(): Promise<any> {
-  const json = await this.safeInvoke<string>("GetMyAchievements");
-  if (json) {
-    try {
-      const raw = JSON.parse(json);
-      return {
-        stats: raw.Stats || raw.stats || {},
-        unlockedIds: raw.UnlockedIds || raw.unlockedIds || [],
-        visitedChannelIds: raw.VisitedChannelIds || raw.visitedChannelIds || [],
-      };
-    } catch {}
+    const json = await this.safeInvoke<string>("GetMyAchievements");
+    if (json) {
+      try {
+        const raw = JSON.parse(json);
+        return {
+          stats: raw.Stats || raw.stats || {},
+          unlockedIds: raw.UnlockedIds || raw.unlockedIds || [],
+          visitedChannelIds: raw.VisitedChannelIds || raw.visitedChannelIds || [],
+        };
+      } catch {}
+    }
+    return { stats: {}, unlockedIds: [], visitedChannelIds: [] };
   }
-  return { stats: {}, unlockedIds: [], visitedChannelIds: [] };
-}
 
   public async getUserAchievements(userId: string): Promise<any> {
-  const json = await this.safeInvoke<string>("GetUserAchievements", userId);
-  if (json) {
-    try {
-      const raw = JSON.parse(json);
-      return {
-        stats: raw.Stats || raw.stats || {},
-        unlockedIds: raw.UnlockedIds || raw.unlockedIds || [],
-        visitedChannelIds: raw.VisitedChannelIds || raw.visitedChannelIds || [],
-      };
-    } catch {}
+    const json = await this.safeInvoke<string>("GetUserAchievements", userId);
+    if (json) {
+      try {
+        const raw = JSON.parse(json);
+        return {
+          stats: raw.Stats || raw.stats || {},
+          unlockedIds: raw.UnlockedIds || raw.unlockedIds || [],
+          visitedChannelIds: raw.VisitedChannelIds || raw.visitedChannelIds || [],
+        };
+      } catch {}
+    }
+    return { stats: {}, unlockedIds: [], visitedChannelIds: [] };
   }
-  return { stats: {}, unlockedIds: [], visitedChannelIds: [] };
-}
 
   public async viewProfile(userId: string): Promise<void> {
     await this.safeInvoke("ViewProfile", userId);
@@ -725,25 +715,27 @@ class SignalRService {
     useAppStore.getState().setCallStatus('idle');
   }
 
-  // === State ===
-  public async toggleState(isMuted: boolean, isDeafened: boolean): Promise<void> {
+  // === State (fire-and-forget) ===
+  public toggleState(isMuted: boolean, isDeafened: boolean): void {
     webrtc.toggleMute(isMuted);
-    await this.safeInvoke("UpdateUserState", { isMuted, isDeafened });
+    if (this.isConnected()) this.connection?.send("UpdateUserState", { isMuted, isDeafened });
   }
 
-  public async setSpeakingState(isSpeaking: boolean): Promise<void> {
-    await this.safeInvoke("SetSpeakingState", isSpeaking);
+  public setSpeakingState(isSpeaking: boolean): void {
+    if (isSpeaking === this.lastSpeakingState) return;
+    this.lastSpeakingState = isSpeaking;
+    if (this.isConnected()) this.connection?.send("SetSpeakingState", isSpeaking);
   }
 
-  // === WebRTC Signaling ===
+  // === WebRTC Signaling (fire-and-forget) ===
   public sendWebRTCOffer(targetId: string, offer: string): void {
-    if (this.isConnected()) this.connection?.invoke("SendWebRTCOffer", targetId, offer);
+    if (this.isConnected()) this.connection?.send("SendWebRTCOffer", targetId, offer);
   }
   public sendWebRTCAnswer(targetId: string, answer: string): void {
-    if (this.isConnected()) this.connection?.invoke("SendWebRTCAnswer", targetId, answer);
+    if (this.isConnected()) this.connection?.send("SendWebRTCAnswer", targetId, answer);
   }
   public sendIceCandidate(targetId: string, candidate: string): void {
-    if (this.isConnected()) this.connection?.invoke("SendIceCandidate", targetId, candidate);
+    if (this.isConnected()) this.connection?.send("SendIceCandidate", targetId, candidate);
   }
 }
 
