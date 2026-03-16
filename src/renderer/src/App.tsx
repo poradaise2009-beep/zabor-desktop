@@ -245,12 +245,13 @@ export default function App() {
 
   useEffect(() => {
   const init = async () => {
-    const savedData = localStorage.getItem('zabor_cache');
     let cachedCredentials: { login: string; password: string; userId?: string } | null = null;
 
-    if (savedData) {
-      try {
-        const parsed = JSON.parse(savedData);
+    // Читаем из файла вместо localStorage
+    try {
+      const raw = await window.windowControls.loadSession();
+      if (raw) {
+        const parsed = JSON.parse(raw);
         cachedCredentials = {
           login: parsed.login,
           password: parsed.password,
@@ -263,9 +264,9 @@ export default function App() {
         if (parsed.settings) applySettings(parsed.settings);
         setLogin(parsed.login);
         setPassword(parsed.password);
-      } catch {
-        softClearCache();
       }
+    } catch {
+      await softClearCache();
     }
 
     const connected = await signalRService.connect();
@@ -279,7 +280,7 @@ export default function App() {
       if (loginSuccess) {
         const serverUser = useAppStore.getState().currentUser;
         if (cachedCredentials.userId && serverUser && cachedCredentials.userId !== serverUser.id) {
-          softClearCache();
+          await softClearCache();
           resetToDefaults();
         }
 
@@ -291,7 +292,7 @@ export default function App() {
         saveLocalCache();
         setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
       } else {
-        softClearCache();
+        await softClearCache();
         resetToDefaults();
         store.setCurrentUser(null);
         store.setChannels([]);
@@ -354,30 +355,25 @@ export default function App() {
   try {
     const currentUser = useAppStore.getState().currentUser;
     if (!currentUser) return;
-    localStorage.setItem('zabor_cache', JSON.stringify({
+    const data = JSON.stringify({
       login, password,
       userId: currentUser.id,
       user: currentUser,
       channels: useAppStore.getState().channels,
       friends: useAppStore.getState().friends,
       settings: { inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression }
-    }));
+    });
+    window.windowControls.saveSession(data).catch(() => {});
   } catch {}
 }, [login, password, inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression]);
 
-/** Мягкая очистка — только JS-уровень, без удаления файлов с диска.
- *  Используется при смене аккаунта и ошибках автологина. */
-const softClearCache = useCallback(() => {
-  localStorage.clear();
-  sessionStorage.clear();
+const softClearCache = useCallback(async () => {
+  window.windowControls.clearSession().catch(() => {});
 }, []);
 
-/** Глубокий wipe — физическое удаление LevelDB/Cache с диска.
- *  Вызывается ТОЛЬКО при явном нажатии «Выйти из аккаунта». */
 const deepWipeOnLogout = useCallback(async () => {
-  localStorage.clear();
-  sessionStorage.clear();
   try {
+    await window.windowControls.clearSession();
     await window.windowControls.wipeAppData();
   } catch {}
   await new Promise(r => setTimeout(r, 300));
@@ -421,14 +417,8 @@ const applySettings = useCallback((s: {
     signalRService.saveAudioSettings({
       inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression
     });
-    try {
-      const cached = localStorage.getItem('zabor_cache');
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        parsed.settings = { inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression };
-        localStorage.setItem('zabor_cache', JSON.stringify(parsed));
-      }
-    } catch {}
+    // Перезаписываем файл сессии с актуальными настройками
+    saveLocalCache();
   }, 500);
 }, [inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression, isAuth]);
 

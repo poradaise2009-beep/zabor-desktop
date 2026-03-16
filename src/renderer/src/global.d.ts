@@ -2,6 +2,11 @@ export {};
 
 declare global {
   interface Window {
+    electron: {
+      process: {
+        versions: Record<string, string>;
+      };
+    };
     windowControls: {
       minimize: () => void;
       maximize: () => void;
@@ -11,6 +16,9 @@ declare global {
       getUserDataPath: () => Promise<string>;
       getAutoLaunch: () => Promise<boolean>;
       setAutoLaunch: (enabled: boolean) => Promise<boolean>;
+      saveSession: (data: string) => Promise<boolean>;
+      loadSession: () => Promise<string | null>;
+      clearSession: () => Promise<boolean>;
       onMaximizeChange: (callback: (isMaximized: boolean) => void) => () => void;
     };
   }

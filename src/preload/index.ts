@@ -10,6 +10,9 @@ const windowControls = {
   getUserDataPath: () => ipcRenderer.invoke('get-userdata-path'),
   getAutoLaunch: (): Promise<boolean> => ipcRenderer.invoke('get-auto-launch'),
   setAutoLaunch: (enabled: boolean): Promise<boolean> => ipcRenderer.invoke('set-auto-launch', enabled),
+  saveSession: (data: string): Promise<boolean> => ipcRenderer.invoke('save-session', data),
+  loadSession: (): Promise<string | null> => ipcRenderer.invoke('load-session'),
+  clearSession: (): Promise<boolean> => ipcRenderer.invoke('clear-session'),
   onMaximizeChange: (callback: (isMaximized: boolean) => void) => {
     ipcRenderer.on('window-maximized', () => callback(true))
     ipcRenderer.on('window-unmaximized', () => callback(false))

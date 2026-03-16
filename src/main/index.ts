@@ -186,32 +186,31 @@ app.whenReady().then(() => {
     app.quit();
   });
 
-  // ── Disk wipe — вызывается ТОЛЬКО при явном logout ──
-  ipcMain.handle('wipe-app-data', async () => {
-    const userDataPath = app.getPath('userData');
-    const dirsToKill = [
-      'Local Storage',
-      'Session Storage',
-      'IndexedDB',
-      'Cache',
-      'Code Cache',
-      'GPUCache',
-      'Service Worker',
-      'blob_storage'
-    ];
-    for (const dir of dirsToKill) {
-      const fullPath = join(userDataPath, dir);
-      try {
-        if (existsSync(fullPath)) {
-          rmSync(fullPath, { recursive: true, force: true });
-        }
-      } catch {}
-    }
+   // ── Session persistence (файловое хранилище вместо localStorage) ──
+  const SESSION_PATH = join(app.getPath('userData'), 'session.json');
+
+  ipcMain.handle('save-session', (_event, data: string) => {
     try {
-      const ses = mainWindow?.webContents.session;
-      if (ses) {
-        await ses.clearStorageData();
-        await ses.clearCache();
+      writeFileSync(SESSION_PATH, data, 'utf-8');
+      return true;
+    } catch {
+      return false;
+    }
+  });
+
+  ipcMain.handle('load-session', () => {
+    try {
+      if (existsSync(SESSION_PATH)) {
+        return readFileSync(SESSION_PATH, 'utf-8');
+      }
+    } catch {}
+    return null;
+  });
+
+  ipcMain.handle('clear-session', () => {
+    try {
+      if (existsSync(SESSION_PATH)) {
+        rmSync(SESSION_PATH, { force: true });
       }
     } catch {}
     return true;
