@@ -36,6 +36,12 @@ function saveAppSettings(settings: AppSettings): void {
 }
 
 function applyAutoLaunch(enabled: boolean): void {
+  if (!app.isPackaged) {
+    // Dev-режим: принудительно удаляем старую регистрацию
+    app.setLoginItemSettings({ openAtLogin: false });
+    return;
+  }
+
   app.setLoginItemSettings({
     openAtLogin: enabled,
     args: enabled ? ['--autostart'] : [],
@@ -46,11 +52,16 @@ function applyAutoLaunch(enabled: boolean): void {
 // Tray
 // ═══════════════════════════════════
 function createTray(): void {
-  const iconPath = join(__dirname, '../../build/icon.ico');
+  const iconPath = is.dev
+    ? join(__dirname, '../../build/icon.ico')
+    : join(process.resourcesPath, 'icon.ico');
+
   let trayIcon: Electron.NativeImage;
 
   if (existsSync(iconPath)) {
     trayIcon = nativeImage.createFromPath(iconPath);
+    // Windows требует иконку 16x16 или 32x32 для трея
+    trayIcon = trayIcon.resize({ width: 16, height: 16 });
   } else {
     trayIcon = nativeImage.createEmpty();
   }
@@ -158,8 +169,7 @@ app.whenReady().then(() => {
   const settings = loadAppSettings();
   applyAutoLaunch(settings.openAtLogin);
 
-  // Если запущено через автозапуск Windows — стартуем скрыто в трей
-  const isAutoStarted = process.argv.includes('--autostart');
+
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window);
@@ -233,7 +243,7 @@ app.whenReady().then(() => {
     return true;
   });
 
-  createWindow(isAutoStarted);
+  createWindow();
   createTray();
 
   app.on('activate', () => {

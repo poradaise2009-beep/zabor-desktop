@@ -81,21 +81,32 @@
 !macro customUnInstall
   ; === ПОЛНАЯ ОЧИСТКА ПРИ УДАЛЕНИИ ===
 
-  ; Данные приложения (localStorage, кэш Electron)
-  RMDir /r "$LOCALAPPDATA\zabor"
-  RMDir /r "$LOCALAPPDATA\ZABOR"
-  RMDir /r "$LOCALAPPDATA\${PRODUCT_NAME}"
+  ; Данные приложения — Electron userData
+  ; Имя папки = "name" из package.json = "zabor-desktop"
+  RMDir /r "$APPDATA\zabor-desktop"
+  RMDir /r "$LOCALAPPDATA\zabor-desktop"
+
+  ; Вариации имени на случай переименования
   RMDir /r "$APPDATA\zabor"
   RMDir /r "$APPDATA\ZABOR"
   RMDir /r "$APPDATA\${PRODUCT_NAME}"
+  RMDir /r "$LOCALAPPDATA\zabor"
+  RMDir /r "$LOCALAPPDATA\ZABOR"
+  RMDir /r "$LOCALAPPDATA\${PRODUCT_NAME}"
 
-  ; Временные файлы
+  ; Electron cache (Chromium)
   RMDir /r "$LOCALAPPDATA\Temp\zabor*"
   RMDir /r "$LOCALAPPDATA\Temp\${PRODUCT_NAME}*"
 
-  ; Реестр
+  ; Автозагрузка — снимаем если была
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ZABOR"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "zabor-desktop"
+
+  ; Реестр приложения
   DeleteRegKey HKCU "Software\ZABOR"
   DeleteRegKey HKLM "Software\ZABOR"
   DeleteRegKey HKCU "Software\${PRODUCT_NAME}"
   DeleteRegKey HKLM "Software\${PRODUCT_NAME}"
+  DeleteRegKey HKCU "Software\zabor-desktop"
 !macroend

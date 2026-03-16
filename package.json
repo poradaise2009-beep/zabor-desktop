@@ -1,6 +1,6 @@
 {
   "name": "zabor-desktop",
-  "version": "2.2.7",
+  "version": "2.2.9",
   "description": "ZABOR - Звоночки",
   "main": "./out/main/index.js",
   "author": "vnk",
@@ -15,6 +15,12 @@
   "build": {
     "appId": "com.zabor.desktop",
     "productName": "ZABOR",
+    "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      }
+    ],
     "copyright": "Copyright © 2025 ZABOR",
     "forceCodeSigning": false,
     "directories": {
