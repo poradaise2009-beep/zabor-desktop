@@ -1,34 +1,42 @@
-# zabor-desktop
+# ZABOR
 
-An Electron application with React and TypeScript
+Десктопное приложение для голосового общения.
 
-## Recommended IDE Setup
+## 🛠 Стек
 
-- [VSCode](https://code.visualstudio.com/) + [ESLint](https://marketplace.visualstudio.com/items?itemName=dbaeumer.vscode-eslint) + [Prettier](https://marketplace.visualstudio.com/items?itemName=esbenp.prettier-vscode)
+- **Клиент:** React 18, TypeScript, Tailwind CSS, Electron
+- **Сервер:** C# ASP.NET Core 8, SignalR
+- **Голос:** WebRTC (P2P, Mesh), RNNoise ML-шумоподавление
 
-## Project Setup
+## 📥 Установка
 
-### Install
+Скачайте последнюю версию со страницы [Releases](https://github.com/poradaise2009-beep/zabor-desktop/releases).
+
+> ⚠️ **Windows SmartScreen** может показать предупреждение при первом запуске.
+> Это происходит со всеми новыми приложениями без цифровой подписи.
+>
+> **Как установить:**
+> 1. Нажмите **«Подробнее»** (More info)
+> 2. Нажмите **«Выполнить в любом случае»** (Run anyway)
+
+## ✨ Возможности
+
+- 🎙️ Голосовые каналы (до 10 участников)
+- 📞 Личные звонки (P2P)
+- 🤖 ML-шумоподавление (RNNoise)
+- 🏆 Система достижений
+- 🖼️ GIF-аватары с кастомным кропом
+- 🔒 Сквозное шифрование голоса (SRTP)
+- 🔕 Работа в фоне (System Tray)
+
+## 🚀 Разработка
 
 ```bash
-$ npm install
-```
+# Установка зависимостей
+npm install
 
-### Development
+# Запуск в dev-режиме
+npm run dev
 
-```bash
-$ npm run dev
-```
-
-### Build
-
-```bash
-# For windows
-$ npm run build:win
-
-# For macOS
-$ npm run build:mac
-
-# For Linux
-$ npm run build:linux
-```
+# Сборка установщика
+npm run dist:win
