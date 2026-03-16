@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Zabor</title>
+    
+    <!-- ИСПРАВЛЕНИЕ ЗДЕСЬ: Разрешаем подключение к вашему VDS по HTTP и WebSockets (WS) -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data:; connect-src 'self' http://193.23.200.42:5000 ws://193.23.200.42:5000 wss://193.23.200.42:5000 http://localhost:* ws://localhost:*; img-src 'self' data: blob:;">
+    
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

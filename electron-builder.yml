@@ -1,0 +1,36 @@
+appId: com.zabor.app
+productName: ZABOR
+copyright: Copyright © 2024 ZABOR
+
+directories:
+  output: dist
+  buildResources: build
+
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.*'
+  - '!{.eslintignore,.eslintrc.*,.prettierrc.*,dev-app-update.yml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+
+win:
+  executableName: ZABOR
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: true
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  deleteAppDataOnUninstall: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: ZABOR
+  include: build/installer.nsh
+
+publish: null
