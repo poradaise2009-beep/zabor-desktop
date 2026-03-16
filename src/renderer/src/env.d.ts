@@ -10,6 +10,9 @@ declare interface Window {
     getUserDataPath: () => Promise<string>
     getAutoLaunch: () => Promise<boolean>
     setAutoLaunch: (enabled: boolean) => Promise<boolean>
+    saveSession: (data: string) => Promise<boolean>
+    loadSession: () => Promise<string | null>
+    clearSession: () => Promise<boolean>
     onMaximizeChange: (callback: (isMaximized: boolean) => void) => () => void
   }
 }
