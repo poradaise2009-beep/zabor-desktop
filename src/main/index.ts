@@ -7,9 +7,25 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
 
+// ═══════════════════════════════════
+// Single Instance Lock
+// ═══════════════════════════════════
+const gotLock = app.requestSingleInstanceLock();
+
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (!mainWindow.isVisible()) mainWindow.show();
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
 // ═══════════════════════════════════════════════════════════
-// App Settings — файл лежит в корне userData и НЕ удаляется
-// при wipe-app-data (logout). Переживает смену аккаунтов.
+// App Settings
 // ═══════════════════════════════════════════════════════════
 interface AppSettings {
   openAtLogin: boolean;
@@ -37,7 +53,6 @@ function saveAppSettings(settings: AppSettings): void {
 
 function applyAutoLaunch(enabled: boolean): void {
   if (!app.isPackaged) {
-    // Dev-режим: принудительно удаляем старую регистрацию
     app.setLoginItemSettings({ openAtLogin: false });
     return;
   }
@@ -60,7 +75,6 @@ function createTray(): void {
 
   if (existsSync(iconPath)) {
     trayIcon = nativeImage.createFromPath(iconPath);
-    // Windows требует иконку 16x16 или 32x32 для трея
     trayIcon = trayIcon.resize({ width: 16, height: 16 });
   } else {
     trayIcon = nativeImage.createEmpty();
@@ -81,8 +95,11 @@ function createTray(): void {
     {
       label: 'Выйти',
       click: () => {
-        isQuitting = true;
-        app.quit();
+        mainWindow?.webContents.send('before-quit');
+        setTimeout(() => {
+          isQuitting = true;
+          app.quit();
+        }, 800);
       }
     }
   ]);
@@ -104,7 +121,7 @@ function createTray(): void {
 // ═══════════════════════════════════
 // Window
 // ═══════════════════════════════════
-function createWindow(startHidden = false): void {
+function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -123,9 +140,7 @@ function createWindow(startHidden = false): void {
   });
 
   mainWindow.once('ready-to-show', () => {
-    if (!startHidden) {
-      mainWindow?.show();
-    }
+    mainWindow?.show();
   });
 
   mainWindow.on('maximize', () => {
@@ -165,11 +180,8 @@ function createWindow(startHidden = false): void {
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.zabor.app');
 
-  // Применяем сохранённую настройку автозапуска
   const settings = loadAppSettings();
   applyAutoLaunch(settings.openAtLogin);
-
-
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window);
@@ -196,33 +208,53 @@ app.whenReady().then(() => {
     app.quit();
   });
 
-   // ── Session persistence (файловое хранилище вместо localStorage) ──
+  // ── Disk wipe — вызывается ТОЛЬКО при явном logout ──
+  ipcMain.handle('wipe-app-data', async () => {
+    const userDataPath = app.getPath('userData');
+    const dirsToKill = [
+      'Local Storage',
+      'Session Storage',
+      'IndexedDB',
+      'Cache',
+      'Code Cache',
+      'GPUCache',
+      'Service Worker',
+      'blob_storage'
+    ];
+    for (const dir of dirsToKill) {
+      const fullPath = join(userDataPath, dir);
+      try {
+        if (existsSync(fullPath)) {
+          rmSync(fullPath, { recursive: true, force: true });
+        }
+      } catch {}
+    }
+    try {
+      const ses = mainWindow?.webContents.session;
+      if (ses) {
+        await ses.clearStorageData();
+        await ses.clearCache();
+      }
+    } catch {}
+    return true;
+  });
+
+  // ── Session persistence ──
   const SESSION_PATH = join(app.getPath('userData'), 'session.json');
 
   ipcMain.handle('save-session', (_event, data: string) => {
-    try {
-      writeFileSync(SESSION_PATH, data, 'utf-8');
-      return true;
-    } catch {
-      return false;
-    }
+    try { writeFileSync(SESSION_PATH, data, 'utf-8'); return true; } catch { return false; }
   });
 
   ipcMain.handle('load-session', () => {
     try {
-      if (existsSync(SESSION_PATH)) {
-        return readFileSync(SESSION_PATH, 'utf-8');
-      }
+      if (existsSync(SESSION_PATH)) return readFileSync(SESSION_PATH, 'utf-8');
     } catch {}
     return null;
   });
 
   ipcMain.handle('clear-session', () => {
-    try {
-      if (existsSync(SESSION_PATH)) {
-        rmSync(SESSION_PATH, { force: true });
-      }
-    } catch {}
+    try { if (existsSync(SESSION_PATH)) rmSync(SESSION_PATH, { force: true }); } catch {}
     return true;
   });
 
@@ -255,8 +287,15 @@ app.on('window-all-closed', () => {
   // Ничего — живём в трее
 });
 
-app.on('before-quit', () => {
-  isQuitting = true;
+app.on('before-quit', (event) => {
+  if (!isQuitting) {
+    event.preventDefault();
+    mainWindow?.webContents.send('before-quit');
+    setTimeout(() => {
+      isQuitting = true;
+      app.quit();
+    }, 800);
+  }
 });
 
 app.on('quit', () => {

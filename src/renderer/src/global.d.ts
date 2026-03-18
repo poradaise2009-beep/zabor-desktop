@@ -20,6 +20,10 @@ declare global {
       loadSession: () => Promise<string | null>;
       clearSession: () => Promise<boolean>;
       onMaximizeChange: (callback: (isMaximized: boolean) => void) => () => void;
+      onBeforeQuit: (callback: () => void) => () => void;
+saveSession: (data: string) => Promise<boolean>;
+loadSession: () => Promise<string | null>;
+clearSession: () => Promise<boolean>;
     };
   }
 }

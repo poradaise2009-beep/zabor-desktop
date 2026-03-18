@@ -13,6 +13,10 @@ const windowControls = {
   saveSession: (data: string): Promise<boolean> => ipcRenderer.invoke('save-session', data),
   loadSession: (): Promise<string | null> => ipcRenderer.invoke('load-session'),
   clearSession: (): Promise<boolean> => ipcRenderer.invoke('clear-session'),
+  onBeforeQuit: (callback: () => void) => {
+    ipcRenderer.on('before-quit', callback)
+    return () => { ipcRenderer.removeAllListeners('before-quit') }
+  },
   onMaximizeChange: (callback: (isMaximized: boolean) => void) => {
     ipcRenderer.on('window-maximized', () => callback(true))
     ipcRenderer.on('window-unmaximized', () => callback(false))
