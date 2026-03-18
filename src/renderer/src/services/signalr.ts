@@ -19,6 +19,8 @@ class SignalRService {
 
   private pingCallbacks: Set<(ping: number) => void> = new Set();
   private connectionCallbacks: Set<(isConnected: boolean) => void> = new Set();
+  private reconnectGraceTimer: NodeJS.Timeout | null = null;
+  private wasInChannel: string | null = null;
 
   public isConnected(): boolean {
     return this.connection?.state === signalR.HubConnectionState.Connected;
@@ -77,7 +79,7 @@ class SignalRService {
       }
     };
     measurePing();
-    this.pingInterval = setInterval(measurePing, 5000);
+    this.pingInterval = setInterval(measurePing, 10000);
   }
 
   private stopPingMeasurement() {
@@ -117,26 +119,87 @@ class SignalRService {
 
   private setupReconnectionHandlers() {
     if (!this.connection) return;
+
     this.connection.onreconnecting(() => {
       if (this.intentionalDisconnect) return;
       this.isReconnecting = true;
       this.notifyPingUpdate(-1);
-      this.notifyConnectionUpdate(false);
+
+      // Запоминаем канал перед потерей связи
+      const store = useAppStore.getState();
+      if (store.currentChannelId) {
+        this.wasInChannel = store.currentChannelId;
+      }
+
+      // Даём 5 секунд на тихий реконнект, потом показываем экран загрузки
+      if (!this.reconnectGraceTimer) {
+        this.reconnectGraceTimer = setTimeout(() => {
+          this.reconnectGraceTimer = null;
+          if (this.isReconnecting) {
+            this.notifyConnectionUpdate(false);
+          }
+        }, 5000);
+      }
     });
-    this.connection.onreconnected(() => {
+
+    this.connection.onreconnected(async () => {
       this.reconnectAttempts = 0;
       this.isReconnecting = false;
+
+      // Отменяем grace-таймер если реконнект успел до 5 секунд
+      if (this.reconnectGraceTimer) {
+        clearTimeout(this.reconnectGraceTimer);
+        this.reconnectGraceTimer = null;
+      }
+
       this.startPingMeasurement();
       this.notifyConnectionUpdate(true);
+
+      // Ре-аутентификация
       const store = useAppStore.getState();
-      if (store.currentChannelId) this.rejoinChannel(store.currentChannelId);
+      const user = store.currentUser;
+      if (user) {
+        try {
+          const raw = await window.windowControls.loadSession();
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed.login && parsed.password) {
+              await this.connection!.invoke("Login", parsed.login, parsed.password);
+              await this.loadData();
+            }
+          }
+        } catch {}
+      }
+
+      // Возвращаемся в канал если были в нём
+      const channelToRejoin = this.wasInChannel || store.currentChannelId;
+      this.wasInChannel = null;
+
+      if (channelToRejoin) {
+        this.rejoinChannel(channelToRejoin);
+      }
     });
+
     this.connection.onclose(() => {
       this.isReconnecting = false;
       this.notifyPingUpdate(-1);
       this.stopPingMeasurement();
+
       if (!this.intentionalDisconnect) {
-        this.notifyConnectionUpdate(false);
+        // Запоминаем канал
+        const store = useAppStore.getState();
+        if (store.currentChannelId) {
+          this.wasInChannel = store.currentChannelId;
+        }
+
+        // 5 секунд grace period
+        if (!this.reconnectGraceTimer) {
+          this.reconnectGraceTimer = setTimeout(() => {
+            this.reconnectGraceTimer = null;
+            this.notifyConnectionUpdate(false);
+          }, 5000);
+        }
+
         this.scheduleReconnect();
       }
     });
@@ -152,7 +215,11 @@ class SignalRService {
   }
 
   private async rejoinChannel(channelId: string) {
-    try { await this.joinChannel(channelId); } catch {}
+    try {
+      // Сначала покинем канал на сервере (на случай дублей)
+      await this.safeInvoke("LeaveChannel");
+      await this.joinChannel(channelId);
+    } catch {}
   }
 
   public disconnect() {
@@ -160,7 +227,9 @@ class SignalRService {
     this.isReconnecting = false;
     this.reconnectAttempts = 0;
     this.lastSpeakingState = null;
+    this.wasInChannel = null;
     this.stopPingMeasurement();
+    if (this.reconnectGraceTimer) { clearTimeout(this.reconnectGraceTimer); this.reconnectGraceTimer = null; }
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     if (this.connection) {
       this.connection.stop();
@@ -200,12 +269,16 @@ class SignalRService {
     });
 
     this.connection.on("UserJoinedChannel", (user: User, channelId?: string) => {
-      const currentUsers = store().voiceUsers;
-      if ((!channelId || store().currentChannelId === channelId) && !currentUsers.find(u => u.id === user.id)) {
-        store().setVoiceUsers([...currentUsers, user]);
-      }
       if (channelId) store().addUserToChannelMap(channelId, user);
-      webrtc.connectToPeer(user.id);
+
+      // WebRTC только если пользователь вошёл в НАШ канал
+      if (channelId && store().currentChannelId === channelId && user.id !== store().currentUser?.id) {
+        const currentUsers = store().voiceUsers;
+        if (!currentUsers.find(u => u.id === user.id)) {
+          store().setVoiceUsers([...currentUsers, user]);
+        }
+        webrtc.connectToPeer(user.id);
+      }
     });
 
     this.connection.on("UserLeftChannel", (userId: string, channelId?: string) => {
@@ -381,6 +454,11 @@ class SignalRService {
     this.connection.on("ReceiveWebRTCOffer", async (sId: string, o: string) => await webrtc.handleOffer(sId, o));
     this.connection.on("ReceiveWebRTCAnswer", async (sId: string, a: string) => await webrtc.handleAnswer(sId, a));
     this.connection.on("ReceiveIceCandidate", async (sId: string, c: string) => await webrtc.handleIceCandidate(sId, c));
+
+    // Graceful shutdown при закрытии приложения
+    window.windowControls?.onBeforeQuit?.(() => {
+      this.disconnect();
+    });
   }
 
   // === Sounds ===

@@ -165,6 +165,7 @@ export default function App() {
   const [showInvitesPanel, setShowInvitesPanel] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'general' | 'audio' | 'privacy'>('general');
   const [inviteFriendSearch, setInviteFriendSearch] = useState('');
+  const [sentInvites, setSentInvites] = useState<Set<string>>(new Set());
 
   const [showCropper, setShowCropper] = useState(false);
   const [cropImageSrc, setCropImageSrc] = useState<string | null>(null);
@@ -234,14 +235,17 @@ export default function App() {
         setLoadingFadeOut(true);
         setTimeout(() => setAppLoading(false), 600);
       } else {
-        setAppLoading(true);
-        setLoadingFadeOut(false);
-        setTimeout(() => setShowErrorText(true), 5000);
+        // SignalR уже даёт 5 сек grace period, показываем загрузку только когда он скажет false
+        if (isAuth) {
+          setAppLoading(true);
+          setLoadingFadeOut(false);
+          setTimeout(() => setShowErrorText(true), 5000);
+        }
       }
     });
     const unsubPing = signalRService.onPingUpdate((newPing) => setPing(newPing));
     return () => { unsubConnection(); unsubPing(); };
-  }, []);
+  }, [isAuth]);
 
   useEffect(() => {
   const init = async () => {
@@ -292,7 +296,8 @@ export default function App() {
         saveLocalCache();
         setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
       } else {
-        await softClearCache();
+        // Пароль изменён или аккаунт удалён — удаляем сессию
+        await window.windowControls.clearSession();
         resetToDefaults();
         store.setCurrentUser(null);
         store.setChannels([]);
@@ -367,8 +372,7 @@ export default function App() {
   } catch {}
 }, [login, password, inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression]);
 
-const softClearCache = useCallback(async () => {
-  window.windowControls.clearSession().catch(() => {});
+const softClearCache = useCallback(() => {
 }, []);
 
 const deepWipeOnLogout = useCallback(async () => {
@@ -400,13 +404,17 @@ const applySettings = useCallback((s: {
   selectedInput?: string; selectedOutput?: string;
   noiseSuppression?: boolean;
 }) => {
-  setInputVolume(s.inputVolume ?? 100);
-  setOutputVolume(s.outputVolume ?? 100);
+  const iv = s.inputVolume ?? 100;
+  const ov = s.outputVolume ?? 100;
+  setInputVolume(iv);
+  setOutputVolume(ov);
   setSelectedInput(s.selectedInput ?? 'default');
   setSelectedOutput(s.selectedOutput ?? 'default');
   setNoiseSuppression(s.noiseSuppression ?? true);
   webrtc.setInputDevice(s.selectedInput ?? 'default');
   webrtc.setOutputDevice(s.selectedOutput ?? 'default');
+  webrtc.setInputVolume(iv);
+  webrtc.setOutputVolume(ov);
 }, []);
 
   useEffect(() => {
@@ -427,6 +435,7 @@ const applySettings = useCallback((s: {
     setFriendName(''); setNewPassword(''); setError(''); setPrivacyError('');
     setShowPrivacyPass(false); setEditProfileAvatarBase64(null);
     setEditProfileAvatarColor('#c70060'); setInviteFriendSearch('');
+    setSentInvites(new Set());
     store.closeAllModals();
   }, []);
 
@@ -479,7 +488,6 @@ const applySettings = useCallback((s: {
       const exists = await signalRService.checkUserExists(login);
       if (exists) {
         settingsLoadedRef.current = false;
-        softClearCache();          // ← было await clearLocalCache()
         resetToDefaults();
 
         const success = await signalRService.login(login, password);
@@ -499,7 +507,6 @@ const applySettings = useCallback((s: {
       }
     } else if (authStep === 'setup') {
       settingsLoadedRef.current = false;
-      softClearCache();            // ← было await clearLocalCache()
       resetToDefaults();
 
       const success = await signalRService.register(
@@ -645,13 +652,17 @@ const handleLogout = useCallback(async () => {
 
   const handleInviteToChannel = useCallback(async (friendId: string) => {
     const ch = store.selectedChannelForInvite;
-    if (ch) await signalRService.sendChannelInvite(friendId, ch.id, ch.name);
+    if (!ch) return;
+    await signalRService.sendChannelInvite(friendId, ch.id, ch.name);
+    setSentInvites(prev => new Set(prev).add(friendId));
   }, [store.selectedChannelForInvite]);
 
   const openChannelMembers = useCallback(async (ch: VoiceChannel) => {
     store.setSelectedChannelForMembers(ch);
+    store.setChannelMembers([]);
+    store.setModal('channelMembers', true);
     const members = await signalRService.getChannelMembersList(ch.id);
-    store.setChannelMembers(members); store.setModal('channelMembers', true);
+    store.setChannelMembers(members);
   }, []);
 
   const handleKickConfirm = useCallback(async () => {
@@ -669,9 +680,11 @@ const handleLogout = useCallback(async () => {
 
   const toggleDeafen = useCallback(() => {
     if (!store.currentUser) return;
-    const d = !store.currentUser.isDeafened; const m = d ? true : store.currentUser.isMuted;
+    const d = !store.currentUser.isDeafened;
+    const m = d ? true : store.currentUser.isMuted;
     store.setCurrentUser({ ...store.currentUser, isDeafened: d, isMuted: m });
     signalRService.toggleState(m, d);
+    webrtc.setDeafened(d);
   }, [store.currentUser]);
 
   const handleAcceptCall = useCallback(async () => {
@@ -971,34 +984,39 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
         <div className="flex flex-1 overflow-hidden">
 
           {contextMenu?.visible && (
-            <div className="absolute z-[200] bg-surface border border-[#303035] rounded-xl shadow-xl py-2 w-48" style={{ top: contextMenu.y, left: contextMenu.x }}>
-              {contextMenu.type === 'channel' ? (
-                <>
-                  {contextMenu.item.ownerId === store.currentUser?.id && (
-                    <button onClick={() => { setEditChannelId(contextMenu.item.id); setEditChannelName(contextMenu.item.name); store.setModal('channelEdit', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Edit2 size={16} /> Переименовать</button>
-                  )}
-                  <button onClick={() => { signalRService.quitAccessChannel(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><LeaveIcon size={16} /> Выйти из канала</button>
-                </>
-              ) : contextMenu.type === 'channelMember' ? (
-                <>
-                  <button onClick={() => { store.setSelectedProfileUser(contextMenu.item); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
-                  {store.selectedChannelForMembers?.ownerId === store.currentUser?.id && contextMenu.item.id !== store.currentUser?.id && (
-                    <button onClick={() => { store.setUserToKick(contextMenu.item); store.setModal('kickConfirm', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserX size={16} /> Исключить</button>
-                  )}
-                </>
-              ) : contextMenu.type === 'voiceUser' ? (
-                <>
-                  <button onClick={() => { setVolumeUser(contextMenu.item); setVolumeUserValue(store.userVolumes[contextMenu.item.id] ?? 100); store.setModal('userVolume', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Volume2 size={16} /> Громкость</button>
-                  <button onClick={() => { store.setSelectedProfileUser(contextMenu.item); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><Settings size={16} /> Профиль</button>
-                </>
-              ) : (
-                <>
-                  <button onClick={() => { store.setSelectedProfileUser(contextMenu.item); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
-                  <button onClick={() => { signalRService.removeFriend(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserMinus size={16} /> Удалить</button>
-                </>
-              )}
-            </div>
-          )}
+  <div
+    className="absolute z-[200] bg-surface border border-[#303035] rounded-xl shadow-xl py-2 w-48"
+    style={{ top: contextMenu.y, left: contextMenu.x }}
+    onClick={e => e.stopPropagation()}
+    onContextMenu={e => e.stopPropagation()}
+  >
+    {contextMenu.type === 'channel' ? (
+      <>
+        {contextMenu.item.ownerId === store.currentUser?.id && (
+          <button onClick={() => { setEditChannelId(contextMenu.item.id); setEditChannelName(contextMenu.item.name); store.setModal('channelEdit', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Edit2 size={16} /> Переименовать</button>
+        )}
+        <button onClick={() => { signalRService.quitAccessChannel(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><LeaveIcon size={16} /> Выйти из канала</button>
+      </>
+    ) : contextMenu.type === 'channelMember' ? (
+      <>
+        <button onClick={() => { store.setSelectedProfileUser(contextMenu.item); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
+        {store.selectedChannelForMembers?.ownerId === store.currentUser?.id && contextMenu.item.id !== store.currentUser?.id && (
+          <button onClick={() => { store.setUserToKick(contextMenu.item); store.setModal('kickConfirm', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserX size={16} /> Исключить</button>
+        )}
+      </>
+    ) : contextMenu.type === 'voiceUser' ? (
+      <>
+        <button onClick={() => { setVolumeUser(contextMenu.item); setVolumeUserValue(store.userVolumes[contextMenu.item.id] ?? 100); store.setModal('userVolume', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Volume2 size={16} /> Громкость</button>
+        <button onClick={() => { store.setSelectedProfileUser(contextMenu.item); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><Settings size={16} /> Профиль</button>
+      </>
+    ) : (
+      <>
+        <button onClick={() => { store.setSelectedProfileUser(contextMenu.item); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
+        <button onClick={() => { signalRService.removeFriend(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserMinus size={16} /> Удалить</button>
+      </>
+    )}
+  </div>
+)}
 
           <div className="w-80 bg-panelBg flex flex-col border-r border-[#303035] relative shrink-0">
 
@@ -1134,10 +1152,10 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
                   {isCopied ? <span className="text-success">Скопировано!</span> : store.currentUser?.username}
                 </div>
               </div>
-              <button onClick={async () => {
-  await loadDevices();
-  try { setAutoLaunch(await window.windowControls.getAutoLaunch()); } catch {}
+              <button onClick={() => {
   store.setModal('settings', true);
+  loadDevices();
+  window.windowControls.getAutoLaunch().then(setAutoLaunch).catch(() => {});
 }} className="text-textMuted hover:text-white p-2 shrink-0 hover:bg-surface rounded-xl transition-colors"><Settings size={20} /></button>
             </div>
           </div>
@@ -1153,11 +1171,31 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
                       ? 'shadow-[inset_0_0_0_3px_#3BA55C,inset_0_0_0_5px_#181818,0_10px_15px_-3px_rgba(0,0,0,0.5)]'
                       : 'shadow-xl'}`}
                     style={{ backgroundColor: store.currentCallUser.avatarColor, width: `${cardSize.w}px`, height: `${cardSize.h}px`, borderRadius: '24px' }}>
-                    <div style={{ width: `${cardSize.avatarSize}px`, height: `${cardSize.avatarSize}px`, marginBottom: '16px' }}>
-                      <div className="w-full h-full rounded-full overflow-hidden shadow-inner bg-black/20 relative">
-  <AvatarImg src={store.currentCallUser.avatarBase64} size={cardSize.avatarSize} />
+                    <div className="relative" style={{ width: `${cardSize.avatarSize}px`, height: `${cardSize.avatarSize}px`, marginBottom: '16px' }}>
+  <div className="w-full h-full rounded-full overflow-hidden shadow-inner bg-black/20 relative">
+    <AvatarImg src={store.currentCallUser.avatarBase64} size={cardSize.avatarSize} />
+  </div>
+  {store.callStatus === 'connected' && (store.currentCallUser.isMuted || store.currentCallUser.isDeafened) && (
+    <div className="absolute -bottom-1 -right-1 bg-[#09090B] rounded-full p-1.5 shadow-lg">
+      {store.currentCallUser.isDeafened ? (
+        <div className="relative">
+          <Headphones size={14} className="text-danger" />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-[18px] h-[2px] bg-danger rotate-45 rounded-full" />
+          </div>
+        </div>
+      ) : (
+        <div className="relative">
+          <Mic size={14} className="text-danger" />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-[18px] h-[2px] bg-danger rotate-45 rounded-full" />
+          </div>
+        </div>
+      )}
+    </div>
+  )}
 </div>
-                    </div>
+                
                     {store.callStatus === 'calling' && (
                       <div className="absolute inset-0 bg-black/25 flex items-center justify-center" style={{ borderRadius: '24px' }}>
                         <div className="flex gap-2.5">
@@ -1195,11 +1233,30 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
                       className={`relative flex flex-col items-center justify-center cursor-pointer transition-all duration-200 overflow-hidden shrink-0 hover:-translate-y-1
                         ${user.isSpeaking ? 'shadow-[inset_0_0_0_3px_#3BA55C,inset_0_0_0_5px_#181818,0_10px_15px_-3px_rgba(0,0,0,0.5)] z-10' : 'shadow-xl'}`}
                       style={{ backgroundColor: user.avatarColor, width: `${cardSize.w}px`, height: `${cardSize.h}px`, borderRadius: '24px' }}>
-                      <div style={{ width: `${cardSize.avatarSize}px`, height: `${cardSize.avatarSize}px`, marginBottom: '16px' }}>
-                        <div className="w-full h-full rounded-full overflow-hidden shadow-inner bg-black/20 relative">
-  <AvatarImg src={user.avatarBase64} size={cardSize.avatarSize} />
+                     <div className="relative" style={{ width: `${cardSize.avatarSize}px`, height: `${cardSize.avatarSize}px`, marginBottom: '16px' }}>
+  <div className="w-full h-full rounded-full overflow-hidden shadow-inner bg-black/20 relative">
+    <AvatarImg src={user.avatarBase64} size={cardSize.avatarSize} />
+  </div>
+  {(user.isMuted || user.isDeafened) && (
+    <div className="absolute -bottom-1 -right-1 bg-[#09090B] rounded-full p-1.5 shadow-lg">
+      {user.isDeafened ? (
+        <div className="relative">
+          <Headphones size={14} className="text-danger" />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-[18px] h-[2px] bg-danger rotate-45 rounded-full" />
+          </div>
+        </div>
+      ) : (
+        <div className="relative">
+          <Mic size={14} className="text-danger" />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-[18px] h-[2px] bg-danger rotate-45 rounded-full" />
+          </div>
+        </div>
+      )}
+    </div>
+  )}
 </div>
-                      </div>
                       <div className={`absolute bottom-4 left-1/2 -translate-x-1/2 transition-all duration-300 ${isIdle ? 'translate-y-8 opacity-0 pointer-events-none' : 'translate-y-0 opacity-100'}`}>
                         <div className="bg-[#09090B]/80 backdrop-blur-md border border-[#303035]/50 px-4 py-1.5 rounded-full flex items-center gap-2 shadow-lg whitespace-nowrap" style={{ maxWidth: `${cardSize.w - 40}px` }}>
                           <span className="text-white font-bold text-sm truncate">{user.displayName}</span>
@@ -1325,26 +1382,32 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
             {settingsTab === 'audio' && (
               <div className="space-y-6">
                 <div>
-                  <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">УСТРОЙСТВО ВВОДА</label>
-                  <select value={selectedInput} onChange={e => { setSelectedInput(e.target.value); webrtc.updateSettings(e.target.value, noiseSuppression); }} className="w-full bg-surface text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060]">
-                    <option value="default">По умолчанию</option>
-                    {audioDevices.inputs.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || 'Микрофон'}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">УСТРОЙСТВО ВЫВОДА</label>
-                  <select value={selectedOutput} onChange={e => { setSelectedOutput(e.target.value); webrtc.setOutputDevice(e.target.value); }} className="w-full bg-surface text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060]">
-                    <option value="default">По умолчанию</option>
-                    {audioDevices.outputs.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || 'Динамики'}</option>)}
-                  </select>
-                </div>
+  <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">УСТРОЙСТВО ВВОДА</label>
+  <select value={selectedInput} onChange={e => { setSelectedInput(e.target.value); webrtc.updateSettings(e.target.value, noiseSuppression); }} className="w-full bg-surface text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060]">
+    <option value="default">По умолчанию</option>
+    {audioDevices.inputs.length === 0 && selectedInput !== 'default' && (
+      <option value={selectedInput}>Загрузка...</option>
+    )}
+    {audioDevices.inputs.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || 'Микрофон'}</option>)}
+  </select>
+</div>
+<div>
+  <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">УСТРОЙСТВО ВЫВОДА</label>
+  <select value={selectedOutput} onChange={e => { setSelectedOutput(e.target.value); webrtc.setOutputDevice(e.target.value); }} className="w-full bg-surface text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060]">
+    <option value="default">По умолчанию</option>
+    {audioDevices.outputs.length === 0 && selectedOutput !== 'default' && (
+      <option value={selectedOutput}>Загрузка...</option>
+    )}
+    {audioDevices.outputs.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || 'Динамики'}</option>)}
+  </select>
+</div>
                 <div>
                   <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">ГРОМКОСТЬ МИКРОФОНА — {inputVolume}%</label>
-                  <Md3Slider min={0} max={200} value={inputVolume} onChange={v => setInputVolume(v)} />
+                  <Md3Slider min={0} max={200} value={inputVolume} onChange={v => { setInputVolume(v); webrtc.setInputVolume(v); }} />
                 </div>
                 <div>
                   <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">ГРОМКОСТЬ ЗВУКА — {outputVolume}%</label>
-                  <Md3Slider min={0} max={200} value={outputVolume} onChange={v => setOutputVolume(v)} />
+                  <Md3Slider min={0} max={200} value={inputVolume} onChange={v => { setInputVolume(v); webrtc.setInputVolume(v); }} />
                 </div>
                 <div className="flex items-center justify-between bg-surface p-4 rounded-xl">
                   <span className="font-semibold text-white">Шумоподавление</span>
@@ -1393,7 +1456,17 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
               <div key={f.id} className="flex items-center gap-3 p-3 bg-surface rounded-xl hover:bg-surfaceHover transition-colors">
                 <div className="w-10 h-10 rounded-full shrink-0 overflow-hidden relative" style={{ backgroundColor: f.avatarColor }}><AvatarImg src={f.avatarBase64} size={40} /></div>
                 <span className="flex-1 font-semibold text-white truncate">{f.displayName}</span>
-                <button onClick={() => handleInviteToChannel(f.id)} className="bg-[#c70060] hover:opacity-90 text-white py-2 px-4 rounded-xl text-sm font-bold transition-opacity shrink-0">Пригласить</button>
+                <button
+  onClick={() => handleInviteToChannel(f.id)}
+  disabled={sentInvites.has(f.id)}
+  className={`py-2 px-4 rounded-xl text-sm font-bold transition-all shrink-0 ${
+    sentInvites.has(f.id)
+      ? 'bg-success/20 text-success cursor-default'
+      : 'bg-[#c70060] hover:opacity-90 text-white'
+  }`}
+>
+  {sentInvites.has(f.id) ? '✓ Отправлено' : 'Пригласить'}
+</button>
               </div>
             ))}
             {store.friends.filter(f => f.displayName.toLowerCase().includes(inviteFriendSearch.toLowerCase())).length === 0 && (
@@ -1412,6 +1485,11 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
           </div>
           <p className="text-textMuted text-sm mb-6 truncate">{store.selectedChannelForMembers?.name}</p>
           <div className="max-h-[350px] overflow-y-auto space-y-2 pr-2">
+            {store.channelMembers.length === 0 && (
+  <div className="flex justify-center py-8">
+    <div className="w-6 h-6 border-2 border-[#c70060] border-t-transparent rounded-full animate-spin" />
+  </div>
+)}
             {store.channelMembers.map(m => (
               <div key={m.id} onContextMenu={e => handleContextMenu(e, 'channelMember', m)} className="flex items-center gap-3 p-3 bg-surface rounded-xl hover:bg-surfaceHover transition-colors cursor-pointer">
                 <div className="relative w-10 h-10 shrink-0">
@@ -1455,6 +1533,21 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
           <button onClick={closeAndResetModals} className="w-full bg-surface text-white py-3 rounded-xl font-bold hover:bg-surfaceHover transition-colors">Понятно</button>
         </div>
       )}
+
+      {renderModal('userVolume',
+  <div className="bg-panelBg p-8 rounded-3xl w-[400px] shadow-2xl">
+    <h2 className="text-xl font-bold mb-2 text-white">Громкость пользователя</h2>
+    <p className="text-textMuted text-sm mb-6 font-medium">{volumeUser?.displayName}</p>
+    <div>
+      <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">ГРОМКОСТЬ — {volumeUserValue}%</label>
+      <Md3Slider min={0} max={200} value={volumeUserValue} onChange={v => {
+        setVolumeUserValue(v);
+        if (volumeUser) webrtc.setUserVolume(volumeUser.id, v / 100);
+      }} />
+    </div>
+    <button onClick={closeAndResetModals} className="w-full mt-6 bg-surface text-white py-3 rounded-xl font-bold hover:bg-surfaceHover transition-colors">Закрыть</button>
+  </div>
+)}
 
       {renderModal('incomingCall',
         <div className="bg-panelBg p-8 rounded-3xl w-[350px] text-center shadow-2xl">
