@@ -169,9 +169,6 @@ export class WebRTCManager {
     audio.volume = Math.min(1, (this._outputVolume / 100) * (userVol / 100));
   }
 
-  // ==========================================
-  // VAD
-  // ==========================================
   private setupVAD(stream: MediaStream, userId: string, isLocal: boolean) {
     this.clearVAD(userId);
     try {
@@ -180,33 +177,42 @@ export class WebRTCManager {
       }
       if (this.vadContext.state === 'suspended') this.vadContext.resume();
 
-      // Фильтруем только речевые частоты (300-3000Hz)
-      // Это отсекает клики клавиатуры (высокочастотные транзиенты)
-      const bandpass = this.vadContext.createBiquadFilter();
-      bandpass.type = 'bandpass';
-      bandpass.frequency.value = 1000;  // Центр полосы
-      bandpass.Q.value = 0.5;           // Широкая полоса 300-3000Hz
+      const cloned = new MediaStream(stream.getAudioTracks());
+      const source = this.vadContext.createMediaStreamSource(cloned);
+
+      // Речевой диапазон 85-1100Hz — основные частоты голоса (F0 + первые форманты)
+      // Клики мыши/клавиатуры: широкополосный шум 2000-8000Hz
+      // Вибрация стола: <60Hz
+      const lowCut = this.vadContext.createBiquadFilter();
+      lowCut.type = 'highpass';
+      lowCut.frequency.value = 85;
+      lowCut.Q.value = 0.5;
+
+      const highCut = this.vadContext.createBiquadFilter();
+      highCut.type = 'lowpass';
+      highCut.frequency.value = 1100;
+      highCut.Q.value = 0.5;
 
       const analyzer = this.vadContext.createAnalyser();
       analyzer.fftSize = 512;
-      analyzer.smoothingTimeConstant = 0.6; // Сглаживание — игнорирует короткие всплески
+      analyzer.smoothingTimeConstant = 0.4;
 
-      const cloned = new MediaStream(stream.getAudioTracks());
-      const source = this.vadContext.createMediaStreamSource(cloned);
-      source.connect(bandpass);
-      bandpass.connect(analyzer);
+      source.connect(lowCut);
+      lowCut.connect(highCut);
+      highCut.connect(analyzer);
 
       const data = new Uint8Array(analyzer.frequencyBinCount);
+
+      // Для сырого стрима пороги выше — голос чётко отличается от шума
+      const threshold = isLocal ? 38 : 15;
       let lastSpoke = 0;
       let wasSpeaking = false;
-      let sustainCount = 0; // Счётчик последовательных фреймов с голосом
 
       const check = () => {
         const store = useAppStore.getState();
         if (isLocal && store.currentUser?.isMuted) {
           if (wasSpeaking) {
             wasSpeaking = false;
-            sustainCount = 0;
             store.setSpeakingStatus(userId, false);
             signalRService.setSpeakingState(false);
           }
@@ -215,23 +221,16 @@ export class WebRTCManager {
 
         analyzer.getByteFrequencyData(data);
 
-        // Считаем среднюю энергию только в речевом диапазоне
-        let sum = 0;
-        for (let i = 0; i < data.length; i++) sum += data[i];
-        const avg = sum / data.length;
+        // Считаем RMS вместо среднего — чувствительнее к голосу, устойчивее к шуму
+        let sumSq = 0;
+        for (let i = 0; i < data.length; i++) sumSq += data[i] * data[i];
+        const rms = Math.sqrt(sumSq / data.length);
 
-        const threshold = isLocal ? 40 : 20;
-if (avg > threshold) {
-          sustainCount++;
-          // Голос должен держаться минимум 3 фрейма (150мс) чтобы сработать
-          if (sustainCount >= 3) {
-            lastSpoke = Date.now();
-          }
-        } else {
-          sustainCount = Math.max(0, sustainCount - 1);
+        if (rms > threshold) {
+          lastSpoke = Date.now();
         }
 
-        const speaking = (Date.now() - lastSpoke) < 400;
+        const speaking = (Date.now() - lastSpoke) < 350;
 
         if (speaking !== wasSpeaking) {
           wasSpeaking = speaking;
@@ -240,7 +239,8 @@ if (avg > threshold) {
         }
       };
 
-      const timer = setInterval(check, 50);
+      // 20мс — один фрейм Opus, минимальная задержка
+      const timer = setInterval(check, 20);
       this.speakingIntervals.set(userId, { timer, stream: cloned });
     } catch {}
   }
@@ -308,7 +308,7 @@ if (avg > threshold) {
       this.localStream = await this.createProcessedStream(rawStream);
 
       const me = useAppStore.getState().currentUser;
-      if (me) this.setupVAD(this.localStream, me.id, true);
+if (me) this.setupVAD(this.rawStream!, me.id, true);
 
       return true;
     } catch { return false; }

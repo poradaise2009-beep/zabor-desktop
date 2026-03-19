@@ -186,19 +186,42 @@ export default function App() {
   const idleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const settingsSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const settingsLoadedRef = useRef(false);
+  const credentialsRef = useRef<{ login: string; password: string }>({ login: '', password: '' });
+const initCompleteRef = useRef(false);
+
+const settingsRef = useRef({
+  inputVolume: 100, outputVolume: 100,
+  selectedInput: 'default', selectedOutput: 'default',
+  noiseSuppression: true
+});
+
+useEffect(() => {
+  settingsRef.current = { inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression };
+}, [inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
+  credentialsRef.current = { login, password };
+}, [login, password]);
+
+  useEffect(() => {
     if (!containerRef.current) return;
+
+    // Мгновенное измерение при монтировании
+    const rect = containerRef.current.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      setContainerSize({ width: rect.width, height: rect.height });
+    }
+
     const observer = new ResizeObserver((entries) => {
       const { width, height } = entries[0].contentRect;
       setContainerSize({ width, height });
     });
     observer.observe(containerRef.current);
     return () => observer.disconnect();
-  }, [store.currentChannelId, store.currentCallUser?.id]);
+  }, [store.currentChannelId, store.currentCallUser?.id, appLoading]);
 
   const getCardSize = (count: number, cw: number, ch: number) => {
     if (count === 0 || cw === 0 || ch === 0) return { w: 320, h: 180, avatarSize: 96 };
@@ -230,17 +253,16 @@ export default function App() {
   useEffect(() => {
     const unsubConnection = signalRService.onConnectionUpdate((isConnected) => {
       setServerConnected(isConnected);
+      if (!initCompleteRef.current) return; // Не мешаем init-потоку
+
       if (isConnected) {
         setShowErrorText(false);
         setLoadingFadeOut(true);
         setTimeout(() => setAppLoading(false), 600);
-      } else {
-        // SignalR уже даёт 5 сек grace period, показываем загрузку только когда он скажет false
-        if (isAuth) {
-          setAppLoading(true);
-          setLoadingFadeOut(false);
-          setTimeout(() => setShowErrorText(true), 5000);
-        }
+      } else if (isAuth) {
+        setAppLoading(true);
+        setLoadingFadeOut(false);
+        setTimeout(() => setShowErrorText(true), 5000);
       }
     });
     const unsubPing = signalRService.onPingUpdate((newPing) => setPing(newPing));
@@ -249,9 +271,9 @@ export default function App() {
 
   useEffect(() => {
   const init = async () => {
+    // 1. Загружаем сессию с диска
     let cachedCredentials: { login: string; password: string; userId?: string } | null = null;
 
-    // Читаем из файла вместо localStorage
     try {
       const raw = await window.windowControls.loadSession();
       if (raw) {
@@ -262,20 +284,35 @@ export default function App() {
           userId: parsed.userId
         };
 
+        // Применяем к стору — UI готов мгновенно
         store.setCurrentUser(parsed.user);
         store.setChannels(parsed.channels || []);
         store.setFriends(parsed.friends || []);
         if (parsed.settings) applySettings(parsed.settings);
+
+        credentialsRef.current = { login: parsed.login, password: parsed.password };
         setLogin(parsed.login);
         setPassword(parsed.password);
       }
-    } catch {
-      await softClearCache();
+    } catch {}
+
+    // 2. Если нет кредов — сразу показываем экран логина
+    if (!cachedCredentials) {
+      initCompleteRef.current = true;
+      setLoadingFadeOut(true);
+      setTimeout(() => setAppLoading(false), 300);
+      return;
     }
 
+    // 3. Подключаемся к серверу (с таймером на текст ошибки)
+    const errorTimer = setTimeout(() => setShowErrorText(true), 10000);
     const connected = await signalRService.connect();
+    clearTimeout(errorTimer);
 
-    if (cachedCredentials && connected) {
+    if (connected) {
+      setShowErrorText(false);
+
+      // 4. Автологин
       const loginSuccess = await signalRService.login(
         cachedCredentials.login,
         cachedCredentials.password
@@ -284,7 +321,6 @@ export default function App() {
       if (loginSuccess) {
         const serverUser = useAppStore.getState().currentUser;
         if (cachedCredentials.userId && serverUser && cachedCredentials.userId !== serverUser.id) {
-          await softClearCache();
           resetToDefaults();
         }
 
@@ -296,7 +332,7 @@ export default function App() {
         saveLocalCache();
         setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
       } else {
-        // Пароль изменён или аккаунт удалён — удаляем сессию
+        // Пароль изменён или аккаунт удалён
         await window.windowControls.clearSession();
         resetToDefaults();
         store.setCurrentUser(null);
@@ -304,13 +340,21 @@ export default function App() {
         store.setFriends([]);
         store.setFriendRequests([]);
         store.setChannelInvites([]);
+        credentialsRef.current = { login: '', password: '' };
         setLogin('');
         setPassword('');
         setIsAuth(false);
       }
-    } else if (cachedCredentials && !connected) {
+    } else {
+      // Офлайн, но есть кэш — работаем с локальными данными
       setIsAuth(true);
+      setShowErrorText(true);
     }
+
+    // 5. Показываем главный экран
+    initCompleteRef.current = true;
+    setLoadingFadeOut(true);
+    setTimeout(() => setAppLoading(false), 600);
   };
 
   init();
@@ -359,18 +403,26 @@ export default function App() {
   const saveLocalCache = useCallback(() => {
   try {
     const currentUser = useAppStore.getState().currentUser;
-    if (!currentUser) return;
+    const creds = credentialsRef.current;
+    if (!currentUser || !creds.login || !creds.password) return;
     const data = JSON.stringify({
-      login, password,
+      login: creds.login,
+      password: creds.password,
       userId: currentUser.id,
       user: currentUser,
       channels: useAppStore.getState().channels,
       friends: useAppStore.getState().friends,
-      settings: { inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression }
+      settings: {
+        inputVolume: settingsRef.current.inputVolume,
+        outputVolume: settingsRef.current.outputVolume,
+        selectedInput: settingsRef.current.selectedInput,
+        selectedOutput: settingsRef.current.selectedOutput,
+        noiseSuppression: settingsRef.current.noiseSuppression
+      }
     });
     window.windowControls.saveSession(data).catch(() => {});
   } catch {}
-}, [login, password, inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression]);
+}, []);
 
 const softClearCache = useCallback(() => {
 }, []);
@@ -422,10 +474,14 @@ const applySettings = useCallback((s: {
 
   if (settingsSaveTimerRef.current) clearTimeout(settingsSaveTimerRef.current);
   settingsSaveTimerRef.current = setTimeout(() => {
+    const s = settingsRef.current;
     signalRService.saveAudioSettings({
-      inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression
+      inputVolume: s.inputVolume,
+      outputVolume: s.outputVolume,
+      selectedInput: s.selectedInput,
+      selectedOutput: s.selectedOutput,
+      noiseSuppression: s.noiseSuppression
     });
-    // Перезаписываем файл сессии с актуальными настройками
     saveLocalCache();
   }, 500);
 }, [inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression, isAuth]);
@@ -493,6 +549,7 @@ const applySettings = useCallback((s: {
         const success = await signalRService.login(login, password);
         if (success) {
           setIsAuth(true);
+          credentialsRef.current = { login, password };
 
           const serverSettings = await signalRService.loadAudioSettings();
           if (serverSettings) applySettings(serverSettings);
@@ -514,6 +571,7 @@ const applySettings = useCallback((s: {
       );
       if (success) {
         setIsAuth(true);
+        credentialsRef.current = { login, password };
         saveLocalCache();
         setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
       } else {
