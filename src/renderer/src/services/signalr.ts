@@ -79,7 +79,7 @@ class SignalRService {
       }
     };
     measurePing();
-    this.pingInterval = setInterval(measurePing, 10000);
+    this.pingInterval = setInterval(measurePing, 5000);
   }
 
   private stopPingMeasurement() {
