@@ -121,6 +121,7 @@ export default function App() {
 
   const [serverConnected, setServerConnected] = useState(false);
   const [showErrorText, setShowErrorText] = useState(false);
+  const [showInitConnectionError, setShowInitConnectionError] = useState(false);
   const [appLoading, setAppLoading] = useState(true);
   const [loadingFadeOut, setLoadingFadeOut] = useState(false);
 
@@ -145,6 +146,7 @@ export default function App() {
   const [newPassword, setNewPassword] = useState('');
   const [showPrivacyPass, setShowPrivacyPass] = useState(false);
   const [privacyError, setPrivacyError] = useState('');
+  const [offlineToast, setOfflineToast] = useState<string | null>(null);
 
   const [volumeUser, setVolumeUser] = useState<User | null>(null);
   const [volumeUserValue, setVolumeUserValue] = useState<number>(100);
@@ -306,14 +308,14 @@ useEffect(() => {
     }
 
     // 3. Подключаемся к серверу (с таймером на текст ошибки)
-    const errorTimer = setTimeout(() => setShowErrorText(true), 10000);
-    const connected = await signalRService.connect();
-    clearTimeout(errorTimer);
+    setShowInitConnectionError(false);
+const errorTimer = setTimeout(() => setShowInitConnectionError(true), 10000);
+const connected = await signalRService.connect();
+clearTimeout(errorTimer);
 
-    if (connected) {
-      setShowErrorText(false);
-
-  
+   if (connected) {
+  setShowErrorText(false);
+  setShowInitConnectionError(false);
 
       // 4. Автологин
       const loginSuccess = await signalRService.login(
@@ -1020,18 +1022,23 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
   }
 
   if (appLoading) {
-    return (
-      <div className={`flex flex-col h-screen w-screen bg-appBg transition-opacity duration-[600ms] select-none ${loadingFadeOut ? 'opacity-0' : 'opacity-100'}`}>
-        <TitleBar />
-        <div className="flex-1 flex items-center justify-center">
-          <div className="flex flex-col items-center gap-6">
-            <h1 className="text-5xl font-black text-white tracking-widest animate-pulse">ZABOR</h1>
-            <div className="w-10 h-10 border-4 border-[#c70060] border-t-transparent rounded-full animate-spin" />
-          </div>
+  return (
+    <div className={`flex flex-col h-screen w-screen bg-appBg transition-opacity duration-[600ms] select-none`}>
+      <TitleBar />
+      <div className="flex-1 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-6">
+          <h1 className="text-5xl font-black text-white tracking-widest animate-pulse">ZABOR</h1>
+          <div className="w-10 h-10 border-4 border-[#c70060] border-t-transparent rounded-full animate-spin" />
+          {showInitConnectionError && (
+  <p className="text-danger font-bold mt-2 animate-fade-in">
+    Нет соединения с сервером
+  </p>
+)}
         </div>
       </div>
-    );
-  }
+    </div>
+  );
+}
 
   if (!isAuth) {
     return (
@@ -1724,7 +1731,21 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
                 </div>
               ) : (
                 <div className="flex flex-col gap-3">
-                  <button onClick={() => { if (store.selectedProfileUser) signalRService.startCall(store.selectedProfileUser.id); store.closeProfileOnly(); }} className="w-full bg-success text-white py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-green-600 transition-colors"><Phone size={18} /> Позвонить</button>
+                  <button
+  onClick={async () => {
+    if (store.selectedProfileUser) {
+      const ok = await signalRService.startCall(store.selectedProfileUser.id);
+      if (!ok) {
+        setOfflineToast('Пользователь не в сети');
+        setTimeout(() => setOfflineToast(null), 3000);
+      }
+    }
+    store.closeProfileOnly();
+  }}
+  className="w-full bg-success text-white py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-green-600 transition-colors"
+>
+  <Phone size={18} /> Позвонить
+</button>
                   <button onClick={() => { if (store.selectedProfileUser) signalRService.removeFriend(store.selectedProfileUser.id); store.closeProfileOnly(); }} className="w-full bg-surface text-danger py-3.5 rounded-xl font-bold hover:bg-[#2B2D31] transition-colors">Удалить из друзей</button>
                 </div>
               )}
@@ -1825,6 +1846,14 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
     </div>
     <div className="p-4 pt-0 text-center">
       <span className="text-xs text-textMuted">{store.achievementsData?.unlockedIds?.length ?? 0} / {ACHIEVEMENTS.length} получено</span>
+    </div>
+  </div>
+)}
+
+{offlineToast && (
+  <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[99999] animate-fade-in">
+    <div className="bg-panelBg border border-danger/30 rounded-2xl px-5 py-3 shadow-2xl">
+      <p className="text-danger font-semibold">{offlineToast}</p>
     </div>
   </div>
 )}
