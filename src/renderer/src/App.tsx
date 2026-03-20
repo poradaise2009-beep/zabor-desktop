@@ -183,6 +183,7 @@ export default function App() {
   const [isCopied, setIsCopied] = useState(false);
 
   const [isIdle, setIsIdle] = useState(false);
+const [joke, setJoke] = useState<string>('');
   const idleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const settingsSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const settingsLoadedRef = useRef(false);
@@ -312,6 +313,8 @@ useEffect(() => {
     if (connected) {
       setShowErrorText(false);
 
+  
+
       // 4. Автологин
       const loginSuccess = await signalRService.login(
         cachedCredentials.login,
@@ -326,11 +329,19 @@ useEffect(() => {
 
         setIsAuth(true);
 
-        const serverSettings = await signalRService.loadAudioSettings();
-        if (serverSettings) applySettings(serverSettings);
+const serverSettings = await signalRService.loadAudioSettings();
+if (serverSettings) applySettings(serverSettings);
 
-        saveLocalCache();
-        setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
+try {
+  const jokeText = await signalRService.getJokeOfTheDay();
+  setJoke(jokeText || 'Сегодня сервер шутит молча.');
+} catch {
+  setJoke('Сегодня сервер шутит молча.');
+}
+
+saveLocalCache();
+setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
+        
       } else {
         // Пароль изменён или аккаунт удалён
         await window.windowControls.clearSession();
@@ -486,6 +497,25 @@ const applySettings = useCallback((s: {
   }, 500);
 }, [inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression, isAuth]);
 
+useEffect(() => {
+  if (!isAuth || !serverConnected || joke) return;
+
+  let cancelled = false;
+
+  signalRService.getJokeOfTheDay().then(j => {
+    if (!cancelled) {
+      setJoke(j || 'Сегодня сервер шутит молча.');
+    }
+  }).catch(() => {
+    if (!cancelled) {
+      setJoke('Сегодня сервер шутит молча.');
+    }
+  });
+
+  return () => {
+    cancelled = true;
+  };
+}, [isAuth, serverConnected, joke]);
   const closeAndResetModals = useCallback(() => {
     setNewChannelName(''); setEditChannelName(''); setEditChannelId(null);
     setFriendName(''); setNewPassword(''); setError(''); setPrivacyError('');
@@ -549,13 +579,21 @@ const applySettings = useCallback((s: {
         const success = await signalRService.login(login, password);
         if (success) {
           setIsAuth(true);
-          credentialsRef.current = { login, password };
+credentialsRef.current = { login, password };
 
-          const serverSettings = await signalRService.loadAudioSettings();
-          if (serverSettings) applySettings(serverSettings);
+const serverSettings = await signalRService.loadAudioSettings();
+if (serverSettings) applySettings(serverSettings);
 
-          saveLocalCache();
-          setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
+try {
+  const jokeText = await signalRService.getJokeOfTheDay();
+  setJoke(jokeText || 'Сегодня сервер шутит молча.');
+} catch {
+  setJoke('Сегодня сервер шутит молча.');
+}
+
+saveLocalCache();
+setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
+          
         } else {
           setError("Неверный пароль!");
         }
@@ -571,9 +609,18 @@ const applySettings = useCallback((s: {
       );
       if (success) {
         setIsAuth(true);
-        credentialsRef.current = { login, password };
-        saveLocalCache();
-        setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
+credentialsRef.current = { login, password };
+
+try {
+  const jokeText = await signalRService.getJokeOfTheDay();
+  setJoke(jokeText || 'Сегодня сервер шутит молча.');
+} catch {
+  setJoke('Сегодня сервер шутит молча.');
+}
+
+saveLocalCache();
+setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
+        
       } else {
         setError("Ошибка регистрации");
       }
@@ -609,6 +656,8 @@ const handleLogout = useCallback(async () => {
   store.setCallStatus('idle');
   store.setCurrentCallUser(null);
   store.setFullChannelState({});
+
+  setJoke('');
 
   setIsAuth(false);
   setAuthStep('login');
@@ -1277,11 +1326,21 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
             )}
 
             {!store.currentCallUser && !store.currentChannelId && (
-              <div className="flex-1 flex flex-col items-center justify-center opacity-40">
-                <h1 className="text-[100px] font-black text-surface tracking-tighter">ZABOR</h1>
-                <p className="font-semibold mt-4 text-xl">Выберите канал или друга</p>
-              </div>
-            )}
+  <div className="flex-1 flex flex-col items-center justify-center px-16">
+    <div className="max-w-lg text-center">
+      {joke ? (
+        <>
+  <p className="text-xs text-white/20 mb-3 font-semibold tracking-wider">ШУТЕЙКА:</p>
+  <p className="text-lg text-white/50 font-medium leading-relaxed whitespace-pre-line">
+    {joke}
+  </p>
+</>
+      ) : (
+        <div className="w-6 h-6 border-2 border-white/10 border-t-white/30 rounded-full animate-spin mx-auto" />
+      )}
+    </div>
+  </div>
+)}
 
             {!store.currentCallUser && store.currentChannelId && (
               <div className="absolute top-0 left-0 right-0 bottom-[120px] p-6 flex items-center justify-center overflow-hidden">
@@ -1599,9 +1658,9 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
     <div>
       <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">ГРОМКОСТЬ — {volumeUserValue}%</label>
       <Md3Slider min={0} max={200} step={5} value={volumeUserValue} onChange={v => {
-        setVolumeUserValue(v);
-        if (volumeUser) webrtc.setUserVolume(volumeUser.id, v / 100);
-      }} />
+  setVolumeUserValue(v);
+  if (volumeUser) webrtc.setUserVolume(volumeUser.id, v);
+}} />
     </div>
     <button onClick={closeAndResetModals} className="w-full mt-6 bg-surface text-white py-3 rounded-xl font-bold hover:bg-surfaceHover transition-colors">Закрыть</button>
   </div>
