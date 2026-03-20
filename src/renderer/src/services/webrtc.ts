@@ -1,442 +1,684 @@
-import { signalRService } from './signalr';
-import { useAppStore } from '../store/useAppStore';
+import { signalRService } from './signalr'
+import { useAppStore } from '../store/useAppStore'
+
+type SpeakingEntry = {
+  timer: NodeJS.Timeout
+  stream: MediaStream
+}
 
 export class WebRTCManager {
-  private localStream: MediaStream | null = null;
-  private rawStream: MediaStream | null = null;
-  private peerConnections: Map<string, RTCPeerConnection> = new Map();
-  private audioElements: Map<string, HTMLAudioElement> = new Map();
+  private localStream: MediaStream | null = null
+  private rawStream: MediaStream | null = null
 
-  private currentDeviceId: string = 'default';
-  private currentOutputDeviceId: string = 'default';
-  private noiseSuppression: boolean = true;
-  private _inputVolume: number = 100;
-  private _outputVolume: number = 100;
-  private _isDeafened: boolean = false;
+  private peerConnections: Map<string, RTCPeerConnection> = new Map()
+  private audioElements: Map<string, HTMLAudioElement> = new Map()
 
-  private processedContext: AudioContext | null = null;
-  private inputGainNode: GainNode | null = null;
+  private currentDeviceId = 'default'
+  private currentOutputDeviceId = 'default'
+  private noiseSuppression = true
 
-  private vadContext: AudioContext | null = null;
-  private speakingIntervals: Map<string, { timer: NodeJS.Timeout; stream: MediaStream }> = new Map();
+  private inputVolume = 100
+  private outputVolume = 100
+  private isDeafened = false
 
-  private config: RTCConfiguration = {
+  private processedContext: AudioContext | null = null
+  private processedSource: MediaStreamAudioSourceNode | null = null
+  private inputGainNode: GainNode | null = null
+  private rnnoiseDestroy: (() => void) | null = null
+
+  private vadContext: AudioContext | null = null
+  private speakingIntervals: Map<string, SpeakingEntry> = new Map()
+
+  private readonly config: RTCConfiguration = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
       { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
       { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-      { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-    ]
-  };
-
-  // ==========================================
-  // OPUS SDP MUNGING
-  // ==========================================
-  private mungeOpusSDP(sdp: string): string {
-    const lines = sdp.split('\r\n');
-    let opusPT: string | null = null;
-
-    for (const line of lines) {
-      const m = line.match(/^a=rtpmap:(\d+)\s+opus\/48000/i);
-      if (m) { opusPT = m[1]; break; }
-    }
-    if (!opusPT) return sdp;
-
-    const result: string[] = [];
-    let fmtpReplaced = false;
-
-    for (const line of lines) {
-      let out = line;
-
-      if (line.startsWith('m=audio')) {
-        const parts = line.split(' ');
-        const header = parts.slice(0, 3);
-        const payloads = parts.slice(3).filter(p => p !== opusPT);
-        out = [...header, opusPT, ...payloads].join(' ');
-      }
-
-      if (line.startsWith(`a=fmtp:${opusPT}`)) {
-        out = `a=fmtp:${opusPT} minptime=10;useinbandfec=1;usedtx=1;maxaveragebitrate=128000;sprop-maxcapturerate=48000;stereo=0;cbr=0`;
-        fmtpReplaced = true;
-      }
-
-      result.push(out);
-    }
-
-    if (!fmtpReplaced) {
-      const idx = result.findIndex(l => l.startsWith(`a=rtpmap:${opusPT}`));
-      if (idx >= 0) {
-        result.splice(idx + 1, 0,
-          `a=fmtp:${opusPT} minptime=10;useinbandfec=1;usedtx=1;maxaveragebitrate=128000;sprop-maxcapturerate=48000;stereo=0;cbr=0`
-        );
-      }
-    }
-
-    return result.join('\r\n');
+      { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+    ],
+    bundlePolicy: 'balanced',
+    rtcpMuxPolicy: 'require',
+    iceCandidatePoolSize: 4
   }
 
   // ==========================================
-  // АУДИО ПАЙПЛАЙН (без RNNoise — браузерный NS)
+  // OPUS / SDP
+  // ==========================================
+  private mungeOpusSDP(sdp: string): string {
+    const lines = sdp.split('\r\n')
+    let opusPayloadType: string | null = null
+
+    for (const line of lines) {
+      const match = line.match(/^a=rtpmap:(\d+)\s+opus\/48000\/?(\d+)?/i)
+      if (match) {
+        opusPayloadType = match[1]
+        break
+      }
+    }
+
+    if (!opusPayloadType) return sdp
+
+    const result: string[] = []
+    let fmtpUpdated = false
+    let ptimeExists = false
+
+    for (const line of lines) {
+      let updatedLine = line
+
+      if (line.startsWith('m=audio')) {
+        const parts = line.split(' ')
+        const header = parts.slice(0, 3)
+        const payloads = parts.slice(3).filter(p => p !== opusPayloadType)
+        updatedLine = [...header, opusPayloadType, ...payloads].join(' ')
+      }
+
+      if (line.startsWith(`a=fmtp:${opusPayloadType}`)) {
+        updatedLine =
+          `a=fmtp:${opusPayloadType} ` +
+          `minptime=10;useinbandfec=1;usedtx=1;maxaveragebitrate=96000;` +
+          `sprop-maxcapturerate=48000;stereo=0;cbr=0`
+        fmtpUpdated = true
+      }
+
+      if (line.startsWith('a=ptime:')) {
+        updatedLine = 'a=ptime:20'
+        ptimeExists = true
+      }
+
+      result.push(updatedLine)
+    }
+
+    if (!fmtpUpdated) {
+      const rtpmapIndex = result.findIndex(line => line.startsWith(`a=rtpmap:${opusPayloadType}`))
+      if (rtpmapIndex >= 0) {
+        result.splice(
+          rtpmapIndex + 1,
+          0,
+          `a=fmtp:${opusPayloadType} minptime=10;useinbandfec=1;usedtx=1;maxaveragebitrate=96000;sprop-maxcapturerate=48000;stereo=0;cbr=0`
+        )
+      }
+    }
+
+    if (!ptimeExists) {
+      const audioIndex = result.findIndex(line => line.startsWith('m=audio'))
+      if (audioIndex >= 0) {
+        result.splice(audioIndex + 1, 0, 'a=ptime:20')
+      }
+    }
+
+    return result.join('\r\n')
+  }
+
+  private async optimizeSender(sender: RTCRtpSender): Promise<void> {
+    try {
+      const parameters = sender.getParameters()
+      if (!parameters.encodings || parameters.encodings.length === 0) {
+        parameters.encodings = [{}]
+      }
+
+      parameters.encodings[0].maxBitrate = 96000
+      parameters.encodings[0].priority = 'high'
+      parameters.degradationPreference = 'maintain-framerate'
+
+      await sender.setParameters(parameters)
+    } catch {
+      // Браузер может не поддерживать часть параметров
+    }
+  }
+
+  // ==========================================
+  // AUDIO PROCESSING
   // ==========================================
   private async createProcessedStream(rawStream: MediaStream): Promise<MediaStream> {
-    this.cleanupProcessedStream();
+    this.cleanupProcessedStream()
 
-    const ctx = new AudioContext({ sampleRate: 48000 });
-    this.processedContext = ctx;
+    const ctx = new AudioContext({
+      sampleRate: 48000,
+      latencyHint: 'interactive'
+    })
+    this.processedContext = ctx
 
-    const source = ctx.createMediaStreamSource(rawStream);
+    const destination = ctx.createMediaStreamDestination()
+    const inputGain = ctx.createGain()
+    inputGain.gain.value = Math.max(0, Math.min(2, this.inputVolume / 100))
+    this.inputGainNode = inputGain
 
-    const inputGain = ctx.createGain();
-    inputGain.gain.value = this._inputVolume / 100;
-    this.inputGainNode = inputGain;
+    const highPass = ctx.createBiquadFilter()
+    highPass.type = 'highpass'
+    highPass.frequency.value = 80
+    highPass.Q.value = 0.707
 
-    const highPass = ctx.createBiquadFilter();
-    highPass.type = 'highpass';
-    highPass.frequency.value = 80;
-    highPass.Q.value = 0.7;
+    // Лёгкий presence boost для читаемости речи
+    const presence = ctx.createBiquadFilter()
+    presence.type = 'peaking'
+    presence.frequency.value = 2500
+    presence.Q.value = 0.8
+    presence.gain.value = 1.5
 
-    const lowPass = ctx.createBiquadFilter();
-    lowPass.type = 'lowpass';
-    lowPass.frequency.value = 7500;
-    lowPass.Q.value = 0.5;
+    // Очень мягкий low-pass, чтобы убрать цифровой мусор, не урезая речь
+    const lowPass = ctx.createBiquadFilter()
+    lowPass.type = 'lowpass'
+    lowPass.frequency.value = 14000
+    lowPass.Q.value = 0.707
 
-    const compressor = ctx.createDynamicsCompressor();
-    compressor.threshold.value = -24;
-    compressor.knee.value = 12;
-    compressor.ratio.value = 3;
-    compressor.attack.value = 0.005;
-    compressor.release.value = 0.15;
+    const compressor = ctx.createDynamicsCompressor()
+    compressor.threshold.value = -20
+    compressor.knee.value = 18
+    compressor.ratio.value = 2.5
+    compressor.attack.value = 0.002
+    compressor.release.value = 0.12
 
-    const dest = ctx.createMediaStreamDestination();
+    // Если включено RNNoise — используем его как основной шумодав
+    if (this.noiseSuppression) {
+      try {
+        const { createRNNoiseProcessor } = await import('./rnnoise-processor')
+        const result = await createRNNoiseProcessor(ctx, rawStream)
+        this.rnnoiseDestroy = result.destroy
 
-    source.connect(highPass);
-    highPass.connect(lowPass);
-    lowPass.connect(compressor);
-    compressor.connect(inputGain);
-    inputGain.connect(dest);
+        const source = ctx.createMediaStreamSource(result.stream)
+        this.processedSource = source
 
-    return dest.stream;
+        source.connect(highPass)
+        highPass.connect(presence)
+        presence.connect(lowPass)
+        lowPass.connect(compressor)
+        compressor.connect(inputGain)
+        inputGain.connect(destination)
+
+        return destination.stream
+      } catch {
+        // fallback ниже
+      }
+    }
+
+    const source = ctx.createMediaStreamSource(rawStream)
+    this.processedSource = source
+
+    source.connect(highPass)
+    highPass.connect(presence)
+    presence.connect(lowPass)
+    lowPass.connect(compressor)
+    compressor.connect(inputGain)
+    inputGain.connect(destination)
+
+    return destination.stream
   }
 
   private cleanupProcessedStream() {
-    if (this.processedContext && this.processedContext.state !== 'closed') {
-      this.processedContext.close().catch(() => {});
+    if (this.rnnoiseDestroy) {
+      this.rnnoiseDestroy()
+      this.rnnoiseDestroy = null
     }
-    this.processedContext = null;
-    this.inputGainNode = null;
+
+    if (this.processedContext && this.processedContext.state !== 'closed') {
+      this.processedContext.close().catch(() => {})
+    }
+
+    this.processedContext = null
+    this.processedSource = null
+    this.inputGainNode = null
   }
 
   // ==========================================
   // VOLUME / DEAFEN
   // ==========================================
   public setInputVolume(volume: number) {
-    this._inputVolume = volume;
-    if (this.inputGainNode) this.inputGainNode.gain.value = volume / 100;
+    this.inputVolume = volume
+    if (this.inputGainNode) {
+      this.inputGainNode.gain.value = Math.max(0, Math.min(2, volume / 100))
+    }
   }
 
   public setOutputVolume(volume: number) {
-    this._outputVolume = volume;
-    this.audioElements.forEach((_, userId) => this.updateRemoteVolume(userId));
+    this.outputVolume = volume
+    this.audioElements.forEach((_, userId) => this.updateRemoteVolume(userId))
   }
 
   public setDeafened(isDeafened: boolean) {
-    this._isDeafened = isDeafened;
-    this.audioElements.forEach(audio => { audio.muted = isDeafened; });
+    this.isDeafened = isDeafened
+    this.audioElements.forEach(audio => {
+      audio.muted = isDeafened
+    })
   }
 
   private updateRemoteVolume(userId: string) {
-    const audio = this.audioElements.get(userId);
-    if (!audio) return;
-    const userVol = useAppStore.getState().userVolumes[userId] ?? 100;
-    audio.volume = Math.max(0, Math.min(1, (this._outputVolume / 100) * (userVol / 100)));
+    const audio = this.audioElements.get(userId)
+    if (!audio) return
+
+    const userVolume = useAppStore.getState().userVolumes[userId] ?? 100
+    const finalVolume = (this.outputVolume / 100) * (userVolume / 100)
+
+    audio.volume = Math.max(0, Math.min(1, finalVolume))
+    audio.muted = this.isDeafened
   }
 
   // ==========================================
   // VAD
   // ==========================================
   private setupVAD(stream: MediaStream, userId: string, isLocal: boolean) {
-    this.clearVAD(userId);
-    try {
-      if (!this.vadContext || this.vadContext.state === 'closed') {
-        this.vadContext = new AudioContext();
-      }
-      if (this.vadContext.state === 'suspended') this.vadContext.resume();
+  this.clearVAD(userId)
 
-      const cloned = new MediaStream(stream.getAudioTracks());
-      const source = this.vadContext.createMediaStreamSource(cloned);
+  try {
+    if (!this.vadContext || this.vadContext.state === 'closed') {
+      this.vadContext = new AudioContext({ latencyHint: 'interactive' })
+    }
 
-      const lowCut = this.vadContext.createBiquadFilter();
-      lowCut.type = 'highpass';
-      lowCut.frequency.value = 85;
-      lowCut.Q.value = 0.5;
+    if (this.vadContext.state === 'suspended') {
+      this.vadContext.resume().catch(() => {})
+    }
 
-      const highCut = this.vadContext.createBiquadFilter();
-      highCut.type = 'lowpass';
-      highCut.frequency.value = 1100;
-      highCut.Q.value = 0.5;
+    const cloned = new MediaStream(stream.getAudioTracks())
+const source = this.vadContext.createMediaStreamSource(cloned)
 
-      const analyzer = this.vadContext.createAnalyser();
-      analyzer.fftSize = 512;
-      analyzer.smoothingTimeConstant = 0.4;
+const highPass = this.vadContext.createBiquadFilter()
+highPass.type = 'highpass'
+highPass.frequency.value = 90
+highPass.Q.value = 0.8
 
-      source.connect(lowCut);
-      lowCut.connect(highCut);
-      highCut.connect(analyzer);
+const lowPass = this.vadContext.createBiquadFilter()
+lowPass.type = 'lowpass'
+lowPass.frequency.value = 4500
+lowPass.Q.value = 0.8
 
-      const data = new Uint8Array(analyzer.frequencyBinCount);
-      const threshold = isLocal ? 40 : 10;
-      let lastSpoke = 0;
-      let wasSpeaking = false;
+const analyser = this.vadContext.createAnalyser()
+analyser.fftSize = 512
+analyser.smoothingTimeConstant = 0.1
 
-      const check = () => {
-        const store = useAppStore.getState();
-        if (isLocal && store.currentUser?.isMuted) {
-          if (wasSpeaking) {
-            wasSpeaking = false;
-            store.setSpeakingStatus(userId, false);
-            signalRService.setSpeakingState(false);
-          }
-          return;
-        }
+source.connect(highPass)
+highPass.connect(lowPass)
+lowPass.connect(analyser)
 
-        analyzer.getByteFrequencyData(data);
-        let sumSq = 0;
-        for (let i = 0; i < data.length; i++) sumSq += data[i] * data[i];
-        const rms = Math.sqrt(sumSq / data.length);
+const timeData = new Uint8Array(analyser.fftSize)
 
-        if (rms > threshold) lastSpoke = Date.now();
-        const speaking = (Date.now() - lastSpoke) < 300;
+let lastVoiceTime = 0
+let wasSpeaking = false
+let consecutiveVoiceFrames = 0
 
-        if (speaking !== wasSpeaking) {
-          wasSpeaking = speaking;
-          store.setSpeakingStatus(userId, speaking);
-          if (isLocal) signalRService.setSpeakingState(speaking);
-        }
-      };
+const threshold = 8
 
-      const timer = setInterval(check, 20);
-      this.speakingIntervals.set(userId, { timer, stream: cloned });
-    } catch {}
+const check = () => {
+  const store = useAppStore.getState()
+
+  if (isLocal && store.currentUser?.isMuted) {
+    if (wasSpeaking) {
+      wasSpeaking = false
+      consecutiveVoiceFrames = 0
+      store.setSpeakingStatus(userId, false)
+      signalRService.setSpeakingState(false)
+    }
+    return
   }
 
-  private clearVAD(userId: string) {
-    const entry = this.speakingIntervals.get(userId);
-    if (entry) {
-      clearInterval(entry.timer);
-      entry.stream.getTracks().forEach(t => { t.stop(); t.enabled = false; });
-      this.speakingIntervals.delete(userId);
+  analyser.getByteTimeDomainData(timeData)
+
+  let peak = 0
+  let sum = 0
+
+  for (let i = 0; i < timeData.length; i++) {
+    const sample = Math.abs(timeData[i] - 128)
+    if (sample > peak) peak = sample
+    sum += sample
+  }
+
+  const avg = sum / timeData.length
+
+  // Мягче:
+  // - peak multiplier снижен
+  // - avg threshold оставлен 8
+  const voiceFrame = avg > threshold || peak > threshold * 2.0
+
+  if (voiceFrame) {
+    consecutiveVoiceFrames++
+  } else {
+    consecutiveVoiceFrames = 0
+  }
+
+  // Было 2 подряд фрейма, теперь 1 — реакция почти мгновенная
+  if (consecutiveVoiceFrames >= 1) {
+    lastVoiceTime = Date.now()
+  }
+
+  const isSpeakingNow = (Date.now() - lastVoiceTime) < 350
+
+  if (isSpeakingNow !== wasSpeaking) {
+    wasSpeaking = isSpeakingNow
+    store.setSpeakingStatus(userId, isSpeakingNow)
+
+    if (isLocal) {
+      signalRService.setSpeakingState(isSpeakingNow)
     }
-    useAppStore.getState().setSpeakingStatus(userId, false);
+  }
+}
+
+const timer = setInterval(check, 20)
+this.speakingIntervals.set(userId, { timer, stream: cloned })
+  } catch (error) {
+    console.error('[VAD] setup failed', error)
+  }
+}
+
+  private clearVAD(userId: string) {
+    const entry = this.speakingIntervals.get(userId)
+    if (entry) {
+      clearInterval(entry.timer)
+      entry.stream.getTracks().forEach(track => {
+        track.stop()
+        track.enabled = false
+      })
+      this.speakingIntervals.delete(userId)
+    }
+
+    useAppStore.getState().setSpeakingStatus(userId, false)
   }
 
   // ==========================================
-  // УСТРОЙСТВА
+  // DEVICES
   // ==========================================
   public async getAudioDevices() {
     try {
-      await navigator.mediaDevices.getUserMedia({ audio: true });
-      const devices = await navigator.mediaDevices.enumerateDevices();
+      await navigator.mediaDevices.getUserMedia({ audio: true })
+      const devices = await navigator.mediaDevices.enumerateDevices()
       return {
-        inputs: devices.filter(d => d.kind === 'audioinput'),
-        outputs: devices.filter(d => d.kind === 'audiooutput')
-      };
-    } catch { return { inputs: [], outputs: [] }; }
+        inputs: devices.filter(device => device.kind === 'audioinput'),
+        outputs: devices.filter(device => device.kind === 'audiooutput')
+      }
+    } catch {
+      return { inputs: [], outputs: [] }
+    }
   }
 
-  public setInputDevice(deviceId: string) { this.currentDeviceId = deviceId; }
+  public setInputDevice(deviceId: string) {
+    this.currentDeviceId = deviceId
+  }
 
   public setOutputDevice(deviceId: string) {
-    this.currentOutputDeviceId = deviceId;
+    this.currentOutputDeviceId = deviceId
     this.audioElements.forEach(audio => {
-      if (typeof (audio as any).setSinkId === 'function')
-        (audio as any).setSinkId(deviceId).catch(() => {});
-    });
+      if (typeof (audio as any).setSinkId === 'function') {
+        (audio as any).setSinkId(deviceId).catch(() => {})
+      }
+    })
   }
 
   // ==========================================
-  // ЛОКАЛЬНЫЙ СТРИМ
+  // LOCAL STREAM
   // ==========================================
   public async startLocalStream(deviceId?: string, useNoiseSuppression?: boolean): Promise<boolean> {
-    if (deviceId !== undefined) this.currentDeviceId = deviceId;
-    if (useNoiseSuppression !== undefined) this.noiseSuppression = useNoiseSuppression;
+    if (deviceId !== undefined) this.currentDeviceId = deviceId
+    if (useNoiseSuppression !== undefined) this.noiseSuppression = useNoiseSuppression
 
     try {
-      if (this.rawStream) { this.rawStream.getTracks().forEach(t => t.stop()); this.rawStream = null; }
-      if (this.localStream) { this.localStream.getTracks().forEach(t => t.stop()); this.localStream = null; }
-      this.cleanupProcessedStream();
+      if (this.rawStream) {
+        this.rawStream.getTracks().forEach(track => track.stop())
+        this.rawStream = null
+      }
+
+      if (this.localStream) {
+        this.localStream.getTracks().forEach(track => track.stop())
+        this.localStream = null
+      }
+
+      this.cleanupProcessedStream()
 
       const rawStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           deviceId: this.currentDeviceId !== 'default' ? { exact: this.currentDeviceId } : undefined,
           sampleRate: 48000,
           channelCount: 1,
+          sampleSize: 16,
           echoCancellation: true,
           autoGainControl: true,
-          noiseSuppression: this.noiseSuppression,
-          sampleSize: 16
+          noiseSuppression: false
         },
         video: false
-      });
+      })
 
-      this.rawStream = rawStream;
-      this.localStream = await this.createProcessedStream(rawStream);
+      this.rawStream = rawStream
 
-      const me = useAppStore.getState().currentUser;
-      if (me) this.setupVAD(this.rawStream!, me.id, true);
+      const rawTrack = rawStream.getAudioTracks()[0]
+      if (rawTrack) {
+        rawTrack.contentHint = 'speech'
+      }
 
-      return true;
-    } catch { return false; }
+      this.localStream = await this.createProcessedStream(rawStream)
+
+      const localTrack = this.localStream.getAudioTracks()[0]
+      if (localTrack) {
+        localTrack.contentHint = 'speech'
+      }
+
+      const me = useAppStore.getState().currentUser
+      if (me && this.rawStream) {
+        this.setupVAD(this.rawStream, me.id, true)
+      }
+
+      return true
+    } catch {
+      return false
+    }
   }
 
   public async updateSettings(deviceId: string, useNoiseSuppression: boolean) {
-    this.currentDeviceId = deviceId;
-    this.noiseSuppression = useNoiseSuppression;
+    this.currentDeviceId = deviceId
+    this.noiseSuppression = useNoiseSuppression
 
     if (this.localStream) {
-      await this.startLocalStream(deviceId, useNoiseSuppression);
-      this.peerConnections.forEach(pc => {
-        const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
-        if (sender && this.localStream) sender.replaceTrack(this.localStream.getAudioTracks()[0]);
-      });
+      await this.startLocalStream(deviceId, useNoiseSuppression)
+
+      for (const pc of this.peerConnections.values()) {
+        const sender = pc.getSenders().find(s => s.track?.kind === 'audio')
+        const newTrack = this.localStream?.getAudioTracks()[0]
+        if (sender && newTrack) {
+          await sender.replaceTrack(newTrack).catch(() => {})
+          await this.optimizeSender(sender)
+        }
+      }
     }
   }
 
   public stopLocalStream() {
-    const me = useAppStore.getState().currentUser;
-    if (me) this.clearVAD(me.id);
+    const me = useAppStore.getState().currentUser
+    if (me) {
+      this.clearVAD(me.id)
+    }
 
-    if (this.localStream) { this.localStream.getTracks().forEach(t => t.stop()); this.localStream = null; }
-    if (this.rawStream) { this.rawStream.getTracks().forEach(t => t.stop()); this.rawStream = null; }
-    this.cleanupProcessedStream();
-    this.leaveAll();
+    if (this.localStream) {
+      this.localStream.getTracks().forEach(track => track.stop())
+      this.localStream = null
+    }
+
+    if (this.rawStream) {
+      this.rawStream.getTracks().forEach(track => track.stop())
+      this.rawStream = null
+    }
+
+    this.cleanupProcessedStream()
+    this.leaveAll()
   }
 
   public toggleMute(isMuted: boolean) {
-    if (this.localStream) this.localStream.getAudioTracks().forEach(t => { t.enabled = !isMuted; });
+    if (this.localStream) {
+      this.localStream.getAudioTracks().forEach(track => {
+        track.enabled = !isMuted
+      })
+    }
   }
 
   public setUserVolume(userId: string, volume: number) {
-    useAppStore.getState().setUserVolume(userId, volume);
-    this.updateRemoteVolume(userId);
+    const normalized = Math.max(0, Math.min(200, volume))
+    useAppStore.getState().setUserVolume(userId, normalized)
+    this.updateRemoteVolume(userId)
   }
 
   // ==========================================
   // PEER CONNECTIONS
   // ==========================================
   private createAudioElement(userId: string): HTMLAudioElement {
-    let audio = this.audioElements.get(userId);
+    let audio = this.audioElements.get(userId)
     if (!audio) {
-      audio = new Audio();
-      audio.autoplay = true;
-      if (this.currentOutputDeviceId !== 'default' && typeof (audio as any).setSinkId === 'function')
-        (audio as any).setSinkId(this.currentOutputDeviceId).catch(() => {});
-      audio.muted = this._isDeafened;
-      this.audioElements.set(userId, audio);
+      audio = new Audio()
+      audio.autoplay = true
+
+      if (this.currentOutputDeviceId !== 'default' && typeof (audio as any).setSinkId === 'function') {
+        (audio as any).setSinkId(this.currentOutputDeviceId).catch(() => {})
+      }
+
+      this.audioElements.set(userId, audio)
     }
-    this.updateRemoteVolume(userId);
-    return audio;
+
+    this.updateRemoteVolume(userId)
+    return audio
   }
 
   private setupPeerHandlers(pc: RTCPeerConnection, userId: string) {
     pc.ontrack = (event) => {
-      const remoteStream = event.streams[0];
-      const audio = this.createAudioElement(userId);
-      audio.srcObject = remoteStream;
+      const remoteStream = event.streams[0]
+      const audio = this.createAudioElement(userId)
+      audio.srcObject = remoteStream
 
-      // VAD для удалённого пользователя — чтобы у нас загоралась его обводка
-      this.setupVAD(remoteStream, userId, false);
-    };
+      // VAD для удалённого пользователя
+      this.setupVAD(remoteStream, userId, false)
+    }
 
     pc.onicecandidate = (event) => {
-      if (event.candidate) signalRService.sendIceCandidate(userId, JSON.stringify(event.candidate));
-    };
+      if (event.candidate) {
+        signalRService.sendIceCandidate(userId, JSON.stringify(event.candidate))
+      }
+    }
 
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected' || pc.connectionState === 'closed') {
-        this.disconnectFromPeer(userId);
+      if (
+        pc.connectionState === 'failed' ||
+        pc.connectionState === 'disconnected' ||
+        pc.connectionState === 'closed'
+      ) {
+        this.disconnectFromPeer(userId)
       }
-    };
+    }
   }
 
   public async connectToPeer(userId: string) {
-    if (this.peerConnections.has(userId)) this.disconnectFromPeer(userId);
+    if (this.peerConnections.has(userId)) {
+      this.disconnectFromPeer(userId)
+    }
 
-    const pc = new RTCPeerConnection(this.config);
-    this.peerConnections.set(userId, pc);
+    const pc = new RTCPeerConnection(this.config)
+    this.peerConnections.set(userId, pc)
 
-    if (this.localStream) this.localStream.getTracks().forEach(t => pc.addTrack(t, this.localStream!));
+    if (this.localStream) {
+      this.localStream.getTracks().forEach(track => {
+        const sender = pc.addTrack(track, this.localStream!)
+        this.optimizeSender(sender).catch(() => {})
+      })
+    }
 
-    this.setupPeerHandlers(pc, userId);
+    this.setupPeerHandlers(pc, userId)
 
     try {
-      const offer = await pc.createOffer();
-      const munged = new RTCSessionDescription({ type: 'offer', sdp: this.mungeOpusSDP(offer.sdp!) });
-      await pc.setLocalDescription(munged);
-      signalRService.sendWebRTCOffer(userId, JSON.stringify(pc.localDescription));
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true
+      })
+
+      const mungedSdp = this.mungeOpusSDP(offer.sdp ?? '')
+      const localDescription = new RTCSessionDescription({
+        type: 'offer',
+        sdp: mungedSdp
+      })
+
+      await pc.setLocalDescription(localDescription)
+      signalRService.sendWebRTCOffer(userId, JSON.stringify(pc.localDescription))
     } catch {
-      this.disconnectFromPeer(userId);
+      this.disconnectFromPeer(userId)
     }
   }
 
   public async handleOffer(senderId: string, offerStr: string) {
-    if (this.peerConnections.has(senderId)) this.disconnectFromPeer(senderId);
+    const store = useAppStore.getState()
+    const inChannel = !!(store.currentChannelId && store.voiceUsers.some(user => user.id === senderId))
+    const inCall = store.currentCallUser?.id === senderId
 
-    const pc = new RTCPeerConnection(this.config);
-    this.peerConnections.set(senderId, pc);
+    if (!inChannel && !inCall) return
 
-    if (this.localStream) this.localStream.getTracks().forEach(t => pc.addTrack(t, this.localStream!));
+    if (this.peerConnections.has(senderId)) {
+      this.disconnectFromPeer(senderId)
+    }
 
-    this.setupPeerHandlers(pc, senderId);
+    const pc = new RTCPeerConnection(this.config)
+    this.peerConnections.set(senderId, pc)
+
+    if (this.localStream) {
+      this.localStream.getTracks().forEach(track => {
+        const sender = pc.addTrack(track, this.localStream!)
+        this.optimizeSender(sender).catch(() => {})
+      })
+    }
+
+    this.setupPeerHandlers(pc, senderId)
 
     try {
-      const offer = JSON.parse(offerStr);
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const offer = JSON.parse(offerStr)
+      await pc.setRemoteDescription(new RTCSessionDescription(offer))
 
-      const answer = await pc.createAnswer();
-      const munged = new RTCSessionDescription({ type: 'answer', sdp: this.mungeOpusSDP(answer.sdp!) });
-      await pc.setLocalDescription(munged);
-      signalRService.sendWebRTCAnswer(senderId, JSON.stringify(pc.localDescription));
+      const answer = await pc.createAnswer()
+      const mungedSdp = this.mungeOpusSDP(answer.sdp ?? '')
+      const localDescription = new RTCSessionDescription({
+        type: 'answer',
+        sdp: mungedSdp
+      })
+
+      await pc.setLocalDescription(localDescription)
+      signalRService.sendWebRTCAnswer(senderId, JSON.stringify(pc.localDescription))
     } catch {
-      this.disconnectFromPeer(senderId);
+      this.disconnectFromPeer(senderId)
     }
   }
 
   public async handleAnswer(senderId: string, answerStr: string) {
-    const pc = this.peerConnections.get(senderId);
-    if (pc) {
-      try { await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(answerStr))); } catch {}
+    const pc = this.peerConnections.get(senderId)
+    if (!pc) return
+
+    try {
+      await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(answerStr)))
+    } catch {
+      // no-op
     }
   }
 
   public async handleIceCandidate(senderId: string, candidateStr: string) {
-    const pc = this.peerConnections.get(senderId);
-    if (pc) {
-      try { await pc.addIceCandidate(new RTCIceCandidate(JSON.parse(candidateStr))); } catch {}
+    const pc = this.peerConnections.get(senderId)
+    if (!pc) return
+
+    try {
+      await pc.addIceCandidate(new RTCIceCandidate(JSON.parse(candidateStr)))
+    } catch {
+      // no-op
     }
   }
 
   public disconnectFromPeer(userId: string) {
-    const pc = this.peerConnections.get(userId);
+    const pc = this.peerConnections.get(userId)
     if (pc) {
-      pc.ontrack = null;
-      pc.onicecandidate = null;
-      pc.onconnectionstatechange = null;
-      pc.close();
-      this.peerConnections.delete(userId);
+      pc.ontrack = null
+      pc.onicecandidate = null
+      pc.onconnectionstatechange = null
+      pc.close()
+      this.peerConnections.delete(userId)
     }
-    const audio = this.audioElements.get(userId);
+
+    const audio = this.audioElements.get(userId)
     if (audio) {
-      audio.pause();
-      audio.srcObject = null;
-      this.audioElements.delete(userId);
+      audio.pause()
+      audio.srcObject = null
+      this.audioElements.delete(userId)
     }
-    this.clearVAD(userId);
+
+    this.clearVAD(userId)
   }
 
   public leaveAll() {
-    this.peerConnections.forEach((_, id) => this.disconnectFromPeer(id));
+    this.peerConnections.forEach((_, userId) => this.disconnectFromPeer(userId))
   }
 }
 
-export const webrtc = new WebRTCManager();
+export const webrtc = new WebRTCManager()

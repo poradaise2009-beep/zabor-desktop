@@ -2,7 +2,8 @@ import * as signalR from '@microsoft/signalr';
 import { useAppStore, User, VoiceChannel, ChannelUpdate, UserStateUpdate, IncomingCall } from '../store/useAppStore';
 import { webrtc } from './webrtc';
 
-const SERVER_URL = "http://193.23.200.42:5000/zabor_v3";
+const SERVER_URL = "http://150.241.64.108:8080/zabor_v3";
+console.log('[SignalR] SERVER_URL =', SERVER_URL);
 
 class SignalRService {
   private connection: signalR.HubConnection | null = null;
@@ -636,7 +637,7 @@ class SignalRService {
   public async getJokeOfTheDay(): Promise<string> {
     return await this.safeInvoke<string>("GetJokeOfTheDay") ?? '';
   }
-  
+
 
   // === Data ===
   public async loadData(): Promise<void> {
@@ -770,6 +771,7 @@ class SignalRService {
     if (!res) {
       useAppStore.getState().setCallStatus('idle');
       useAppStore.getState().setCurrentCallUser(null);
+      webrtc.stopLocalStream();
     }
     return res ?? false;
   }
