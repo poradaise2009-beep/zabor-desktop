@@ -16,7 +16,6 @@ export class WebRTCManager {
 
   private processedContext: AudioContext | null = null;
   private inputGainNode: GainNode | null = null;
-  private rnnoiseDestroy: (() => void) | null = null;
 
   private vadContext: AudioContext | null = null;
   private speakingIntervals: Map<string, { timer: NodeJS.Timeout; stream: MediaStream }> = new Map();
@@ -32,7 +31,7 @@ export class WebRTCManager {
   };
 
   // ==========================================
-  // OPUS SDP MUNGING — 48kHz Fullband
+  // OPUS SDP MUNGING
   // ==========================================
   private mungeOpusSDP(sdp: string): string {
     const lines = sdp.split('\r\n');
@@ -78,13 +77,15 @@ export class WebRTCManager {
   }
 
   // ==========================================
-  // АУДИО ПАЙПЛАЙН
+  // АУДИО ПАЙПЛАЙН (без RNNoise — браузерный NS)
   // ==========================================
   private async createProcessedStream(rawStream: MediaStream): Promise<MediaStream> {
     this.cleanupProcessedStream();
 
     const ctx = new AudioContext({ sampleRate: 48000 });
     this.processedContext = ctx;
+
+    const source = ctx.createMediaStreamSource(rawStream);
 
     const inputGain = ctx.createGain();
     inputGain.gain.value = this._inputVolume / 100;
@@ -95,36 +96,19 @@ export class WebRTCManager {
     highPass.frequency.value = 80;
     highPass.Q.value = 0.7;
 
+    const lowPass = ctx.createBiquadFilter();
+    lowPass.type = 'lowpass';
+    lowPass.frequency.value = 7500;
+    lowPass.Q.value = 0.5;
+
     const compressor = ctx.createDynamicsCompressor();
-    compressor.threshold.value = -30;
-    compressor.knee.value = 20;
-    compressor.ratio.value = 4;
-    compressor.attack.value = 0.003;
+    compressor.threshold.value = -24;
+    compressor.knee.value = 12;
+    compressor.ratio.value = 3;
+    compressor.attack.value = 0.005;
     compressor.release.value = 0.15;
 
     const dest = ctx.createMediaStreamDestination();
-
-    if (this.noiseSuppression) {
-      try {
-        const { createRNNoiseProcessor } = await import('./rnnoise-processor');
-        const result = await createRNNoiseProcessor(ctx, rawStream);
-        this.rnnoiseDestroy = result.destroy;
-
-        const source = ctx.createMediaStreamSource(result.stream);
-        source.connect(highPass);
-        highPass.connect(compressor);
-        compressor.connect(inputGain);
-        inputGain.connect(dest);
-        return dest.stream;
-      } catch {}
-    }
-
-    // Fallback
-    const source = ctx.createMediaStreamSource(rawStream);
-    const lowPass = ctx.createBiquadFilter();
-    lowPass.type = 'lowpass';
-    lowPass.frequency.value = 12000;
-    lowPass.Q.value = 0.7;
 
     source.connect(highPass);
     highPass.connect(lowPass);
@@ -136,7 +120,6 @@ export class WebRTCManager {
   }
 
   private cleanupProcessedStream() {
-    if (this.rnnoiseDestroy) { this.rnnoiseDestroy(); this.rnnoiseDestroy = null; }
     if (this.processedContext && this.processedContext.state !== 'closed') {
       this.processedContext.close().catch(() => {});
     }
@@ -166,9 +149,12 @@ export class WebRTCManager {
     const audio = this.audioElements.get(userId);
     if (!audio) return;
     const userVol = useAppStore.getState().userVolumes[userId] ?? 100;
-    audio.volume = Math.min(1, (this._outputVolume / 100) * (userVol / 100));
+    audio.volume = Math.max(0, Math.min(1, (this._outputVolume / 100) * (userVol / 100)));
   }
 
+  // ==========================================
+  // VAD
+  // ==========================================
   private setupVAD(stream: MediaStream, userId: string, isLocal: boolean) {
     this.clearVAD(userId);
     try {
@@ -180,9 +166,6 @@ export class WebRTCManager {
       const cloned = new MediaStream(stream.getAudioTracks());
       const source = this.vadContext.createMediaStreamSource(cloned);
 
-      // Речевой диапазон 85-1100Hz — основные частоты голоса (F0 + первые форманты)
-      // Клики мыши/клавиатуры: широкополосный шум 2000-8000Hz
-      // Вибрация стола: <60Hz
       const lowCut = this.vadContext.createBiquadFilter();
       lowCut.type = 'highpass';
       lowCut.frequency.value = 85;
@@ -202,9 +185,7 @@ export class WebRTCManager {
       highCut.connect(analyzer);
 
       const data = new Uint8Array(analyzer.frequencyBinCount);
-
-      // Для сырого стрима пороги выше — голос чётко отличается от шума
-      const threshold = isLocal ? 43 : 15;
+      const threshold = isLocal ? 40 : 10;
       let lastSpoke = 0;
       let wasSpeaking = false;
 
@@ -220,16 +201,11 @@ export class WebRTCManager {
         }
 
         analyzer.getByteFrequencyData(data);
-
-        // Считаем RMS вместо среднего — чувствительнее к голосу, устойчивее к шуму
         let sumSq = 0;
         for (let i = 0; i < data.length; i++) sumSq += data[i] * data[i];
         const rms = Math.sqrt(sumSq / data.length);
 
-        if (rms > threshold) {
-          lastSpoke = Date.now();
-        }
-
+        if (rms > threshold) lastSpoke = Date.now();
         const speaking = (Date.now() - lastSpoke) < 300;
 
         if (speaking !== wasSpeaking) {
@@ -239,7 +215,6 @@ export class WebRTCManager {
         }
       };
 
-      // 20мс — один фрейм Opus, минимальная задержка
       const timer = setInterval(check, 20);
       this.speakingIntervals.set(userId, { timer, stream: cloned });
     } catch {}
@@ -298,7 +273,7 @@ export class WebRTCManager {
           channelCount: 1,
           echoCancellation: true,
           autoGainControl: true,
-          noiseSuppression: true,
+          noiseSuppression: this.noiseSuppression,
           sampleSize: 16
         },
         video: false
@@ -308,7 +283,7 @@ export class WebRTCManager {
       this.localStream = await this.createProcessedStream(rawStream);
 
       const me = useAppStore.getState().currentUser;
-if (me) this.setupVAD(this.rawStream!, me.id, true);
+      if (me) this.setupVAD(this.rawStream!, me.id, true);
 
       return true;
     } catch { return false; }
@@ -365,8 +340,12 @@ if (me) this.setupVAD(this.rawStream!, me.id, true);
 
   private setupPeerHandlers(pc: RTCPeerConnection, userId: string) {
     pc.ontrack = (event) => {
+      const remoteStream = event.streams[0];
       const audio = this.createAudioElement(userId);
-      audio.srcObject = event.streams[0];
+      audio.srcObject = remoteStream;
+
+      // VAD для удалённого пользователя — чтобы у нас загоралась его обводка
+      this.setupVAD(remoteStream, userId, false);
     };
 
     pc.onicecandidate = (event) => {
@@ -374,7 +353,7 @@ if (me) this.setupVAD(this.rawStream!, me.id, true);
     };
 
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected' || pc.connectionState === 'closed') {
         this.disconnectFromPeer(userId);
       }
     };
@@ -401,12 +380,6 @@ if (me) this.setupVAD(this.rawStream!, me.id, true);
   }
 
   public async handleOffer(senderId: string, offerStr: string) {
-    // Валидация: принимаем только от пользователей в том же канале/звонке
-    const store = useAppStore.getState();
-    const inChannel = store.currentChannelId && store.voiceUsers.some(u => u.id === senderId);
-    const inCall = store.currentCallUser?.id === senderId;
-    if (!inChannel && !inCall) return;
-
     if (this.peerConnections.has(senderId)) this.disconnectFromPeer(senderId);
 
     const pc = new RTCPeerConnection(this.config);

@@ -27,6 +27,7 @@ class SignalRService {
   }
 
   public getPing(): number { return this.currentPing; }
+  
 
   public onPingUpdate(callback: (ping: number) => void): () => void {
     this.pingCallbacks.add(callback);
@@ -631,6 +632,11 @@ class SignalRService {
   public async viewProfile(userId: string): Promise<void> {
     await this.safeInvoke("ViewProfile", userId);
   }
+
+  public async getJokeOfTheDay(): Promise<string> {
+    return await this.safeInvoke<string>("GetJokeOfTheDay") ?? '';
+  }
+  
 
   // === Data ===
   public async loadData(): Promise<void> {
