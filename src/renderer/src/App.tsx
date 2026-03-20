@@ -1461,12 +1461,12 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
 </div>
                 <div>
                   <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">ГРОМКОСТЬ МИКРОФОНА — {inputVolume}%</label>
-                  <Md3Slider min={0} max={200} value={inputVolume} onChange={v => { setInputVolume(v); webrtc.setInputVolume(v); }} />
+                  <Md3Slider min={0} max={200} step={5} value={inputVolume} onChange={v => { setInputVolume(v); webrtc.setInputVolume(v); }} />
                 </div>
                 <div>
-                  <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">ГРОМКОСТЬ ЗВУКА — {outputVolume}%</label>
-                  <Md3Slider min={0} max={200} value={inputVolume} onChange={v => { setInputVolume(v); webrtc.setInputVolume(v); }} />
-                </div>
+  <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">ГРОМКОСТЬ ЗВУКА — {outputVolume}%</label>
+  <Md3Slider min={0} max={200} step={5} value={outputVolume} onChange={v => { setOutputVolume(v); webrtc.setOutputVolume(v); }} />
+</div>
                 <div className="flex items-center justify-between bg-surface p-4 rounded-xl">
                   <span className="font-semibold text-white">Шумоподавление</span>
                   <Md3Switch checked={noiseSuppression} onChange={v => setNoiseSuppression(v)} />
@@ -1598,7 +1598,7 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
     <p className="text-textMuted text-sm mb-6 font-medium">{volumeUser?.displayName}</p>
     <div>
       <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">ГРОМКОСТЬ — {volumeUserValue}%</label>
-      <Md3Slider min={0} max={200} value={volumeUserValue} onChange={v => {
+      <Md3Slider min={0} max={200} step={5} value={volumeUserValue} onChange={v => {
         setVolumeUserValue(v);
         if (volumeUser) webrtc.setUserVolume(volumeUser.id, v / 100);
       }} />

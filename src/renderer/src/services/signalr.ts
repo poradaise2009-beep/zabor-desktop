@@ -98,7 +98,7 @@ class SignalRService {
           skipNegotiation: false,
           transport: signalR.HttpTransportType.WebSockets | signalR.HttpTransportType.LongPolling
         })
-        .withAutomaticReconnect([0, 2000, 5000, 10000, 30000])
+        .withAutomaticReconnect([0, 1000, 2000, 5000, 5000, 10000, 10000, 30000])
         .build();
       this.setupListeners();
       this.setupReconnectionHandlers();

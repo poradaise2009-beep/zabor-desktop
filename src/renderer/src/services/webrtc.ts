@@ -204,7 +204,7 @@ export class WebRTCManager {
       const data = new Uint8Array(analyzer.frequencyBinCount);
 
       // Для сырого стрима пороги выше — голос чётко отличается от шума
-      const threshold = isLocal ? 38 : 15;
+      const threshold = isLocal ? 43 : 15;
       let lastSpoke = 0;
       let wasSpeaking = false;
 
@@ -230,7 +230,7 @@ export class WebRTCManager {
           lastSpoke = Date.now();
         }
 
-        const speaking = (Date.now() - lastSpoke) < 350;
+        const speaking = (Date.now() - lastSpoke) < 300;
 
         if (speaking !== wasSpeaking) {
           wasSpeaking = speaking;
