@@ -1,29 +1,77 @@
 import { create } from 'zustand';
 
 export interface User {
-  id: string; username: string; displayName: string; avatarBase64: string | null; avatarColor: string;
-  isOnline: boolean; isMuted: boolean; isDeafened: boolean; isSpeaking: boolean;
-  currentChannelId?: string | null; currentCallUserId?: string | null; lastSeen?: string;
+  id: string;
+  username: string;
+  displayName: string;
+  avatarBase64: string | null;
+  avatarColor: string;
+  isOnline: boolean;
+  isMuted: boolean;
+  isDeafened: boolean;
+  isSpeaking: boolean;
+  currentChannelId?: string | null;
+  currentCallUserId?: string | null;
+  lastSeen?: string;
 }
 
-export interface VoiceChannel { id: string; name: string; ownerId: string; maxUsers?: number; createdAt?: string; }
-export interface ChannelInvite { senderId: string; senderName: string; channelId: string; channelName: string; }
-export interface UserStateUpdate { userId: string; isMuted?: boolean; isDeafened?: boolean; isSpeaking?: boolean; }
-export interface ChannelUpdate { channel: VoiceChannel; users: User[]; }
-export interface IncomingCall { callerId: string; callerName: string; callerAvatarColor: string; }
+export interface VoiceChannel {
+  id: string;
+  name: string;
+  ownerId: string;
+  maxUsers?: number;
+  createdAt?: string;
+}
+
+export interface ChannelInvite {
+  senderId: string;
+  senderName: string;
+  channelId: string;
+  channelName: string;
+}
+
+export interface UserStateUpdate {
+  userId: string;
+  isMuted?: boolean;
+  isDeafened?: boolean;
+  isSpeaking?: boolean;
+}
+
+export interface ChannelUpdate {
+  channel: VoiceChannel;
+  users: User[];
+}
+
+export interface IncomingCall {
+  callerId: string;
+  callerName: string;
+  callerAvatarColor: string;
+}
 
 interface AppState {
-  currentUser: User | null; channels: VoiceChannel[]; friends: User[]; friendRequests: User[]; channelInvites: ChannelInvite[]; voiceUsers: User[]; currentChannelId: string | null;
+  currentUser: User | null;
+  channels: VoiceChannel[];
+  friends: User[];
+  friendRequests: User[];
+  channelInvites: ChannelInvite[];
+  voiceUsers: User[];
+  currentChannelId: string | null;
+
   channelUsersMap: Record<string, User[]>;
-  channelMembers: User[]; selectedChannelForMembers: VoiceChannel | null; userToKick: User | null;
-  incomingCall: IncomingCall | null; currentCallUser: User | null; callStatus: 'idle' | 'calling' | 'connected';
+
+  channelMembers: User[];
+  selectedChannelForMembers: VoiceChannel | null;
+  userToKick: User | null;
+
+  incomingCall: IncomingCall | null;
+  currentCallUser: User | null;
+  callStatus: 'idle' | 'calling' | 'connected';
 
   isJoiningChannel: boolean;
   userVolumes: Record<string, number>;
   pendingChannelSwitch: string | null;
   setPendingChannelSwitch: (channelId: string | null) => void;
 
-  // Achievements
   achievementToast: string | null;
   achievementsData: { stats: Record<string, number>; unlockedIds: string[] } | null;
   achievementsViewUserId: string | null;
@@ -57,27 +105,42 @@ interface AppState {
   updateUserStatus: (userId: string, updates: Partial<User>) => void;
   setSpeakingStatus: (userId: string, isSpeaking: boolean) => void;
 
-  modals: {
+    modals: {
     settings: boolean; privacy: boolean; addFriend: boolean; createChannel: boolean;
     profile: boolean; inviteToChannel: boolean; channelEdit: boolean; userVolume: boolean;
     incomingCall: boolean; channelFull: boolean; channelMembers: boolean; kickConfirm: boolean;
-    channelSwitch: boolean; achievements: boolean;
+    channelSwitch: boolean; achievements: boolean; adminConsole: boolean; adminUserSettings: boolean;
   };
+
   setModal: (modalName: keyof AppState['modals'], isOpen: boolean) => void;
   closeAllModals: () => void;
   closeProfileOnly: () => void;
 
-  selectedProfileUser: User | null; setSelectedProfileUser: (user: User | null) => void;
-  selectedChannelForInvite: VoiceChannel | null; setSelectedChannelForInvite: (ch: VoiceChannel | null) => void;
+  selectedProfileUser: User | null;
+  setSelectedProfileUser: (user: User | null) => void;
+
+  selectedChannelForInvite: VoiceChannel | null;
+  setSelectedChannelForInvite: (ch: VoiceChannel | null) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
-  currentUser: null, channels: [], friends: [], friendRequests: [], channelInvites: [], voiceUsers: [],
-  currentChannelId: null, channelUsersMap: {}, channelMembers: [], selectedChannelForMembers: null,
-  userToKick: null, incomingCall: null, currentCallUser: null, callStatus: 'idle',
-  isJoiningChannel: false, userVolumes: {},
+  currentUser: null,
+  channels: [],
+  friends: [],
+  friendRequests: [],
+  channelInvites: [],
+  voiceUsers: [],
+  currentChannelId: null,
+  channelUsersMap: {},
+  channelMembers: [],
+  selectedChannelForMembers: null,
+  userToKick: null,
+  incomingCall: null,
+  currentCallUser: null,
+  callStatus: 'idle',
+  isJoiningChannel: false,
+  userVolumes: {},
 
-  // Achievements
   achievementToast: null,
   achievementsData: null,
   achievementsViewUserId: null,
@@ -100,6 +163,7 @@ export const useAppStore = create<AppState>((set) => ({
   setChannelUsers: (channelId, users) => set((state) => ({
     channelUsersMap: { ...state.channelUsersMap, [channelId]: [...users] }
   })),
+
   setFullChannelState: (stateMap) => set({ channelUsersMap: stateMap }),
 
   addUserToChannelMap: (channelId, user) => set((state) => {
@@ -124,6 +188,7 @@ export const useAppStore = create<AppState>((set) => ({
         },
       };
     }
+
     let changed = false;
     const newMap: Record<string, User[]> = {};
     for (const [key, users] of Object.entries(state.channelUsersMap)) {
@@ -140,7 +205,10 @@ export const useAppStore = create<AppState>((set) => ({
   setIncomingCall: (call) => set({ incomingCall: call }),
   setCurrentCallUser: (user) => set({ currentCallUser: user }),
   setCallStatus: (status) => set({ callStatus: status }),
-  setUserVolume: (userId, volume) => set((state) => ({ userVolumes: { ...state.userVolumes, [userId]: volume } })),
+
+  setUserVolume: (userId, volume) => set((state) => ({
+    userVolumes: { ...state.userVolumes, [userId]: volume }
+  })),
 
   setSpeakingStatus: (userId, isSpeaking) => set((state) => ({
     voiceUsers: state.voiceUsers.map(u => u.id === userId ? { ...u, isSpeaking } : u),
@@ -173,24 +241,34 @@ export const useAppStore = create<AppState>((set) => ({
     };
   }),
 
-  modals: {
+    modals: {
     settings: false, privacy: false, addFriend: false, createChannel: false,
     profile: false, inviteToChannel: false, channelEdit: false, userVolume: false,
     incomingCall: false, channelFull: false, channelMembers: false, kickConfirm: false,
-    channelSwitch: false, achievements: false,
+    channelSwitch: false, achievements: false, adminConsole: false, adminUserSettings: false,
   },
-  setModal: (name, isOpen) => set((state) => ({ modals: { ...state.modals, [name]: isOpen } })),
-  closeAllModals: () => set({
+
+  setModal: (name, isOpen) => set((state) => ({
+    modals: { ...state.modals, [name]: isOpen }
+  })),
+
+    closeAllModals: () => set({
     modals: {
       settings: false, privacy: false, addFriend: false, createChannel: false,
       profile: false, inviteToChannel: false, channelEdit: false, userVolume: false,
       incomingCall: false, channelFull: false, channelMembers: false, kickConfirm: false,
-      channelSwitch: false, achievements: false,
+      channelSwitch: false, achievements: false, adminConsole: false, adminUserSettings: false,
     },
     pendingChannelSwitch: null
   }),
-  closeProfileOnly: () => set((state) => ({ modals: { ...state.modals, profile: false } })),
 
-  selectedProfileUser: null, setSelectedProfileUser: (user) => set({ selectedProfileUser: user }),
-  selectedChannelForInvite: null, setSelectedChannelForInvite: (ch) => set({ selectedChannelForInvite: ch })
+  closeProfileOnly: () => set((state) => ({
+    modals: { ...state.modals, profile: false }
+  })),
+
+  selectedProfileUser: null,
+  setSelectedProfileUser: (user) => set({ selectedProfileUser: user }),
+
+  selectedChannelForInvite: null,
+  setSelectedChannelForInvite: (ch) => set({ selectedChannelForInvite: ch })
 }));
