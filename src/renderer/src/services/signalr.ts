@@ -3,32 +3,30 @@ import { useAppStore, User, VoiceChannel, ChannelUpdate, UserStateUpdate, Incomi
 import { webrtc } from './webrtc';
 
 const SERVER_URL = "http://150.241.64.108:8080/zabor_v3";
-console.log('[SignalR] SERVER_URL =', SERVER_URL);
 
 class SignalRService {
   private connection: signalR.HubConnection | null = null;
   private listenersAttached = false;
   private reconnectAttempts = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private reconnectGraceTimer: NodeJS.Timeout | null = null;
   private isReconnecting = false;
   private intentionalDisconnect = false;
   private pingInterval: NodeJS.Timeout | null = null;
   private currentPing: number = 0;
   private lastSpeakingState: boolean | null = null;
+  private wasInChannel: string | null = null;
 
   private sfxContext: AudioContext | null = null;
 
   private pingCallbacks: Set<(ping: number) => void> = new Set();
   private connectionCallbacks: Set<(isConnected: boolean) => void> = new Set();
-  private reconnectGraceTimer: NodeJS.Timeout | null = null;
-  private wasInChannel: string | null = null;
 
   public isConnected(): boolean {
     return this.connection?.state === signalR.HubConnectionState.Connected;
   }
 
   public getPing(): number { return this.currentPing; }
-  
 
   public onPingUpdate(callback: (ping: number) => void): () => void {
     this.pingCallbacks.add(callback);
@@ -90,21 +88,31 @@ class SignalRService {
 
   public async connect(): Promise<boolean> {
     if (this.isConnected()) return true;
-    if (this.isReconnecting) { await new Promise(r => setTimeout(r, 500)); return this.isConnected(); }
+    if (this.isReconnecting) {
+      await new Promise(r => setTimeout(r, 500));
+      return this.isConnected();
+    }
+
     this.intentionalDisconnect = false;
     this.isReconnecting = true;
+
     try {
-      if (this.connection) { try { await this.connection.stop(); } catch {} }
+      if (this.connection) {
+        try { await this.connection.stop(); } catch {}
+      }
+
       this.connection = new signalR.HubConnectionBuilder()
         .withUrl(SERVER_URL, {
           skipNegotiation: false,
           transport: signalR.HttpTransportType.WebSockets | signalR.HttpTransportType.LongPolling
         })
-        .withAutomaticReconnect([0, 1000, 2000, 5000, 5000, 10000, 10000, 30000])
+        .withAutomaticReconnect([0, 1000, 2000, 5000, 5000, 10000, 10000, 30000, 30000])
         .build();
+
       this.setupListeners();
       this.setupReconnectionHandlers();
       await this.connection.start();
+
       this.reconnectAttempts = 0;
       this.isReconnecting = false;
       this.startPingMeasurement();
@@ -124,16 +132,15 @@ class SignalRService {
 
     this.connection.onreconnecting(() => {
       if (this.intentionalDisconnect) return;
+
       this.isReconnecting = true;
       this.notifyPingUpdate(-1);
 
-      // Запоминаем канал перед потерей связи
       const store = useAppStore.getState();
       if (store.currentChannelId) {
         this.wasInChannel = store.currentChannelId;
       }
 
-      // Даём 5 секунд на тихий реконнект, потом показываем экран загрузки
       if (!this.reconnectGraceTimer) {
         this.reconnectGraceTimer = setTimeout(() => {
           this.reconnectGraceTimer = null;
@@ -148,7 +155,6 @@ class SignalRService {
       this.reconnectAttempts = 0;
       this.isReconnecting = false;
 
-      // Отменяем grace-таймер если реконнект успел до 5 секунд
       if (this.reconnectGraceTimer) {
         clearTimeout(this.reconnectGraceTimer);
         this.reconnectGraceTimer = null;
@@ -157,9 +163,9 @@ class SignalRService {
       this.startPingMeasurement();
       this.notifyConnectionUpdate(true);
 
-      // Ре-аутентификация
       const store = useAppStore.getState();
       const user = store.currentUser;
+
       if (user) {
         try {
           const raw = await window.windowControls.loadSession();
@@ -173,7 +179,6 @@ class SignalRService {
         } catch {}
       }
 
-      // Возвращаемся в канал если были в нём
       const channelToRejoin = this.wasInChannel || store.currentChannelId;
       this.wasInChannel = null;
 
@@ -188,13 +193,11 @@ class SignalRService {
       this.stopPingMeasurement();
 
       if (!this.intentionalDisconnect) {
-        // Запоминаем канал
         const store = useAppStore.getState();
         if (store.currentChannelId) {
           this.wasInChannel = store.currentChannelId;
         }
 
-        // 5 секунд grace period
         if (!this.reconnectGraceTimer) {
           this.reconnectGraceTimer = setTimeout(() => {
             this.reconnectGraceTimer = null;
@@ -218,7 +221,6 @@ class SignalRService {
 
   private async rejoinChannel(channelId: string) {
     try {
-      // Сначала покинем канал на сервере (на случай дублей)
       await this.safeInvoke("LeaveChannel");
       await this.joinChannel(channelId);
     } catch {}
@@ -231,13 +233,16 @@ class SignalRService {
     this.lastSpeakingState = null;
     this.wasInChannel = null;
     this.stopPingMeasurement();
+
     if (this.reconnectGraceTimer) { clearTimeout(this.reconnectGraceTimer); this.reconnectGraceTimer = null; }
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+
     if (this.connection) {
       this.connection.stop();
       this.connection = null;
       this.listenersAttached = false;
     }
+
     if (this.sfxContext) {
       this.sfxContext.close().catch(() => {});
       this.sfxContext = null;
@@ -273,7 +278,6 @@ class SignalRService {
     this.connection.on("UserJoinedChannel", (user: User, channelId?: string) => {
       if (channelId) store().addUserToChannelMap(channelId, user);
 
-      // WebRTC только если пользователь вошёл в НАШ канал
       if (channelId && store().currentChannelId === channelId && user.id !== store().currentUser?.id) {
         const currentUsers = store().voiceUsers;
         if (!currentUsers.find(u => u.id === user.id)) {
@@ -387,7 +391,6 @@ class SignalRService {
       webrtc.connectToPeer(user.id);
     });
 
-    // === Achievements ===
     this.connection.on("AchievementUnlocked", (achievementId: string) => {
       store().setAchievementToast(achievementId);
 
@@ -457,13 +460,32 @@ class SignalRService {
     this.connection.on("ReceiveWebRTCAnswer", async (sId: string, a: string) => await webrtc.handleAnswer(sId, a));
     this.connection.on("ReceiveIceCandidate", async (sId: string, c: string) => await webrtc.handleIceCandidate(sId, c));
 
-    // Graceful shutdown при закрытии приложения
+    this.connection.on("ForceLogout", async () => {
+      try {
+        await window.windowControls.clearSession();
+        await window.windowControls.wipeAppData();
+      } catch {}
+
+      const appStore = useAppStore.getState();
+      appStore.setCurrentUser(null);
+      appStore.setChannels([]);
+      appStore.setFriends([]);
+      appStore.setFriendRequests([]);
+      appStore.setChannelInvites([]);
+      appStore.setVoiceUsers([]);
+      appStore.setCurrentChannelId(null);
+      appStore.setCallStatus('idle');
+      appStore.setCurrentCallUser(null);
+      appStore.setFullChannelState({});
+
+      window.location.reload();
+    });
+
     window.windowControls?.onBeforeQuit?.(() => {
       this.disconnect();
     });
   }
 
-  // === Sounds ===
   private notificationAudio: HTMLAudioElement | null = null;
   private ringtoneInterval: NodeJS.Timeout | null = null;
 
@@ -532,7 +554,6 @@ class SignalRService {
     if (this.ringtoneInterval) { clearInterval(this.ringtoneInterval); this.ringtoneInterval = null; }
   }
 
-  // === Network helpers ===
   private async ensureConnected(): Promise<boolean> {
     if (this.isConnected()) return true;
     for (let i = 0; i < 3; i++) {
@@ -549,20 +570,27 @@ class SignalRService {
     catch { return null; }
   }
 
-  // === Auth ===
   public async checkUserExists(username: string): Promise<boolean> {
     return await this.safeInvoke<boolean>("CheckUserExists", username) ?? false;
   }
 
   public async login(username: string, password: string): Promise<boolean> {
     const user = await this.safeInvoke<User>("Login", username, password);
-    if (user) { useAppStore.getState().setCurrentUser(user); await this.loadData(); return true; }
+    if (user) {
+      useAppStore.getState().setCurrentUser(user);
+      await this.loadData();
+      return true;
+    }
     return false;
   }
 
   public async register(username: string, password: string, displayName: string, avatarBase64: string | null, avatarColor: string): Promise<boolean> {
     const user = await this.safeInvoke<User>("Register", username, password, displayName, avatarBase64, avatarColor);
-    if (user) { useAppStore.getState().setCurrentUser(user); await this.loadData(); return true; }
+    if (user) {
+      useAppStore.getState().setCurrentUser(user);
+      await this.loadData();
+      return true;
+    }
     return false;
   }
 
@@ -574,7 +602,6 @@ class SignalRService {
     return await this.safeInvoke<boolean>("UpdateUserPassword", newPassword) ?? false;
   }
 
-  // === Audio Settings ===
   public async saveAudioSettings(settings: {
     inputVolume: number;
     outputVolume: number;
@@ -599,7 +626,6 @@ class SignalRService {
     return null;
   }
 
-  // === Achievements ===
   public async getMyAchievements(): Promise<any> {
     const json = await this.safeInvoke<string>("GetMyAchievements");
     if (json) {
@@ -638,8 +664,6 @@ class SignalRService {
     return await this.safeInvoke<string>("GetJokeOfTheDay") ?? '';
   }
 
-
-  // === Data ===
   public async loadData(): Promise<void> {
     const [channels, friends, requests] = await Promise.all([
       this.safeInvoke<VoiceChannel[]>("GetChannels"),
@@ -651,7 +675,6 @@ class SignalRService {
     useAppStore.getState().setFriendRequests(requests || []);
   }
 
-  // === Channels ===
   public async createChannel(name: string): Promise<void> { await this.safeInvoke("CreateChannel", name); }
   public async updateChannel(id: string, name: string): Promise<void> { await this.safeInvoke("UpdateChannel", { channelId: id, name }); }
   public async quitAccessChannel(channelId: string): Promise<void> { await this.safeInvoke("QuitAccessChannel", channelId); }
@@ -735,25 +758,26 @@ class SignalRService {
     useAppStore.getState().setVoiceUsers([]);
   }
 
-  // === Friends ===
   public async sendFriendRequest(username: string): Promise<boolean> { return await this.safeInvoke<boolean>("SendFriendRequest", username) ?? false; }
+
   public async acceptFriendRequest(userId: string): Promise<void> {
     await this.safeInvoke("AcceptFriendRequest", userId);
     const store = useAppStore.getState();
     store.setFriendRequests(store.friendRequests.filter(r => r.id !== userId));
   }
+
   public async declineFriendRequest(userId: string): Promise<void> {
     await this.safeInvoke("DeclineFriendRequest", userId);
     const store = useAppStore.getState();
     store.setFriendRequests(store.friendRequests.filter(r => r.id !== userId));
   }
+
   public async removeFriend(userId: string): Promise<void> {
     await this.safeInvoke("RemoveFriend", userId);
     const store = useAppStore.getState();
     store.setFriends(store.friends.filter(f => f.id !== userId));
   }
 
-  // === Calls ===
   public async startCall(targetUserId: string): Promise<boolean> {
     useAppStore.getState().setCallStatus('calling');
     const targetUser = useAppStore.getState().friends.find(f => f.id === targetUserId);
@@ -801,7 +825,6 @@ class SignalRService {
     useAppStore.getState().setCallStatus('idle');
   }
 
-  // === State (fire-and-forget) ===
   public toggleState(isMuted: boolean, isDeafened: boolean): void {
     webrtc.toggleMute(isMuted);
     if (this.isConnected()) this.connection?.send("UpdateUserState", { isMuted, isDeafened });
@@ -813,16 +836,69 @@ class SignalRService {
     if (this.isConnected()) this.connection?.send("SetSpeakingState", isSpeaking);
   }
 
-  // === WebRTC Signaling (fire-and-forget) ===
   public sendWebRTCOffer(targetId: string, offer: string): void {
     if (this.isConnected()) this.connection?.send("SendWebRTCOffer", targetId, offer);
   }
+
   public sendWebRTCAnswer(targetId: string, answer: string): void {
     if (this.isConnected()) this.connection?.send("SendWebRTCAnswer", targetId, answer);
   }
+
   public sendIceCandidate(targetId: string, candidate: string): void {
     if (this.isConnected()) this.connection?.send("SendIceCandidate", targetId, candidate);
   }
+
+  // ==========================================
+  // ADMIN
+  // ==========================================
+  public async isCurrentUserAdmin(): Promise<boolean> {
+    return await this.safeInvoke<boolean>("IsCurrentUserAdmin") ?? false;
+  }
+
+  public async adminGetAllUsers(): Promise<any[]> {
+    return await this.safeInvoke<any[]>("AdminGetAllUsers") ?? [];
+  }
+
+  public async adminUpdateUser(payload: {
+    userId: string;
+    displayName?: string;
+    password?: string;
+  }): Promise<boolean> {
+    return await this.safeInvoke<boolean>("AdminUpdateUser", payload) ?? false;
+  }
+
+  public async adminDeleteUser(userId: string): Promise<boolean> {
+    return await this.safeInvoke<boolean>("AdminDeleteUser", { userId }) ?? false;
+  }
+
+    public async adminGetUserDetails(userId: string): Promise<any | null> {
+    return await this.safeInvoke<any>("AdminGetUserDetails", userId);
+  }
+
+    public async adminUpdateAchievements(payload: {
+    userId: string;
+    unlockedIds: string[];
+    stats: Record<string, number>;
+  }): Promise<boolean> {
+    return await this.safeInvoke<boolean>("AdminUpdateAchievements", payload) ?? false;
+  }
+
+  public async adminKickFromCurrentChannel(userId: string): Promise<boolean> {
+  return await this.safeInvoke<boolean>("AdminKickFromCurrentChannel", { userId }) ?? false;
+}
+
+public async adminSetGlobalVoiceState(payload: {
+  userId: string;
+  isMuted?: boolean;
+  isDeafened?: boolean;
+}): Promise<boolean> {
+  return await this.safeInvoke<boolean>("AdminSetGlobalVoiceState", payload) ?? false;
+}
+
+public async adminRenameChannel(channelId: string, name: string): Promise<boolean> {
+  return await this.safeInvoke<boolean>("AdminRenameChannel", { channelId, name }) ?? false;
+}
+
 }
 
 export const signalRService = new SignalRService();
