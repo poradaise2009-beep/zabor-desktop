@@ -316,6 +316,23 @@ class SignalRService {
         isDeafened: update.isDeafened ?? false,
         isSpeaking: update.isSpeaking ?? false
       });
+      const currentUser = store().currentUser;
+      if (currentUser && update.userId === currentUser.id) {
+        if (update.isMuted !== undefined) {
+          webrtc.toggleMute(update.isMuted);
+        }
+        if (update.isDeafened !== undefined) {
+          webrtc.setDeafened(update.isDeafened);
+          if (update.isDeafened) {
+            webrtc.toggleMute(true);
+          }
+        }
+        store().setCurrentUser({
+          ...currentUser,
+          isMuted: update.isMuted ?? currentUser.isMuted,
+          isDeafened: update.isDeafened ?? currentUser.isDeafened
+        });
+      }
     });
 
     this.connection.on("UserSpeaking", (userId: string, isSpeaking: boolean) => {
@@ -377,6 +394,7 @@ class SignalRService {
     this.connection.on("CallEnded", () => {
       const callUser = store().currentCallUser;
       if (callUser) webrtc.disconnectFromPeer(callUser.id);
+      webrtc.stopLocalStream();
       store().setCurrentCallUser(null);
       store().setCallStatus('idle');
       this.stopRingtone();
@@ -723,10 +741,8 @@ class SignalRService {
       const update = await this.safeInvoke<ChannelUpdate>("JoinChannel", { channelId });
 
       if (update && update.users) {
-        store.setVoiceUsers(update.users);
+                store.setVoiceUsers(update.users);
         store.setChannelUsers(channelId, update.users);
-        const currentUserId = currentUser.id;
-        update.users.forEach((u: User) => { if (u.id !== currentUserId) webrtc.connectToPeer(u.id); });
         return true;
       } else {
         this.rollbackChannelJoin(prevChannelId, prevVoiceUsers, prevChannelUsersMap);
@@ -752,6 +768,7 @@ class SignalRService {
   }
 
   public async leaveChannel(): Promise<void> {
+    webrtc.leaveAll();
     webrtc.stopLocalStream();
     await this.safeInvoke("LeaveChannel");
     useAppStore.getState().setCurrentChannelId(null);
