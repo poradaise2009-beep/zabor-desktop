@@ -201,7 +201,6 @@ const [adminError, setAdminError] = useState('');
 const [adminSelectedUser, setAdminSelectedUser] = useState<any | null>(null);
 const [adminDetailsLoading, setAdminDetailsLoading] = useState(false);
 const [adminEditDisplayName, setAdminEditDisplayName] = useState('');
-const [adminEditPassword, setAdminEditPassword] = useState('');
 const [adminEditAchievements, setAdminEditAchievements] = useState('');
 const [adminCopiedLogin, setAdminCopiedLogin] = useState<string | null>(null);
 const [adminRenameChannelId, setAdminRenameChannelId] = useState<string | null>(null);
@@ -474,7 +473,6 @@ const loadAdminUserDetails = useCallback(async (userId: string) => {
 
     if (details) {
       setAdminEditDisplayName(details.displayName ?? '');
-      setAdminEditPassword('');
       setAdminEditAchievements((details.achievements?.unlockedIds || []).join(', '));
     }
   } catch {
@@ -2032,7 +2030,6 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
                     } else {
                       setAdminSelectedUser(details);
                       setAdminEditDisplayName(details.displayName ?? '');
-                      setAdminEditPassword('');
                     }
                   } catch (e) {
                     setAdminError('Не удалось загрузить профиль пользователя');
@@ -2069,7 +2066,6 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
         onClick={() => {
           setAdminSelectedUser(null);
           setAdminEditDisplayName('');
-          setAdminEditPassword('');
           setAdminRenameChannelId(null);
           store.setModal('adminUserSettings', false);
         }}
@@ -2096,77 +2092,56 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
         <div className="space-y-6">
           {/* ПРОФИЛЬ */}
           <section className="bg-surface rounded-2xl p-5">
-            <div className="flex items-center gap-4 mb-5">
-              <div
-                className="w-16 h-16 rounded-full overflow-hidden shrink-0"
-                style={{ backgroundColor: adminSelectedUser.avatarColor }}
-              >
-                <AvatarImg src={adminSelectedUser.avatarBase64} size={64} />
-              </div>
-              <div className="min-w-0">
-                <p className="text-white font-bold text-lg truncate">{adminSelectedUser.displayName}</p>
-                <p className="text-textMuted text-sm truncate">@{adminSelectedUser.username}</p>
-                <p className="text-textMuted text-xs mt-1">
-                  {adminSelectedUser.isOnline ? <span className="text-success">Онлайн</span> : 'Оффлайн'}
-                </p>
-              </div>
-            </div>
+  <div className="flex items-center gap-4 mb-5">
+    <div
+      className="w-16 h-16 rounded-full overflow-hidden shrink-0"
+      style={{ backgroundColor: adminSelectedUser.avatarColor }}
+    >
+      <AvatarImg src={adminSelectedUser.avatarBase64} size={64} />
+    </div>
+    <div className="min-w-0">
+      <p className="text-white font-bold text-lg truncate">{adminSelectedUser.displayName}</p>
+      <p className="text-textMuted text-sm truncate">@{adminSelectedUser.username}</p>
+      <p className="text-textMuted text-xs mt-1">
+        {adminSelectedUser.isOnline ? <span className="text-success">Онлайн</span> : 'Оффлайн'}
+      </p>
+    </div>
+  </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-textMuted tracking-wider block">ОТОБРАЖАЕМОЕ ИМЯ</label>
-                <input
-                  type="text"
-                  value={adminEditDisplayName}
-                  onChange={e => setAdminEditDisplayName(e.target.value)}
-                  className="w-full bg-surfaceHover text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060]"
-                />
-                <button
-                  onClick={async () => {
-                    if (!adminEditDisplayName.trim()) return;
-                    const ok = await signalRService.adminUpdateUser({
-                      userId: adminSelectedUser.id,
-                      displayName: adminEditDisplayName.trim()
-                    });
-                    if (ok) {
-                      await loadAdminUserDetails(adminSelectedUser.id);
-                      await loadAdminUsers();
-                    } else {
-                      setAdminError('Не удалось изменить имя');
-                    }
-                  }}
-                  className="w-full bg-surfaceHover hover:bg-white/10 text-white py-3 rounded-xl font-semibold transition-colors"
-                >
-                  Сохранить имя
-                </button>
-              </div>
+  <div className="space-y-4">
+    <div>
+      <label className="text-[10px] font-bold text-textMuted tracking-wider block mb-2">
+        ОТОБРАЖАЕМОЕ ИМЯ
+      </label>
+      <input
+        type="text"
+        value={adminEditDisplayName}
+        onChange={e => setAdminEditDisplayName(e.target.value)}
+        className="w-full bg-surfaceHover text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060]"
+      />
+    </div>
 
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-textMuted tracking-wider block">НОВЫЙ ПАРОЛЬ</label>
-                <input
-                  type="text"
-                  placeholder="Оставьте пустым для отмены"
-                  value={adminEditPassword}
-                  onChange={e => setAdminEditPassword(e.target.value)}
-                  className="w-full bg-surfaceHover text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060]"
-                />
-                <button
-                  onClick={async () => {
-                    if (!adminEditPassword.trim()) return;
-                    const ok = await signalRService.adminUpdateUser({
-                      userId: adminSelectedUser.id,
-                      password: adminEditPassword.trim()
-                    });
-                    if (ok) setAdminEditPassword('');
-                    else setAdminError('Не удалось сменить пароль');
-                  }}
-                  className="w-full bg-surfaceHover hover:bg-white/10 text-white py-3 rounded-xl font-semibold transition-colors"
-                >
-                  Сменить пароль
-                </button>
-              </div>
-            </div>
-          </section>
+    <button
+      onClick={async () => {
+        if (!adminEditDisplayName.trim()) return;
+        const ok = await signalRService.adminUpdateUser({
+          userId: adminSelectedUser.id,
+          displayName: adminEditDisplayName.trim()
+        });
+
+        if (ok) {
+          await loadAdminUserDetails(adminSelectedUser.id);
+          await loadAdminUsers();
+        } else {
+          setAdminError('Не удалось изменить имя');
+        }
+      }}
+      className="w-full bg-surfaceHover hover:bg-white/10 text-white py-3 rounded-xl font-semibold transition-colors"
+    >
+      Сохранить имя
+    </button>
+  </div>
+</section>
 
           {/* ГОЛОС И КАНАЛЫ */}
           <section className="bg-surface rounded-2xl p-5">

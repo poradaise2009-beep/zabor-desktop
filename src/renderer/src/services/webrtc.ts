@@ -116,15 +116,11 @@ export class WebRTCManager {
       if (!parameters.encodings || parameters.encodings.length === 0) {
         parameters.encodings = [{}]
       }
-
       parameters.encodings[0].maxBitrate = 96000
       parameters.encodings[0].priority = 'high'
       parameters.degradationPreference = 'maintain-framerate'
-
       await sender.setParameters(parameters)
-    } catch {
-      // Браузер может не поддерживать часть параметров
-    }
+    } catch {}
   }
 
   // ==========================================
@@ -149,27 +145,19 @@ export class WebRTCManager {
     highPass.frequency.value = 80
     highPass.Q.value = 0.707
 
-    // Лёгкий presence boost для читаемости речи
-    const presence = ctx.createBiquadFilter()
-    presence.type = 'peaking'
-    presence.frequency.value = 2500
-    presence.Q.value = 0.8
-    presence.gain.value = 1.5
-
-    // Очень мягкий low-pass, чтобы убрать цифровой мусор, не урезая речь
     const lowPass = ctx.createBiquadFilter()
     lowPass.type = 'lowpass'
     lowPass.frequency.value = 14000
     lowPass.Q.value = 0.707
 
     const compressor = ctx.createDynamicsCompressor()
-    compressor.threshold.value = -20
-    compressor.knee.value = 18
-    compressor.ratio.value = 2.5
-    compressor.attack.value = 0.002
-    compressor.release.value = 0.12
+    compressor.threshold.value = -24
+    compressor.knee.value = 15
+    compressor.ratio.value = 2
+    compressor.attack.value = 0.005
+    compressor.release.value = 0.15
 
-    // Если включено RNNoise — используем его как основной шумодав
+    // RNNoise pipeline
     if (this.noiseSuppression) {
       try {
         const { createRNNoiseProcessor } = await import('./rnnoise-processor')
@@ -180,24 +168,44 @@ export class WebRTCManager {
         this.processedSource = source
 
         source.connect(highPass)
-        highPass.connect(presence)
-        presence.connect(lowPass)
+        highPass.connect(lowPass)
         lowPass.connect(compressor)
         compressor.connect(inputGain)
         inputGain.connect(destination)
 
         return destination.stream
-      } catch {
-        // fallback ниже
+      } catch (e) {
+        console.warn('[WebRTC] RNNoise failed, falling back to browser noise suppression', e)
+        // Fallback: пересоздаём стрим с браузерным шумоподавлением
+        try {
+          const fallbackStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              deviceId: this.currentDeviceId !== 'default' ? { exact: this.currentDeviceId } : undefined,
+              sampleRate: 48000,
+              channelCount: 1,
+              echoCancellation: true,
+              autoGainControl: true,
+              noiseSuppression: true
+            }
+          })
+          rawStream.getTracks().forEach(t => t.stop())
+          if (this.rawStream) {
+            this.rawStream.getTracks().forEach(t => t.stop())
+          }
+          this.rawStream = fallbackStream
+          rawStream = fallbackStream
+        } catch {
+          // Продолжаем без шумоподавления
+        }
       }
     }
 
+    // Fallback path (без RNNoise)
     const source = ctx.createMediaStreamSource(rawStream)
     this.processedSource = source
 
     source.connect(highPass)
-    highPass.connect(presence)
-    presence.connect(lowPass)
+    highPass.connect(lowPass)
     lowPass.connect(compressor)
     compressor.connect(inputGain)
     inputGain.connect(destination)
@@ -268,91 +276,93 @@ export class WebRTCManager {
       this.vadContext.resume().catch(() => {})
     }
 
-    const cloned = new MediaStream(stream.getAudioTracks())
-const source = this.vadContext.createMediaStreamSource(cloned)
+    const clonedTracks = stream.getAudioTracks().map(t => t.clone())
+    const cloned = new MediaStream(clonedTracks)
 
-const highPass = this.vadContext.createBiquadFilter()
-highPass.type = 'highpass'
-highPass.frequency.value = 90
-highPass.Q.value = 0.8
+    const source = this.vadContext.createMediaStreamSource(cloned)
 
-const lowPass = this.vadContext.createBiquadFilter()
-lowPass.type = 'lowpass'
-lowPass.frequency.value = 4500
-lowPass.Q.value = 0.8
+    const highPass = this.vadContext.createBiquadFilter()
+    highPass.type = 'highpass'
+    highPass.frequency.value = 70
+    highPass.Q.value = 0.7
 
-const analyser = this.vadContext.createAnalyser()
-analyser.fftSize = 512
-analyser.smoothingTimeConstant = 0.1
+    const lowPass = this.vadContext.createBiquadFilter()
+    lowPass.type = 'lowpass'
+    lowPass.frequency.value = 5000
+    lowPass.Q.value = 0.7
 
-source.connect(highPass)
-highPass.connect(lowPass)
-lowPass.connect(analyser)
+    const analyser = this.vadContext.createAnalyser()
+    analyser.fftSize = 512
+    analyser.smoothingTimeConstant = 0.20
 
-const timeData = new Uint8Array(analyser.fftSize)
+    source.connect(highPass)
+    highPass.connect(lowPass)
+    lowPass.connect(analyser)
 
-let lastVoiceTime = 0
-let wasSpeaking = false
-let consecutiveVoiceFrames = 0
+    const timeData = new Uint8Array(analyser.fftSize)
 
-const threshold = 8
+    let lastVoiceTime = 0
+    let wasSpeaking = false
+    let consecutiveVoiceFrames = 0
 
-const check = () => {
-  const store = useAppStore.getState()
+    
+    const avgThreshold = isLocal ? 10 : 6
+    const peakThreshold = isLocal ? 18 : 12
 
-  if (isLocal && store.currentUser?.isMuted) {
-    if (wasSpeaking) {
-      wasSpeaking = false
-      consecutiveVoiceFrames = 0
-      store.setSpeakingStatus(userId, false)
-      signalRService.setSpeakingState(false)
+    const check = () => {
+      const store = useAppStore.getState()
+
+      if (isLocal && store.currentUser?.isMuted) {
+        if (wasSpeaking) {
+          wasSpeaking = false
+          consecutiveVoiceFrames = 0
+          store.setSpeakingStatus(userId, false)
+          signalRService.setSpeakingState(false)
+        }
+        return
+      }
+
+      analyser.getByteTimeDomainData(timeData)
+
+      let peak = 0
+      let sum = 0
+
+      for (let i = 0; i < timeData.length; i++) {
+        const sample = Math.abs(timeData[i] - 128)
+        if (sample > peak) peak = sample
+        sum += sample
+      }
+
+      const avg = sum / timeData.length
+      const voiceFrame = avg >= avgThreshold || peak >= peakThreshold
+
+      if (voiceFrame) {
+        consecutiveVoiceFrames++
+      } else {
+        consecutiveVoiceFrames = 0
+      }
+
+      
+      if (consecutiveVoiceFrames >= 1) {
+        lastVoiceTime = Date.now()
+      }
+
+      
+      const isSpeakingNow = (Date.now() - lastVoiceTime) < 350
+
+      if (isSpeakingNow !== wasSpeaking) {
+        wasSpeaking = isSpeakingNow
+        store.setSpeakingStatus(userId, isSpeakingNow)
+
+        if (isLocal) {
+          signalRService.setSpeakingState(isSpeakingNow)
+        }
+      }
     }
-    return
-  }
 
-  analyser.getByteTimeDomainData(timeData)
-
-  let peak = 0
-  let sum = 0
-
-  for (let i = 0; i < timeData.length; i++) {
-    const sample = Math.abs(timeData[i] - 128)
-    if (sample > peak) peak = sample
-    sum += sample
-  }
-
-  const avg = sum / timeData.length
-
-  // Мягче:
-  // - peak multiplier снижен
-  // - avg threshold оставлен 8
-  const voiceFrame = avg > threshold || peak > threshold * 2.0
-
-  if (voiceFrame) {
-    consecutiveVoiceFrames++
-  } else {
-    consecutiveVoiceFrames = 0
-  }
-
-  // Было 2 подряд фрейма, теперь 1 — реакция почти мгновенная
-  if (consecutiveVoiceFrames >= 1) {
-    lastVoiceTime = Date.now()
-  }
-
-  const isSpeakingNow = (Date.now() - lastVoiceTime) < 350
-
-  if (isSpeakingNow !== wasSpeaking) {
-    wasSpeaking = isSpeakingNow
-    store.setSpeakingStatus(userId, isSpeakingNow)
-
-    if (isLocal) {
-      signalRService.setSpeakingState(isSpeakingNow)
-    }
-  }
-}
-
-const timer = setInterval(check, 20)
-this.speakingIntervals.set(userId, { timer, stream: cloned })
+    
+    const timer = setInterval(check, 20)
+    this.speakingIntervals.set(userId, { timer, stream: cloned })
   } catch (error) {
     console.error('[VAD] setup failed', error)
   }
@@ -429,7 +439,9 @@ this.speakingIntervals.set(userId, { timer, stream: cloned })
           sampleSize: 16,
           echoCancellation: true,
           autoGainControl: true,
-          noiseSuppression: false
+          // Если RNNoise включён — отключаем браузерный шумодав (двойная обработка = артефакты).
+          // Если RNNoise выключен — включаем браузерный как единственный шумодав.
+          noiseSuppression: !this.noiseSuppression
         },
         video: false
       })
@@ -536,8 +548,6 @@ this.speakingIntervals.set(userId, { timer, stream: cloned })
       const remoteStream = event.streams[0]
       const audio = this.createAudioElement(userId)
       audio.srcObject = remoteStream
-
-      // VAD для удалённого пользователя
       this.setupVAD(remoteStream, userId, false)
     }
 
@@ -547,13 +557,26 @@ this.speakingIntervals.set(userId, { timer, stream: cloned })
       }
     }
 
+    let disconnectedTimer: NodeJS.Timeout | null = null
+
     pc.onconnectionstatechange = () => {
-      if (
-        pc.connectionState === 'failed' ||
-        pc.connectionState === 'disconnected' ||
-        pc.connectionState === 'closed'
-      ) {
+      const state = pc.connectionState
+
+      // Очищаем таймер если состояние изменилось
+      if (disconnectedTimer && state !== 'disconnected') {
+        clearTimeout(disconnectedTimer)
+        disconnectedTimer = null
+      }
+
+      if (state === 'failed' || state === 'closed') {
         this.disconnectFromPeer(userId)
+      } else if (state === 'disconnected') {
+        // Даём 5 секунд на восстановление перед разрывом
+        disconnectedTimer = setTimeout(() => {
+          if (pc.connectionState === 'disconnected') {
+            this.disconnectFromPeer(userId)
+          }
+        }, 5000)
       }
     }
   }
@@ -595,7 +618,10 @@ this.speakingIntervals.set(userId, { timer, stream: cloned })
 
   public async handleOffer(senderId: string, offerStr: string) {
     const store = useAppStore.getState()
-    const inChannel = !!(store.currentChannelId && store.voiceUsers.some(user => user.id === senderId))
+
+    // Принимаем offer если мы в любом канале или в звонке с этим пользователем.
+    // Сервер уже авторизовал signaling — доверяем ему.
+    const inChannel = !!store.currentChannelId
     const inCall = store.currentCallUser?.id === senderId
 
     if (!inChannel && !inCall) return
@@ -640,9 +666,7 @@ this.speakingIntervals.set(userId, { timer, stream: cloned })
 
     try {
       await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(answerStr)))
-    } catch {
-      // no-op
-    }
+    } catch {}
   }
 
   public async handleIceCandidate(senderId: string, candidateStr: string) {
@@ -651,9 +675,7 @@ this.speakingIntervals.set(userId, { timer, stream: cloned })
 
     try {
       await pc.addIceCandidate(new RTCIceCandidate(JSON.parse(candidateStr)))
-    } catch {
-      // no-op
-    }
+    } catch {}
   }
 
   public disconnectFromPeer(userId: string) {
