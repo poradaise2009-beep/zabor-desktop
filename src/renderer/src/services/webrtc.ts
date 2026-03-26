@@ -283,7 +283,7 @@ export class WebRTCManager {
 
     const highPass = this.vadContext.createBiquadFilter()
     highPass.type = 'highpass'
-    highPass.frequency.value = 70
+    highPass.frequency.value = 80
     highPass.Q.value = 0.7
 
     const lowPass = this.vadContext.createBiquadFilter()
@@ -306,7 +306,7 @@ export class WebRTCManager {
     let consecutiveVoiceFrames = 0
 
     
-    const avgThreshold = isLocal ? 10 : 6
+    const avgThreshold = isLocal ? 12 : 8
     const peakThreshold = isLocal ? 18 : 12
 
     const check = () => {

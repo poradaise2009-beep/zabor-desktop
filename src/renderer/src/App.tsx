@@ -191,6 +191,8 @@ const [joke, setJoke] = useState<string>('');
   const settingsLoadedRef = useRef(false);
   const credentialsRef = useRef<{ login: string; password: string }>({ login: '', password: '' });
 const initCompleteRef = useRef(false);
+const loginInputRef = useRef<HTMLInputElement>(null);
+const passwordInputRef = useRef<HTMLInputElement>(null);
 
 const [isAdmin, setIsAdmin] = useState(false);
 const [adminUsers, setAdminUsers] = useState<any[]>([]);
@@ -565,18 +567,44 @@ useEffect(() => {
 }, [isAuth, serverConnected, joke]);
 
   const closeAndResetModals = useCallback(() => {
-  setNewChannelName(''); setEditChannelName(''); setEditChannelId(null); setAdminRenameChannelId(null);
-  setFriendName(''); setNewPassword(''); setError(''); setPrivacyError('');
-  setShowPrivacyPass(false); setEditProfileAvatarBase64(null);
-  setEditProfileAvatarColor('#c70060'); setInviteFriendSearch('');
+  setNewChannelName('');
+  setEditChannelName('');
+  setEditChannelId(null);
+
+  setFriendName('');
+  setNewPassword('');
+  setError('');
+  setPrivacyError('');
+  setShowPrivacyPass(false);
+
+  setEditProfileAvatarBase64(null);
+  setEditProfileAvatarColor('#c70060');
+
+  setInviteFriendSearch('');
   setSentInvites(new Set());
 
   setAdminSearch('');
   setAdminError('');
   setAdminActionUserId(null);
+  setAdminSelectedUser(null);
+  setAdminDetailsLoading(false);
+  setAdminEditDisplayName('');
+  setAdminCopiedLogin(null);
+  setAdminRenameChannelId(null);
+  setAdminRenameChannelName('');
+
+  setContextMenu(null);
+  setShowInvitesPanel(false);
+
+  setShowCropper(false);
+  setCropGifDataUrl(null);
+  setCropImageSrc(null);
+  setCropScale(1);
+  setCropPos({ x: 0, y: 0 });
+  setIsDragging(false);
 
   store.closeAllModals();
-}, []);
+}, [store]);
 
   const validateInput = useCallback((str: string) => {
     if (str.length < 4) return "Минимум 4 символа";
@@ -692,15 +720,24 @@ setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
 const handleLogout = useCallback(async () => {
   settingsLoadedRef.current = false;
 
-  if (store.currentCallUser) await signalRService.endCall();
-  if (store.currentChannelId) await signalRService.leaveChannel();
+  
+  closeAndResetModals();
+
+  if (store.currentCallUser) {
+    await signalRService.endCall();
+  }
+
+  if (store.currentChannelId) {
+    await signalRService.leaveChannel();
+  }
+
   webrtc.stopLocalStream();
   signalRService.disconnect();
 
-  // Глубокий wipe — ТОЛЬКО здесь, при явном выходе из аккаунта
   await deepWipeOnLogout();
 
   resetToDefaults();
+
   store.setCurrentUser(null);
   store.setChannels([]);
   store.setFriends([]);
@@ -715,16 +752,39 @@ const handleLogout = useCallback(async () => {
   setJoke('');
 
   setIsAdmin(false);
-setAdminUsers([]);
-setAdminSearch('');
+  setAdminUsers([]);
+  setAdminSearch('');
 
-  setIsAuth(false);
-  setAuthStep('login');
-  setPassword('');
+  setDisplayName('');
+  setAvatarBase64(null);
+  setAvatarColor('#c70060');
+
+  credentialsRef.current = { login: '', password: '' };
+
   setLogin('');
-  closeAndResetModals();
-}, [closeAndResetModals, deepWipeOnLogout, resetToDefaults,
-    store.currentCallUser, store.currentChannelId]);
+  setPassword('');
+  setShowPassword(false);
+  setError('');
+  setAuthStep('login');
+  setIsAuth(false);
+
+  
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const loginInput = document.querySelector(
+        'input[type="text"]'
+      ) as HTMLInputElement | null;
+
+      loginInput?.focus();
+    });
+  });
+}, [
+  closeAndResetModals,
+  deepWipeOnLogout,
+  resetToDefaults,
+  store.currentCallUser,
+  store.currentChannelId
+]);
 
     const handleAutoLaunchToggle = useCallback(async (enabled: boolean) => {
   const prev = autoLaunch;
@@ -1022,12 +1082,12 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
 }, []);
 
   const renderModal = useCallback((key: keyof typeof store.modals, content: React.ReactNode) => {
-    if (!store.modals[key]) return null;
-    return (
-      <div className="absolute inset-0 z-[150] bg-black/80 flex items-center justify-center p-4"
-        onClick={e => { if (e.target === e.currentTarget) closeAndResetModals(); }}>{content}</div>
-    );
-  }, [store.modals, closeAndResetModals]);
+  if (!store.modals[key]) return null;
+  return (
+    <div className="absolute inset-0 z-[150] bg-black/80 flex items-center justify-center p-4"
+      onClick={e => { if (e.target === e.currentTarget) closeAndResetModals(); }}>{content}</div>
+  );
+}, [store.modals, closeAndResetModals]);
 
   const renderCropper = () => {
     if (!showCropper || !cropImageSrc) return null;
@@ -1106,12 +1166,32 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
             <div className="bg-panelBg p-10 rounded-3xl w-[400px] shadow-2xl flex flex-col">
               <h1 className="text-4xl font-black text-center mb-8 tracking-wider text-white">ZABOR</h1>
               <label className="text-xs font-bold text-textMuted mb-2 tracking-wider">ЛОГИН</label>
-              <input type="text" value={login} onChange={e => setLogin(e.target.value)} maxLength={25} className="bg-surface text-white rounded-xl p-3 mb-4 outline-none focus:ring-2 focus:ring-[#c70060]" />
+              <input
+  ref={loginInputRef}
+  type="text"
+  value={login}
+  onChange={e => setLogin(e.target.value)}
+  maxLength={25}
+  className="bg-surface text-white rounded-xl p-3 mb-4 outline-none focus:ring-2 focus:ring-[#c70060]"
+/>
               <label className="text-xs font-bold text-textMuted mb-2 tracking-wider">ПАРОЛЬ</label>
               <div className="relative mb-6">
-                <input type={showPassword ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} maxLength={25} onKeyDown={e => e.key === 'Enter' && handleAuth()} className="w-full bg-surface text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060] pr-10" />
-                <button onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-3 text-textMuted hover:text-white transition-colors">{showPassword ? <EyeOff size={20} /> : <Eye size={20} />}</button>
-              </div>
+  <input
+    ref={passwordInputRef}
+    type={showPassword ? 'text' : 'password'}
+    value={password}
+    onChange={e => setPassword(e.target.value)}
+    maxLength={25}
+    onKeyDown={e => e.key === 'Enter' && handleAuth()}
+    className="w-full bg-surface text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060] pr-10"
+  />
+  <button
+    onClick={() => setShowPassword(!showPassword)}
+    className="absolute right-3 top-3 text-textMuted hover:text-white transition-colors"
+  >
+    {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+  </button>
+</div>
               {error && <p className="text-danger text-sm mb-4 text-center font-medium">{error}</p>}
               <button onClick={handleAuth} disabled={isLoading} className="bg-[#c70060] text-white font-bold py-3 rounded-xl disabled:opacity-50 hover:opacity-90 transition-opacity">{isLoading ? 'ЗАГРУЗКА...' : 'ПРОДОЛЖИТЬ'}</button>
             </div>
@@ -1635,7 +1715,7 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
       )}
 
       {store.pendingChannelSwitch && (
-        <div className="fixed inset-0 z-[999] bg-black/80 flex items-center justify-center p-4" onClick={e => { if (e.target === e.currentTarget) store.setPendingChannelSwitch(null); }}>
+  <div className="fixed inset-0 z-[999] bg-black/80 flex items-center justify-center p-4">
           <div className="bg-panelBg p-8 rounded-3xl w-[400px] text-center shadow-2xl">
             <h2 className="text-xl font-bold mb-4 text-white">Сменить канал?</h2>
             <p className="text-textMuted mb-8 font-medium">Вы покинете текущий канал и перейдёте в другой.</p>
@@ -1764,7 +1844,7 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
       )}
 
       {store.modals.profile && store.selectedProfileUser && (
-        <div className="fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4" onClick={e => { if (e.target === e.currentTarget) store.closeProfileOnly(); }}>
+  <div className="fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4">
           <div className="bg-panelBg w-[350px] rounded-3xl overflow-hidden shadow-2xl relative">
             <div className="h-28 w-full relative" style={{ backgroundColor: editProfileAvatarBase64 ? editProfileAvatarColor : store.selectedProfileUser?.avatarColor }}>
   <button
