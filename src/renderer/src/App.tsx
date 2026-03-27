@@ -551,7 +551,7 @@ useEffect(() => {
 
   let cancelled = false;
 
-  signalRService.getJokeOfTheDay().then(j => {
+  signalRService.getJokeOfTheDay().then((j: string) => {
     if (!cancelled) {
       setJoke(j || 'Сегодня сервер шутит молча.');
     }
@@ -898,20 +898,48 @@ const handleLogout = useCallback(async () => {
   }, [store.selectedChannelForMembers, store.userToKick, store.channelMembers]);
 
   const toggleMute = useCallback(() => {
-    if (!store.currentUser) return;
-    const m = !store.currentUser.isMuted;
-    store.setCurrentUser({ ...store.currentUser, isMuted: m });
-    signalRService.toggleState(m, store.currentUser.isDeafened);
-  }, [store.currentUser]);
+  if (!store.currentUser) return;
 
-  const toggleDeafen = useCallback(() => {
-    if (!store.currentUser) return;
-    const d = !store.currentUser.isDeafened;
-    const m = d ? true : store.currentUser.isMuted;
-    store.setCurrentUser({ ...store.currentUser, isDeafened: d, isMuted: m });
-    signalRService.toggleState(m, d);
-    webrtc.setDeafened(d);
-  }, [store.currentUser]);
+  // Если админ глобально выключил звук или микрофон — нельзя разъмьютиться
+  if (store.currentUser.isServerMuted || store.currentUser.isServerDeafened) {
+    return;
+  }
+
+  // Если пользователь сам deafened — нельзя включить микрофон отдельно
+  if (store.currentUser.isDeafened) {
+    return;
+  }
+
+  const nextMuted = !store.currentUser.isMuted;
+  const nextUser = { ...store.currentUser, isMuted: nextMuted };
+  store.setCurrentUser(nextUser);
+  signalRService.toggleState(nextMuted, store.currentUser.isDeafened);
+}, [store.currentUser]);
+
+const toggleDeafen = useCallback(() => {
+  if (!store.currentUser) return;
+
+  // Если админ глобально заглушил звук — пользователь не может включить его сам
+  if (store.currentUser.isServerDeafened) {
+    return;
+  }
+
+  const nextDeafened = !store.currentUser.isDeafened;
+
+  // Если deafened = true -> микрофон тоже должен быть muted
+  // Если deafened = false -> микрофон остаётся muted, пока пользователь сам не включит
+  const nextMuted = nextDeafened ? true : store.currentUser.isMuted;
+
+  const nextUser = {
+    ...store.currentUser,
+    isDeafened: nextDeafened,
+    isMuted: nextMuted
+  };
+
+  store.setCurrentUser(nextUser);
+  signalRService.toggleState(nextMuted, nextDeafened);
+  webrtc.setDeafened(nextDeafened);
+}, [store.currentUser]);
 
   const handleAcceptCall = useCallback(async () => {
     if (store.incomingCall) await signalRService.acceptCall(store.incomingCall.callerId);
@@ -1081,45 +1109,97 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
   e.target.value = '';
 }, []);
 
-  const renderModal = useCallback((key: keyof typeof store.modals, content: React.ReactNode) => {
+ const renderModal = useCallback((key: keyof typeof store.modals, content: React.ReactNode) => {
   if (!store.modals[key]) return null;
+
   return (
-    <div className="absolute inset-0 z-[150] bg-black/80 flex items-center justify-center p-4"
-      onClick={e => { if (e.target === e.currentTarget) closeAndResetModals(); }}>{content}</div>
+    <div className="absolute inset-0 z-[150] bg-black/80 flex items-center justify-center p-4">
+      {content}
+    </div>
   );
-}, [store.modals, closeAndResetModals]);
+}, [store.modals]);
 
   const renderCropper = () => {
-    if (!showCropper || !cropImageSrc) return null;
-    return (
-      <div className="fixed inset-0 z-[99999] bg-black/90 flex items-center justify-center p-4">
-        <div className="bg-panelBg p-6 rounded-3xl flex flex-col items-center shadow-2xl">
-          <h2 className="text-white text-xl font-bold mb-6">Обрезка аватара</h2>
-          <div className="w-[200px] h-[200px] rounded-full overflow-hidden relative cursor-move bg-black shadow-inner"
-            onMouseDown={e => { setIsDragging(true); setDragStart({ x: e.clientX - cropPos.x, y: e.clientY - cropPos.y }); }}
-            onMouseMove={e => { if (isDragging) setCropPos({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y }); }}
-            onMouseUp={() => setIsDragging(false)} onMouseLeave={() => setIsDragging(false)}
-            onWheel={e => setCropScale(s => Math.max(0.5, Math.min(5, s + (e.deltaY > 0 ? -0.1 : 0.1))))}>
-            <img
-  ref={imgRef}
-  src={cropImageSrc}
-  draggable={false}
-  style={{
-    position: 'absolute', left: '50%', top: '50%',
-    transform: `translate(calc(-50% + ${cropPos.x}px), calc(-50% + ${cropPos.y}px)) scale(${cropScale})`,
-    maxWidth: '100%', maxHeight: '100%', objectFit: 'contain'
-  }}
-/>
-          </div>
-          <Md3Slider min={0.5} max={3} step={0.05} value={cropScale} onChange={setCropScale} className="mt-6" />
-          <div className="flex gap-4 mt-6 w-full">
-            <button onClick={() => setShowCropper(false)} className="flex-1 py-3 text-textMuted hover:bg-surface rounded-xl font-bold transition-colors">Отмена</button>
-            <button onClick={applyCrop} className="flex-1 py-3 bg-[#c70060] text-white font-bold rounded-xl hover:opacity-90 transition-opacity">Применить</button>
-          </div>
+  if (!showCropper || !cropImageSrc) return null;
+
+  return (
+    <div className="fixed inset-0 z-[99999] bg-black/90 flex items-center justify-center p-4">
+      <div className="bg-panelBg p-6 rounded-3xl flex flex-col items-center shadow-2xl w-[360px] max-w-full">
+        <div className="w-full flex items-center justify-between mb-6">
+          <h2 className="text-white text-xl font-bold">Обрезка аватара</h2>
+          <button
+            onClick={() => {
+              setShowCropper(false);
+              setCropGifDataUrl(null);
+              setCropImageSrc(null);
+              setCropScale(1);
+              setCropPos({ x: 0, y: 0 });
+              setIsDragging(false);
+            }}
+            className="text-textMuted hover:text-white transition-colors"
+          >
+            <X size={24} />
+          </button>
+        </div>
+
+        <div
+          className="w-[200px] h-[200px] rounded-full overflow-hidden relative cursor-move bg-black shadow-inner"
+          onMouseDown={e => {
+            setIsDragging(true);
+            setDragStart({ x: e.clientX - cropPos.x, y: e.clientY - cropPos.y });
+          }}
+          onMouseMove={e => {
+            if (isDragging) {
+              setCropPos({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y });
+            }
+          }}
+          onMouseUp={() => setIsDragging(false)}
+          onMouseLeave={() => setIsDragging(false)}
+          onWheel={e => setCropScale(s => Math.max(0.5, Math.min(5, s + (e.deltaY > 0 ? -0.1 : 0.1))))}
+        >
+          <img
+            ref={imgRef}
+            src={cropImageSrc}
+            draggable={false}
+            style={{
+              position: 'absolute',
+              left: '50%',
+              top: '50%',
+              transform: `translate(calc(-50% + ${cropPos.x}px), calc(-50% + ${cropPos.y}px)) scale(${cropScale})`,
+              maxWidth: '100%',
+              maxHeight: '100%',
+              objectFit: 'contain'
+            }}
+          />
+        </div>
+
+        <Md3Slider min={0.5} max={3} step={0.05} value={cropScale} onChange={setCropScale} className="mt-6" />
+
+        <div className="flex gap-4 mt-6 w-full">
+          <button
+            onClick={() => {
+              setShowCropper(false);
+              setCropGifDataUrl(null);
+              setCropImageSrc(null);
+              setCropScale(1);
+              setCropPos({ x: 0, y: 0 });
+              setIsDragging(false);
+            }}
+            className="flex-1 py-3 text-textMuted hover:bg-surface rounded-xl font-bold transition-colors"
+          >
+            Отмена
+          </button>
+          <button
+            onClick={applyCrop}
+            className="flex-1 py-3 bg-[#c70060] text-white font-bold rounded-xl hover:opacity-90 transition-opacity"
+          >
+            Применить
+          </button>
         </div>
       </div>
-    );
-  };
+    </div>
+  );
+};
 
   // === Screens ===
 
@@ -1434,60 +1514,103 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
           <div className="flex-1 flex flex-col relative bg-[#181818]">
 
             {store.currentCallUser && (
-              <div className="absolute top-0 left-0 right-0 bottom-[120px] p-6 flex items-center justify-center overflow-hidden">
-                <div ref={containerRef} className="w-full h-full flex items-center justify-center">
-                  <div className={`relative flex flex-col items-center justify-center overflow-hidden shrink-0 transition-all duration-200
-                    ${store.callStatus === 'calling' ? 'animate-call-pulse' : ''}
-                    ${store.currentCallUser.isSpeaking && store.callStatus === 'connected'
-                      ? 'shadow-[inset_0_0_0_3px_#3BA55C,inset_0_0_0_5px_#181818,0_10px_15px_-3px_rgba(0,0,0,0.5)]'
-                      : 'shadow-xl'}`}
-                    style={{ backgroundColor: store.currentCallUser.avatarColor, width: `${cardSize.w}px`, height: `${cardSize.h}px`, borderRadius: '24px' }}>
-                    <div className="relative" style={{ width: `${cardSize.avatarSize}px`, height: `${cardSize.avatarSize}px`, marginBottom: '16px' }}>
-  <div className="w-full h-full rounded-full overflow-hidden shadow-inner bg-black/20 relative">
-    <AvatarImg src={store.currentCallUser.avatarBase64} size={cardSize.avatarSize} />
-  </div>
-  {store.callStatus === 'connected' && (store.currentCallUser.isMuted || store.currentCallUser.isDeafened) && (
-    <div className="absolute -bottom-1 -right-1 bg-[#09090B] rounded-full p-1.5 shadow-lg">
-      {store.currentCallUser.isDeafened ? (
-        <div className="relative">
-          <Headphones size={14} className="text-danger" />
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="w-[18px] h-[2px] bg-danger rotate-45 rounded-full" />
+  <div className="absolute top-0 left-0 right-0 bottom-[120px] p-6 flex items-center justify-center overflow-hidden">
+    <div ref={containerRef} className="w-full h-full flex items-center justify-center">
+      <div
+        className={`relative flex flex-col items-center justify-center overflow-hidden shrink-0 transition-all duration-200
+          ${store.callStatus === 'calling' ? 'animate-call-pulse' : ''}
+          ${store.currentCallUser.isSpeaking && store.callStatus === 'connected'
+            ? 'shadow-[inset_0_0_0_3px_#3BA55C,inset_0_0_0_5px_#181818,0_10px_15px_-3px_rgba(0,0,0,0.5)]'
+            : 'shadow-xl'
+          }`}
+        style={{
+          backgroundColor: store.currentCallUser.avatarColor,
+          width: `${cardSize.w}px`,
+          height: `${cardSize.h}px`,
+          borderRadius: '24px'
+        }}
+      >
+        <div
+          className="relative"
+          style={{
+            width: `${cardSize.avatarSize}px`,
+            height: `${cardSize.avatarSize}px`,
+            marginBottom: '16px'
+          }}
+        >
+          <div className="w-full h-full rounded-full overflow-hidden shadow-inner bg-black/20 relative">
+            <AvatarImg src={store.currentCallUser.avatarBase64} size={cardSize.avatarSize} />
           </div>
-        </div>
-      ) : (
+
+          {(store.currentCallUser.isServerMuted || store.currentCallUser.isServerDeafened) && (
+  <div className="absolute left-2 bottom-2 flex items-center gap-1">
+    {store.currentCallUser.isServerMuted && (
+      <div className="w-7 h-7 rounded-full bg-[#09090B] flex items-center justify-center shadow-lg">
         <div className="relative">
           <Mic size={14} className="text-danger" />
           <div className="absolute inset-0 flex items-center justify-center">
-            <div className="w-[18px] h-[2px] bg-danger rotate-45 rounded-full" />
+            <div className="w-[16px] h-[2px] bg-danger rotate-45 rounded-full" />
           </div>
         </div>
-      )}
-    </div>
-  )}
-</div>
-                
-                    {store.callStatus === 'calling' && (
-                      <div className="absolute inset-0 bg-black/25 flex items-center justify-center" style={{ borderRadius: '24px' }}>
-                        <div className="flex gap-2.5">
-                          <div className="w-3 h-3 bg-white/90 rounded-full animate-bounce" />
-                          <div className="w-3 h-3 bg-white/90 rounded-full animate-bounce" style={{ animationDelay: '0.15s' }} />
-                          <div className="w-3 h-3 bg-white/90 rounded-full animate-bounce" style={{ animationDelay: '0.3s' }} />
-                        </div>
-                      </div>
-                    )}
-                    <div className={`absolute bottom-4 left-1/2 -translate-x-1/2 transition-all duration-300 ${isIdle && store.callStatus === 'connected' ? 'translate-y-8 opacity-0 pointer-events-none' : 'translate-y-0 opacity-100'}`}>
-                      <div className="bg-[#09090B]/80 backdrop-blur-md border border-[#303035]/50 px-4 py-1.5 rounded-full flex items-center gap-2 shadow-lg whitespace-nowrap" style={{ maxWidth: `${cardSize.w - 40}px` }}>
-                        <span className="text-white font-bold text-sm truncate">{store.currentCallUser.displayName}</span>
-                        {store.callStatus === 'calling' && <span className="text-textMuted text-xs font-medium">Дозвон...</span>}
-                        {store.callStatus === 'connected' && store.currentCallUser.isMuted && <Mic size={14} className="text-danger shrink-0" />}
-                        {store.callStatus === 'connected' && store.currentCallUser.isDeafened && <Headphones size={14} className="text-danger shrink-0" />}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+      </div>
+    )}
+
+    {store.currentCallUser.isServerDeafened && (
+      <div className="w-7 h-7 rounded-full bg-[#09090B] flex items-center justify-center shadow-lg">
+        <div className="relative">
+          <Headphones size={14} className="text-danger" />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-[16px] h-[2px] bg-danger rotate-45 rounded-full" />
+          </div>
+        </div>
+      </div>
+    )}
+  </div>
+)}
+        </div>
+
+        {store.callStatus === 'calling' && (
+          <div
+            className="absolute inset-0 bg-black/25 flex items-center justify-center"
+            style={{ borderRadius: '24px' }}
+          >
+            <div className="flex gap-2.5">
+              <div className="w-3 h-3 bg-white/90 rounded-full animate-bounce" />
+              <div className="w-3 h-3 bg-white/90 rounded-full animate-bounce" style={{ animationDelay: '0.15s' }} />
+              <div className="w-3 h-3 bg-white/90 rounded-full animate-bounce" style={{ animationDelay: '0.3s' }} />
+            </div>
+          </div>
+        )}
+
+        <div
+          className={`absolute bottom-4 left-1/2 -translate-x-1/2 transition-all duration-300 ${
+            isIdle && store.callStatus === 'connected'
+              ? 'translate-y-8 opacity-0 pointer-events-none'
+              : 'translate-y-0 opacity-100'
+          }`}
+        >
+          <div
+            className="bg-[#09090B]/80 backdrop-blur-md border border-[#303035]/50 px-4 py-1.5 rounded-full flex items-center gap-2 shadow-lg whitespace-nowrap"
+            style={{ maxWidth: `${cardSize.w - 40}px` }}
+          >
+            <span className="text-white font-bold text-sm truncate">{store.currentCallUser.displayName}</span>
+
+            {store.callStatus === 'calling' && (
+              <span className="text-textMuted text-xs font-medium">Дозвон...</span>
             )}
+
+            {store.callStatus === 'connected' && store.currentCallUser.isMuted && !store.currentCallUser.isServerMuted && (
+  <Mic size={14} className="text-danger shrink-0" />
+)}
+{store.callStatus === 'connected' && store.currentCallUser.isDeafened && !store.currentCallUser.isServerDeafened && (
+  <Headphones size={14} className="text-danger shrink-0" />
+)}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
 
             {!store.currentCallUser && !store.currentChannelId && (
   <div className="flex-1 flex flex-col items-center justify-center px-16">
@@ -1518,25 +1641,31 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
   <div className="w-full h-full rounded-full overflow-hidden shadow-inner bg-black/20 relative">
     <AvatarImg src={user.avatarBase64} size={cardSize.avatarSize} />
   </div>
-  {(user.isMuted || user.isDeafened) && (
-    <div className="absolute -bottom-1 -right-1 bg-[#09090B] rounded-full p-1.5 shadow-lg">
-      {user.isDeafened ? (
-        <div className="relative">
-          <Headphones size={14} className="text-danger" />
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="w-[18px] h-[2px] bg-danger rotate-45 rounded-full" />
-          </div>
-        </div>
-      ) : (
+  {(user.isServerMuted || user.isServerDeafened) && (
+  <div className="absolute left-2 bottom-2 flex items-center gap-1">
+    {user.isServerMuted && (
+      <div className="w-7 h-7 rounded-full bg-[#09090B] flex items-center justify-center shadow-lg">
         <div className="relative">
           <Mic size={14} className="text-danger" />
           <div className="absolute inset-0 flex items-center justify-center">
-            <div className="w-[18px] h-[2px] bg-danger rotate-45 rounded-full" />
+            <div className="w-[16px] h-[2px] bg-danger rotate-45 rounded-full" />
           </div>
         </div>
-      )}
-    </div>
-  )}
+      </div>
+    )}
+
+    {user.isServerDeafened && (
+      <div className="w-7 h-7 rounded-full bg-[#09090B] flex items-center justify-center shadow-lg">
+        <div className="relative">
+          <Headphones size={14} className="text-danger" />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-[16px] h-[2px] bg-danger rotate-45 rounded-full" />
+          </div>
+        </div>
+      </div>
+    )}
+  </div>
+)}
 </div>
                       <div className={`absolute bottom-4 left-1/2 -translate-x-1/2 transition-all duration-300 ${isIdle ? 'translate-y-8 opacity-0 pointer-events-none' : 'translate-y-0 opacity-100'}`}>
                         <div className="bg-[#09090B]/80 backdrop-blur-md border border-[#303035]/50 px-4 py-1.5 rounded-full flex items-center gap-2 shadow-lg whitespace-nowrap" style={{ maxWidth: `${cardSize.w - 40}px` }}>
@@ -1553,12 +1682,32 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
 
             {store.currentCallUser && (
               <div className="absolute bottom-10 left-1/2 -translate-x-1/2 bg-panelBg px-6 py-4 rounded-full flex gap-4 items-center shadow-2xl border border-[#303035] z-50">
-                <button onClick={toggleMute} className={`w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${store.currentUser?.isMuted ? 'bg-[#2B2D31] text-white' : 'bg-surface hover:bg-surfaceHover text-white'}`}>
-                  <Mic size={24} />{store.currentUser?.isMuted && <div className="absolute w-[30px] h-[3px] bg-danger rotate-45 rounded-full" />}
-                </button>
-                <button onClick={toggleDeafen} className={`w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${store.currentUser?.isDeafened ? 'bg-[#2B2D31] text-white' : 'bg-surface hover:bg-surfaceHover text-white'}`}>
-                  <Headphones size={24} />{store.currentUser?.isDeafened && <div className="absolute w-[30px] h-[3px] bg-danger rotate-45 rounded-full" />}
-                </button>
+                <button
+  onClick={toggleMute}
+  className={`w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${
+    (store.currentUser?.isMuted || store.currentUser?.isServerMuted || store.currentUser?.isServerDeafened)
+      ? 'bg-[#2B2D31] text-white'
+      : 'bg-surface hover:bg-surfaceHover text-white'
+  }`}
+>
+  <Mic size={24} />
+  {(store.currentUser?.isMuted || store.currentUser?.isServerMuted || store.currentUser?.isServerDeafened) && (
+    <div className="absolute w-[30px] h-[3px] bg-danger rotate-45 rounded-full" />
+  )}
+</button>
+                <button
+  onClick={toggleDeafen}
+  className={`w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${
+    (store.currentUser?.isDeafened || store.currentUser?.isServerDeafened)
+      ? 'bg-[#2B2D31] text-white'
+      : 'bg-surface hover:bg-surfaceHover text-white'
+  }`}
+>
+  <Headphones size={24} />
+  {(store.currentUser?.isDeafened || store.currentUser?.isServerDeafened) && (
+    <div className="absolute w-[30px] h-[3px] bg-danger rotate-45 rounded-full" />
+  )}
+</button>
                 <button onClick={handleEndCall} className="bg-danger hover:bg-red-600 text-white font-bold py-3.5 px-8 rounded-full flex items-center gap-3 transition-colors text-[15px]">
                   <PhoneOff size={20} /> Завершить
                 </button>
@@ -1567,12 +1716,32 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
 
             {store.currentChannelId && !store.currentCallUser && (
               <div className="absolute bottom-10 left-1/2 -translate-x-1/2 bg-panelBg px-6 py-4 rounded-full flex gap-4 items-center shadow-2xl border border-[#303035] z-50">
-                <button onClick={toggleMute} className={`w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${store.currentUser?.isMuted ? 'bg-[#2B2D31] text-white' : 'bg-surface hover:bg-surfaceHover text-white'}`}>
-                  <Mic size={24} />{store.currentUser?.isMuted && <div className="absolute w-[30px] h-[3px] bg-danger rotate-45 rounded-full" />}
-                </button>
-                <button onClick={toggleDeafen} className={`w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${store.currentUser?.isDeafened ? 'bg-[#2B2D31] text-white' : 'bg-surface hover:bg-surfaceHover text-white'}`}>
-                  <Headphones size={24} />{store.currentUser?.isDeafened && <div className="absolute w-[30px] h-[3px] bg-danger rotate-45 rounded-full" />}
-                </button>
+                <button
+  onClick={toggleMute}
+  className={`w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${
+    (store.currentUser?.isMuted || store.currentUser?.isServerMuted || store.currentUser?.isServerDeafened)
+      ? 'bg-[#2B2D31] text-white'
+      : 'bg-surface hover:bg-surfaceHover text-white'
+  }`}
+>
+  <Mic size={24} />
+  {(store.currentUser?.isMuted || store.currentUser?.isServerMuted || store.currentUser?.isServerDeafened) && (
+    <div className="absolute w-[30px] h-[3px] bg-danger rotate-45 rounded-full" />
+  )}
+</button>
+                <button
+  onClick={toggleDeafen}
+  className={`w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${
+    (store.currentUser?.isDeafened || store.currentUser?.isServerDeafened)
+      ? 'bg-[#2B2D31] text-white'
+      : 'bg-surface hover:bg-surfaceHover text-white'
+  }`}
+>
+  <Headphones size={24} />
+  {(store.currentUser?.isDeafened || store.currentUser?.isServerDeafened) && (
+    <div className="absolute w-[30px] h-[3px] bg-danger rotate-45 rounded-full" />
+  )}
+</button>
                 <button onClick={() => signalRService.leaveChannel()} className="bg-danger hover:bg-red-600 text-white font-bold py-3.5 px-8 rounded-full flex items-center gap-3 transition-colors text-[15px]">
                   <Phone size={20} /> Завершить
                 </button>
@@ -1716,16 +1885,40 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
 
       {store.pendingChannelSwitch && (
   <div className="fixed inset-0 z-[999] bg-black/80 flex items-center justify-center p-4">
-          <div className="bg-panelBg p-8 rounded-3xl w-[400px] text-center shadow-2xl">
-            <h2 className="text-xl font-bold mb-4 text-white">Сменить канал?</h2>
-            <p className="text-textMuted mb-8 font-medium">Вы покинете текущий канал и перейдёте в другой.</p>
-            <div className="flex gap-4">
-              <button onClick={() => store.setPendingChannelSwitch(null)} disabled={isSwitchingChannel} className="flex-1 bg-surface text-white py-3 rounded-xl font-bold hover:bg-surfaceHover transition-colors">Остаться</button>
-              <button onClick={confirmChannelSwitch} disabled={isSwitchingChannel} className="flex-1 bg-[#c70060] text-white py-3 rounded-xl font-bold hover:opacity-90 transition-opacity">{isSwitchingChannel ? 'Переход...' : 'Перейти'}</button>
-            </div>
-          </div>
-        </div>
-      )}
+    <div className="bg-panelBg p-8 rounded-3xl w-[400px] text-center shadow-2xl">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-xl font-bold text-white">Сменить канал?</h2>
+        <button
+          onClick={() => store.setPendingChannelSwitch(null)}
+          className="text-textMuted hover:text-white transition-colors"
+        >
+          <X size={24} />
+        </button>
+      </div>
+
+      <p className="text-textMuted mb-8 font-medium">
+        Вы покинете текущий канал и перейдёте в другой.
+      </p>
+
+      <div className="flex gap-4">
+        <button
+          onClick={() => store.setPendingChannelSwitch(null)}
+          disabled={isSwitchingChannel}
+          className="flex-1 bg-surface text-white py-3 rounded-xl font-bold hover:bg-surfaceHover transition-colors"
+        >
+          Остаться
+        </button>
+        <button
+          onClick={confirmChannelSwitch}
+          disabled={isSwitchingChannel}
+          className="flex-1 bg-[#c70060] text-white py-3 rounded-xl font-bold hover:opacity-90 transition-opacity"
+        >
+          {isSwitchingChannel ? 'Переход...' : 'Перейти'}
+        </button>
+      </div>
+    </div>
+  </div>
+)}
 
       {renderModal('inviteToChannel',
         <div className="bg-panelBg p-8 rounded-3xl w-[400px] shadow-2xl">
@@ -1832,8 +2025,12 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
 
       {renderModal('incomingCall',
         <div className="bg-panelBg p-8 rounded-3xl w-[350px] text-center shadow-2xl">
-          <div className="w-20 h-20 rounded-full mx-auto mb-4 overflow-hidden" style={{ backgroundColor: store.incomingCall?.callerAvatarColor }}>
-          </div>
+         <div
+  className="w-20 h-20 rounded-full mx-auto mb-4 overflow-hidden"
+  style={{ backgroundColor: store.incomingCall?.callerAvatarColor }}
+>
+  <AvatarImg src={store.incomingCall?.callerAvatarBase64 || null} size={80} />
+</div>
           <h2 className="text-xl font-bold mb-2 text-white">{store.incomingCall?.callerName}</h2>
           <p className="text-textMuted mb-8 font-medium">Входящий звонок...</p>
           <div className="flex gap-4">
@@ -1845,71 +2042,128 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
 
       {store.modals.profile && store.selectedProfileUser && (
   <div className="fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4">
-          <div className="bg-panelBg w-[350px] rounded-3xl overflow-hidden shadow-2xl relative">
-            <div className="h-28 w-full relative" style={{ backgroundColor: editProfileAvatarBase64 ? editProfileAvatarColor : store.selectedProfileUser?.avatarColor }}>
-  <button
-    onClick={() => {
-      const uid = store.selectedProfileUser!.id;
-      if (uid === store.currentUser?.id) openMyAchievements();
-      else openUserAchievements(uid);
-      store.closeProfileOnly();
-    }}
-    className="absolute bottom-3 right-4 w-9 h-9 rounded-lg bg-black/25 backdrop-blur-sm flex items-center justify-center hover:bg-black/40 transition-colors"
-    title="Достижения"
-  >
-    <Trophy size={16} className="text-white" />
-  </button>
-</div>
-            <div className="px-6 pb-8 relative bg-panelBg">
-              <button onClick={() => store.closeProfileOnly()} className="absolute top-4 right-4 text-textMuted hover:text-white transition-colors"><X size={20} /></button>
-             <div className="absolute -top-12 left-6 w-24 h-24 rounded-full border-[6px] border-panelBg overflow-hidden" style={{ backgroundColor: editProfileAvatarBase64 ? editProfileAvatarColor : store.selectedProfileUser?.avatarColor }}>
-  <AvatarImg src={editProfileAvatarBase64 || store.selectedProfileUser?.avatarBase64} size={84} />
-</div>
-              <div className="pt-14 mb-6">
-                {store.selectedProfileUser?.id === store.currentUser?.id ? (
-                  <>
-                    <label className="text-[10px] font-bold text-textMuted mb-2 block tracking-wider">ОТОБРАЖАЕМОЕ ИМЯ</label>
-                    <input type="text" value={editProfileDisplayName} onChange={e => { setEditProfileDisplayName(e.target.value); setError(''); }} maxLength={20} className="bg-surface w-full p-3 rounded-xl text-white font-bold text-lg mb-3 outline-none focus:ring-2 focus:ring-[#c70060]" />
-                    {error && <p className="text-danger text-xs mb-2 font-medium">{error}</p>}
-                    <p className="text-textMuted text-sm font-medium">@{store.selectedProfileUser?.username}</p>
-                  </>
-                ) : (
-                  <>
-                    <h2 className="text-2xl font-bold text-white truncate">{store.selectedProfileUser?.displayName}</h2>
-                    <p className="text-textMuted text-sm mt-1 font-medium">@{store.selectedProfileUser?.username}</p>
-                  </>
-                )}
-              </div>
-              {store.selectedProfileUser?.id === store.currentUser?.id ? (
-                <div className="flex flex-col gap-3">
-                  <input ref={profileFileInputRef} type="file" accept="image/*" className="hidden" onChange={e => onFileChange(e, 'profile')} />
-                  <button onClick={() => profileFileInputRef.current?.click()} className="w-full bg-surface text-white py-3.5 rounded-xl font-bold flex items-center justify-center hover:bg-surfaceHover transition-colors"><Camera size={18} className="mr-2" /> Сменить аватар</button>
-                  <button onClick={saveProfileChanges} className="w-full bg-[#c70060] text-white py-3.5 rounded-xl font-bold hover:opacity-90 transition-opacity">Сохранить</button>
-                </div>
-              ) : (
-                <div className="flex flex-col gap-3">
-                  <button
-  onClick={async () => {
-    if (store.selectedProfileUser) {
-      const ok = await signalRService.startCall(store.selectedProfileUser.id);
-      if (!ok) {
-        setOfflineToast('Пользователь не в сети');
-        setTimeout(() => setOfflineToast(null), 3000);
-      }
-    }
+    <div className="bg-panelBg w-[350px] rounded-3xl overflow-hidden shadow-2xl relative">
+      <div
+        className="h-28 w-full relative"
+        style={{ backgroundColor: editProfileAvatarBase64 ? editProfileAvatarColor : store.selectedProfileUser?.avatarColor }}
+      >
+        <button
+  onClick={() => {
+    const uid = store.selectedProfileUser!.id;
+    if (uid === store.currentUser?.id) openMyAchievements();
+    else openUserAchievements(uid);
     store.closeProfileOnly();
   }}
-  className="w-full bg-success text-white py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-green-600 transition-colors"
+  className="absolute bottom-3 right-4 w-10 h-10 rounded-xl bg-transparent border-2 border-white/90 flex items-center justify-center hover:bg-white/5 transition-colors shadow-lg"
+  title="Достижения"
 >
-  <Phone size={18} /> Позвонить
+  <span
+    className="w-full h-full flex items-center justify-center text-white text-[20px] leading-none select-none"
+    style={{
+      WebkitFontSmoothing: 'antialiased',
+      MozOsxFontSmoothing: 'grayscale',
+      textRendering: 'geometricPrecision'
+    }}
+  >
+    ✦
+  </span>
 </button>
-                  <button onClick={() => { if (store.selectedProfileUser) signalRService.removeFriend(store.selectedProfileUser.id); store.closeProfileOnly(); }} className="w-full bg-surface text-danger py-3.5 rounded-xl font-bold hover:bg-[#2B2D31] transition-colors">Удалить из друзей</button>
-                </div>
-              )}
-            </div>
-          </div>
+
+        <button
+          onClick={() => store.closeProfileOnly()}
+          className="absolute top-4 right-4 text-textMuted hover:text-white transition-colors"
+        >
+          <X size={20} />
+        </button>
+      </div>
+
+      <div className="px-6 pb-8 relative bg-panelBg">
+        <div
+          className="absolute -top-12 left-6 w-24 h-24 rounded-full border-[6px] border-panelBg overflow-hidden"
+          style={{ backgroundColor: editProfileAvatarBase64 ? editProfileAvatarColor : store.selectedProfileUser?.avatarColor }}
+        >
+          <AvatarImg src={editProfileAvatarBase64 || store.selectedProfileUser?.avatarBase64} size={84} />
         </div>
-      )}
+
+        <div className="pt-14 mb-6">
+          {store.selectedProfileUser?.id === store.currentUser?.id ? (
+            <>
+              <label className="text-[10px] font-bold text-textMuted mb-2 block tracking-wider">ОТОБРАЖАЕМОЕ ИМЯ</label>
+              <input
+                type="text"
+                value={editProfileDisplayName}
+                onChange={e => {
+                  setEditProfileDisplayName(e.target.value);
+                  setError('');
+                }}
+                maxLength={20}
+                className="bg-surface w-full p-3 rounded-xl text-white font-bold text-lg mb-3 outline-none focus:ring-2 focus:ring-[#c70060]"
+              />
+              {error && <p className="text-danger text-xs mb-2 font-medium">{error}</p>}
+              <p className="text-textMuted text-sm font-medium">@{store.selectedProfileUser?.username}</p>
+            </>
+          ) : (
+            <>
+              <h2 className="text-2xl font-bold text-white truncate">{store.selectedProfileUser?.displayName}</h2>
+              <p className="text-textMuted text-sm mt-1 font-medium">@{store.selectedProfileUser?.username}</p>
+            </>
+          )}
+        </div>
+
+        {store.selectedProfileUser?.id === store.currentUser?.id ? (
+          <div className="flex flex-col gap-3">
+            <input
+              ref={profileFileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={e => onFileChange(e, 'profile')}
+            />
+            <button
+              onClick={() => profileFileInputRef.current?.click()}
+              className="w-full bg-surface text-white py-3.5 rounded-xl font-bold flex items-center justify-center hover:bg-surfaceHover transition-colors"
+            >
+              <Camera size={18} className="mr-2" /> Сменить аватар
+            </button>
+            <button
+              onClick={saveProfileChanges}
+              className="w-full bg-[#c70060] text-white py-3.5 rounded-xl font-bold hover:opacity-90 transition-opacity"
+            >
+              Сохранить
+            </button>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            <button
+              onClick={async () => {
+                if (store.selectedProfileUser) {
+                  const ok = await signalRService.startCall(store.selectedProfileUser.id);
+                  if (!ok) {
+                    setOfflineToast('Пользователь не в сети');
+                    setTimeout(() => setOfflineToast(null), 3000);
+                  }
+                }
+                store.closeProfileOnly();
+              }}
+              className="w-full bg-success text-white py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-green-600 transition-colors"
+            >
+              <Phone size={18} /> Позвонить
+            </button>
+            <button
+              onClick={() => {
+                if (store.selectedProfileUser) signalRService.removeFriend(store.selectedProfileUser.id);
+                store.closeProfileOnly();
+              }}
+              className="w-full bg-surface text-danger py-3.5 rounded-xl font-bold hover:bg-[#2B2D31] transition-colors"
+            >
+              Удалить из друзей
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  </div>
+)}
       {/* Achievement Toast */}
 {/* Achievement Toast */}
 {store.achievementToast && (() => {

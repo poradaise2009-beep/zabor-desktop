@@ -1,3 +1,5 @@
+
+
 import { create } from 'zustand';
 
 export interface User {
@@ -7,8 +9,15 @@ export interface User {
   avatarBase64: string | null;
   avatarColor: string;
   isOnline: boolean;
+
+  
   isMuted: boolean;
   isDeafened: boolean;
+
+  
+  isServerMuted?: boolean;
+  isServerDeafened?: boolean;
+
   isSpeaking: boolean;
   currentChannelId?: string | null;
   currentCallUserId?: string | null;
@@ -46,6 +55,7 @@ export interface IncomingCall {
   callerId: string;
   callerName: string;
   callerAvatarColor: string;
+  callerAvatarBase64?: string | null;
 }
 
 interface AppState {
@@ -105,11 +115,23 @@ interface AppState {
   updateUserStatus: (userId: string, updates: Partial<User>) => void;
   setSpeakingStatus: (userId: string, isSpeaking: boolean) => void;
 
-    modals: {
-    settings: boolean; privacy: boolean; addFriend: boolean; createChannel: boolean;
-    profile: boolean; inviteToChannel: boolean; channelEdit: boolean; userVolume: boolean;
-    incomingCall: boolean; channelFull: boolean; channelMembers: boolean; kickConfirm: boolean;
-    channelSwitch: boolean; achievements: boolean; adminConsole: boolean; adminUserSettings: boolean;
+  modals: {
+    settings: boolean;
+    privacy: boolean;
+    addFriend: boolean;
+    createChannel: boolean;
+    profile: boolean;
+    inviteToChannel: boolean;
+    channelEdit: boolean;
+    userVolume: boolean;
+    incomingCall: boolean;
+    channelFull: boolean;
+    channelMembers: boolean;
+    kickConfirm: boolean;
+    channelSwitch: boolean;
+    achievements: boolean;
+    adminConsole: boolean;
+    adminUserSettings: boolean;
   };
 
   setModal: (modalName: keyof AppState['modals'], isOpen: boolean) => void;
@@ -123,6 +145,16 @@ interface AppState {
   setSelectedChannelForInvite: (ch: VoiceChannel | null) => void;
 }
 
+const updateUserInList = (list: User[], userId: string, updates: Partial<User>): User[] => {
+  let changed = false;
+  const next = list.map(user => {
+    if (user.id !== userId) return user;
+    changed = true;
+    return { ...user, ...updates };
+  });
+  return changed ? next : list;
+};
+
 export const useAppStore = create<AppState>((set) => ({
   currentUser: null,
   channels: [],
@@ -131,15 +163,22 @@ export const useAppStore = create<AppState>((set) => ({
   channelInvites: [],
   voiceUsers: [],
   currentChannelId: null,
+
   channelUsersMap: {},
+
   channelMembers: [],
   selectedChannelForMembers: null,
   userToKick: null,
+
   incomingCall: null,
   currentCallUser: null,
   callStatus: 'idle',
+
   isJoiningChannel: false,
   userVolumes: {},
+
+  pendingChannelSwitch: null,
+  setPendingChannelSwitch: (channelId) => set({ pendingChannelSwitch: channelId }),
 
   achievementToast: null,
   achievementsData: null,
@@ -157,23 +196,35 @@ export const useAppStore = create<AppState>((set) => ({
   setCurrentChannelId: (id) => set({ currentChannelId: id }),
   setIsJoiningChannel: (isJoining) => set({ isJoiningChannel: isJoining }),
 
-  pendingChannelSwitch: null,
-  setPendingChannelSwitch: (channelId) => set({ pendingChannelSwitch: channelId }),
-
   setChannelUsers: (channelId, users) => set((state) => ({
-    channelUsersMap: { ...state.channelUsersMap, [channelId]: [...users] }
+    channelUsersMap: { ...state.channelUsersMap, [channelId]: [...users] },
+    voiceUsers: state.currentChannelId === channelId ? [...users] : state.voiceUsers
   })),
 
-  setFullChannelState: (stateMap) => set({ channelUsersMap: stateMap }),
+  setFullChannelState: (stateMap) => set((state) => {
+    const currentChannelId = state.currentChannelId;
+    const currentChannelUsers = currentChannelId ? (stateMap[currentChannelId] || []) : [];
+    return {
+      channelUsersMap: stateMap,
+      voiceUsers: currentChannelId ? currentChannelUsers : state.voiceUsers
+    };
+  }),
 
   addUserToChannelMap: (channelId, user) => set((state) => {
-    const list = state.channelUsersMap[channelId];
-    if (list?.some(u => u.id === user.id)) return state;
+    const current = state.channelUsersMap[channelId] || [];
+    if (current.some(u => u.id === user.id)) return state;
+
+    const nextChannelUsers = [...current, user];
     return {
       channelUsersMap: {
         ...state.channelUsersMap,
-        [channelId]: [...(list || []), user],
+        [channelId]: nextChannelUsers,
       },
+      voiceUsers: state.currentChannelId === channelId
+        ? state.voiceUsers.some(u => u.id === user.id)
+          ? state.voiceUsers
+          : [...state.voiceUsers, user]
+        : state.voiceUsers
     };
   }),
 
@@ -181,11 +232,17 @@ export const useAppStore = create<AppState>((set) => ({
     if (channelId) {
       const list = state.channelUsersMap[channelId];
       if (!list || !list.some(u => u.id === userId)) return state;
+
+      const nextList = list.filter(u => u.id !== userId);
+
       return {
         channelUsersMap: {
           ...state.channelUsersMap,
-          [channelId]: list.filter(u => u.id !== userId),
+          [channelId]: nextList,
         },
+        voiceUsers: state.currentChannelId === channelId
+          ? state.voiceUsers.filter(u => u.id !== userId)
+          : state.voiceUsers
       };
     }
 
@@ -196,12 +253,19 @@ export const useAppStore = create<AppState>((set) => ({
       if (filtered.length !== users.length) changed = true;
       newMap[key] = filtered;
     }
-    return changed ? { channelUsersMap: newMap } : state;
+
+    return changed
+      ? {
+          channelUsersMap: newMap,
+          voiceUsers: state.voiceUsers.filter(u => u.id !== userId)
+        }
+      : state;
   }),
 
   setChannelMembers: (users) => set({ channelMembers: users }),
   setSelectedChannelForMembers: (ch) => set({ selectedChannelForMembers: ch }),
   setUserToKick: (u) => set({ userToKick: u }),
+
   setIncomingCall: (call) => set({ incomingCall: call }),
   setCurrentCallUser: (user) => set({ currentCallUser: user }),
   setCallStatus: (status) => set({ callStatus: status }),
@@ -210,54 +274,123 @@ export const useAppStore = create<AppState>((set) => ({
     userVolumes: { ...state.userVolumes, [userId]: volume }
   })),
 
-  setSpeakingStatus: (userId, isSpeaking) => set((state) => ({
-    voiceUsers: state.voiceUsers.map(u => u.id === userId ? { ...u, isSpeaking } : u),
-    currentCallUser: state.currentCallUser?.id === userId ? { ...state.currentCallUser, isSpeaking } : state.currentCallUser,
-    currentUser: state.currentUser?.id === userId ? { ...state.currentUser, isSpeaking } : state.currentUser
-  })),
+  setSpeakingStatus: (userId, isSpeaking) => set((state) => {
+    const voiceUsers = updateUserInList(state.voiceUsers, userId, { isSpeaking });
 
-  updateUserStatus: (userId, updates) => set((state) => {
-    const hasChannelMapChanges = Object.values(state.channelUsersMap)
-      .some(users => users.some(u => u.id === userId));
+    let currentCallUser = state.currentCallUser;
+    if (currentCallUser?.id === userId) {
+      currentCallUser = { ...currentCallUser, isSpeaking };
+    }
 
-    const mapCopy = hasChannelMapChanges
-      ? Object.fromEntries(
-          Object.entries(state.channelUsersMap).map(([chId, users]) => [
-            chId,
-            users.some(u => u.id === userId)
-              ? users.map(u => u.id === userId ? { ...u, ...updates } : u)
-              : users,
-          ])
-        )
-      : state.channelUsersMap;
+    let currentUser = state.currentUser;
+    if (currentUser?.id === userId) {
+      currentUser = { ...currentUser, isSpeaking };
+    }
+
+    const channelUsersMap = Object.fromEntries(
+      Object.entries(state.channelUsersMap).map(([channelId, users]) => [
+        channelId,
+        updateUserInList(users, userId, { isSpeaking })
+      ])
+    );
+
+    const friends = updateUserInList(state.friends, userId, { isSpeaking });
+    const friendRequests = updateUserInList(state.friendRequests, userId, { isSpeaking });
+    const channelMembers = updateUserInList(state.channelMembers, userId, { isSpeaking });
+    const selectedProfileUser = state.selectedProfileUser?.id === userId
+      ? { ...state.selectedProfileUser, isSpeaking }
+      : state.selectedProfileUser;
 
     return {
-      voiceUsers: state.voiceUsers.map(u => u.id === userId ? { ...u, ...updates } : u),
-      friends: state.friends.map(u => u.id === userId ? { ...u, ...updates } : u),
-      channelMembers: state.channelMembers.map(u => u.id === userId ? { ...u, ...updates } : u),
-      currentUser: state.currentUser?.id === userId ? { ...state.currentUser, ...updates } : state.currentUser,
-      currentCallUser: state.currentCallUser?.id === userId ? { ...state.currentCallUser, ...updates } : state.currentCallUser,
-      channelUsersMap: mapCopy,
+      voiceUsers,
+      currentCallUser,
+      currentUser,
+      channelUsersMap,
+      friends,
+      friendRequests,
+      channelMembers,
+      selectedProfileUser
     };
   }),
 
-    modals: {
-    settings: false, privacy: false, addFriend: false, createChannel: false,
-    profile: false, inviteToChannel: false, channelEdit: false, userVolume: false,
-    incomingCall: false, channelFull: false, channelMembers: false, kickConfirm: false,
-    channelSwitch: false, achievements: false, adminConsole: false, adminUserSettings: false,
+  updateUserStatus: (userId, updates) => set((state) => {
+    const voiceUsers = updateUserInList(state.voiceUsers, userId, updates);
+    const friends = updateUserInList(state.friends, userId, updates);
+    const friendRequests = updateUserInList(state.friendRequests, userId, updates);
+    const channelMembers = updateUserInList(state.channelMembers, userId, updates);
+
+    const channelUsersMap = Object.fromEntries(
+      Object.entries(state.channelUsersMap).map(([channelId, users]) => [
+        channelId,
+        updateUserInList(users, userId, updates)
+      ])
+    );
+
+    const currentUser = state.currentUser?.id === userId
+      ? { ...state.currentUser, ...updates }
+      : state.currentUser;
+
+    const currentCallUser = state.currentCallUser?.id === userId
+      ? { ...state.currentCallUser, ...updates }
+      : state.currentCallUser;
+
+    const selectedProfileUser = state.selectedProfileUser?.id === userId
+      ? { ...state.selectedProfileUser, ...updates }
+      : state.selectedProfileUser;
+
+    return {
+      voiceUsers,
+      friends,
+      friendRequests,
+      channelMembers,
+      channelUsersMap,
+      currentUser,
+      currentCallUser,
+      selectedProfileUser
+    };
+  }),
+
+  modals: {
+    settings: false,
+    privacy: false,
+    addFriend: false,
+    createChannel: false,
+    profile: false,
+    inviteToChannel: false,
+    channelEdit: false,
+    userVolume: false,
+    incomingCall: false,
+    channelFull: false,
+    channelMembers: false,
+    kickConfirm: false,
+    channelSwitch: false,
+    achievements: false,
+    adminConsole: false,
+    adminUserSettings: false,
   },
 
   setModal: (name, isOpen) => set((state) => ({
     modals: { ...state.modals, [name]: isOpen }
   })),
 
-    closeAllModals: () => set({
+  closeAllModals: () => set({
     modals: {
-      settings: false, privacy: false, addFriend: false, createChannel: false,
-      profile: false, inviteToChannel: false, channelEdit: false, userVolume: false,
-      incomingCall: false, channelFull: false, channelMembers: false, kickConfirm: false,
-      channelSwitch: false, achievements: false, adminConsole: false, adminUserSettings: false,
+      settings: false,
+      privacy: false,
+      addFriend: false,
+      createChannel: false,
+      profile: false,
+      inviteToChannel: false,
+      channelEdit: false,
+      userVolume: false,
+      incomingCall: false,
+      channelFull: false,
+      channelMembers: false,
+      kickConfirm: false,
+      channelSwitch: false,
+      achievements: false,
+      adminConsole: false,
+      adminUserSettings: false,
     },
     pendingChannelSwitch: null
   }),
