@@ -823,19 +823,21 @@ const handleLogout = useCallback(async () => {
   }, [store.currentUser, editProfileDisplayName, editProfileAvatarBase64, editProfileAvatarColor, validateName, saveLocalCache]);
 
   const handleCreateChannel = useCallback(async () => {
-    const nameErr = validateName(newChannelName);
-    if (nameErr) { setError(nameErr); return; }
-    await signalRService.createChannel(newChannelName.trim());
-    closeAndResetModals();
-  }, [newChannelName, validateName, closeAndResetModals]);
+  const nameErr = validateName(newChannelName);
+  if (nameErr) { setError(nameErr); return; }
+  closeAndResetModals();
+  signalRService.createChannel(newChannelName.trim());
+}, [newChannelName, validateName, closeAndResetModals]);
 
   const saveChannelEdit = useCallback(async () => {
-    if (!editChannelId) return;
-    const nameErr = validateName(editChannelName);
-    if (nameErr) { setError(nameErr); return; }
-    await signalRService.updateChannel(editChannelId, editChannelName.trim());
-    closeAndResetModals();
-  }, [editChannelId, editChannelName, validateName, closeAndResetModals]);
+  if (!editChannelId) return;
+  const nameErr = validateName(editChannelName);
+  if (nameErr) { setError(nameErr); return; }
+  const id = editChannelId;
+  const name = editChannelName.trim();
+  closeAndResetModals();
+  signalRService.updateChannel(id, name);
+}, [editChannelId, editChannelName, validateName, closeAndResetModals]);
 
   const handleChannelClick = useCallback(async (channelId: string) => {
     if (store.currentChannelId === channelId) return;
@@ -857,11 +859,15 @@ const handleLogout = useCallback(async () => {
   }, [store.pendingChannelSwitch, store.currentCallUser]);
 
   const handleAddFriend = useCallback(async () => {
-    if (!friendName.trim()) return;
-    setError('');
-    const success = await signalRService.sendFriendRequest(friendName.trim());
-    if (success) closeAndResetModals(); else setError("Пользователь не найден или заявка отправлена");
-  }, [friendName, closeAndResetModals]);
+  if (!friendName.trim()) return;
+  const name = friendName.trim();
+  closeAndResetModals();
+  const success = await signalRService.sendFriendRequest(name);
+  if (!success) {
+    setOfflineToast('Пользователь не найден');
+    setTimeout(() => setOfflineToast(null), 3000);
+  }
+}, [friendName, closeAndResetModals]);
 
   const handleAcceptChannelInvite = useCallback(async (channelId: string) => {
     store.setChannelInvites(store.channelInvites.filter(i => i.channelId !== channelId));
@@ -892,10 +898,12 @@ const handleLogout = useCallback(async () => {
   }, []);
 
   const handleKickConfirm = useCallback(async () => {
-    const ch = store.selectedChannelForMembers; const u = store.userToKick;
-    if (ch && u) { await signalRService.kickFromChannel(ch.id, u.id); store.setChannelMembers(store.channelMembers.filter(m => m.id !== u.id)); }
-    store.setModal('kickConfirm', false); store.setUserToKick(null);
-  }, [store.selectedChannelForMembers, store.userToKick, store.channelMembers]);
+  const ch = store.selectedChannelForMembers;
+  const u = store.userToKick;
+  store.setModal('kickConfirm', false);
+  store.setUserToKick(null);
+  if (ch && u) signalRService.kickFromChannel(ch.id, u.id);
+}, [store.selectedChannelForMembers, store.userToKick]);
 
   const toggleMute = useCallback(() => {
   if (!store.currentUser) return;
@@ -949,7 +957,9 @@ const toggleDeafen = useCallback(() => {
     if (store.incomingCall) await signalRService.declineCall(store.incomingCall.callerId);
   }, [store.incomingCall]);
 
-  const handleEndCall = useCallback(async () => { await signalRService.endCall(); }, []);
+  const handleEndCall = useCallback(async () => {
+  await signalRService.endCall();
+}, []);
 
 const openMyAchievements = useCallback(async () => {
   store.setAchievementsData(null); // Показать "Загрузка..."
