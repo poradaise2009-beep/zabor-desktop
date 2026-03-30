@@ -19,23 +19,159 @@ export interface AchievementsPayload {
 export const ACHIEVEMENTS: AchievementDef[] = [
   // не не, читерить запрещено, иди отдыхай
   // Голосовые каналы
-  { id: 'first_channel', title: 'Первооткрыватель', description: 'Создать свой первый канал', icon: '🔭', maxValue: 1, statKey: 'channelsCreated', category: 'voice' },
-  { id: 'soul_1', title: 'Болтун', description: 'Провести 10 часов в каналах', icon: '🗣️', maxValue: 600, statKey: 'totalVoiceMinutes', category: 'voice', unit: 'min' },
-  { id: 'soul_2', title: 'Душа компании', description: 'Провести 50 часов в каналах', icon: '😜', maxValue: 3000, statKey: 'totalVoiceMinutes', category: 'voice', unit: 'min' },
-  { id: 'soul_3', title: 'Оратор', description: 'Провести 100 часов в каналах', icon: '🎙️', maxValue: 6000, statKey: 'totalVoiceMinutes', category: 'voice', unit: 'min' },
-  { id: 'crowd', title: 'Массовка', description: 'Быть в канале c 10 участниками', icon: '👥', maxValue: 10, statKey: 'maxUsersInChannel', category: 'voice' },
-  { id: 'collector', title: 'Коллекционер', description: 'Побывать в 10 разных каналах', icon: '📚', maxValue: 10, statKey: 'uniqueChannels', category: 'voice' },
-  { id: 'marathon', title: 'Тюлень', description: 'Сидеть в канале 5 часов', icon: '🦭', maxValue: 300, statKey: 'longestSessionMinutes', category: 'voice', unit: 'min' },
+  {
+    id: 'first_channel',
+    title: 'Первооткрыватель',
+    description: 'Создать свой первый канал',
+    icon: '🔭',
+    maxValue: 1,
+    statKey: 'channelsCreated',
+    category: 'voice'
+  },
+  {
+    id: 'soul_1',
+    title: 'Болтун',
+    description: 'Провести 10 часов в каналах',
+    icon: '🗣️',
+    maxValue: 600,
+    statKey: 'totalVoiceMinutes',
+    category: 'voice',
+    unit: 'min'
+  },
+  {
+    id: 'soul_2',
+    title: 'Душа компании',
+    description: 'Провести 50 часов в каналах',
+    icon: '😜',
+    maxValue: 3000,
+    statKey: 'totalVoiceMinutes',
+    category: 'voice',
+    unit: 'min'
+  },
+  {
+    id: 'soul_3',
+    title: 'Оратор',
+    description: 'Провести 100 часов в каналах',
+    icon: '🎙️',
+    maxValue: 6000,
+    statKey: 'totalVoiceMinutes',
+    category: 'voice',
+    unit: 'min'
+  },
+  {
+    id: 'crowd',
+    title: 'Массовка',
+    description: 'Быть в канале c 10 участниками',
+    icon: '👥',
+    maxValue: 10,
+    statKey: 'maxUsersInChannel',
+    category: 'voice'
+  },
+  {
+    id: 'collector',
+    title: 'Коллекционер',
+    description: 'Побывать в 10 разных каналах',
+    icon: '📚',
+    maxValue: 10,
+    statKey: 'uniqueChannels',
+    category: 'voice'
+  },
+  {
+    id: 'marathon',
+    title: 'Тюлень',
+    description: 'Сидеть в канале 5 часов',
+    icon: '🦭',
+    maxValue: 300,
+    statKey: 'longestSessionMinutes',
+    category: 'voice',
+    unit: 'min'
+  },
+  {
+    id: 'modnik',
+    title: 'Модник',
+    description: 'Загрузить GIF-аватарку',
+    icon: '🪩',
+    maxValue: 1,
+    statKey: 'gifAvatarUploaded',
+    category: 'voice'
+  },
+  {
+    id: 'victim',
+    title: 'Жертва',
+    description: 'Быть кикнутым из канала',
+    icon: '🥲',
+    maxValue: 1,
+    statKey: 'timesKicked',
+    category: 'voice'
+  },
 
   // Звонки
-  { id: 'first_call', title: 'Первый звонок', description: 'Совершить первый звонок', icon: '📞', maxValue: 1, statKey: 'totalCalls', category: 'calls' },
-  { id: 'same_wave', title: 'Переговорщики', description: 'Звонок длительностью 2+ часа', icon: '🫂', maxValue: 120, statKey: 'longestCallMinutes', category: 'calls', unit: 'min' },
-  { id: 'gossip', title: 'Мошенник', description: 'Совершить 50 звонков', icon: '🗿', maxValue: 50, statKey: 'totalCalls', category: 'calls' },
+  {
+    id: 'first_call',
+    title: 'Первый звонок',
+    description: 'Совершить первый звонок',
+    icon: '📞',
+    maxValue: 1,
+    statKey: 'totalCalls',
+    category: 'calls'
+  },
+  {
+    id: 'same_wave',
+    title: 'Переговорщики',
+    description: 'Звонок длительностью 2+ часа',
+    icon: '🫂',
+    maxValue: 120,
+    statKey: 'longestCallMinutes',
+    category: 'calls',
+    unit: 'min'
+  },
+  {
+    id: 'gossip',
+    title: 'Мошенник',
+    description: 'Совершить 50 звонков',
+    icon: '🗿',
+    maxValue: 50,
+    statKey: 'totalCalls',
+    category: 'calls'
+  },
+  {
+    id: 'busy',
+    title: 'Занят',
+    description: 'Отклонить более 5 звонков',
+    icon: '🚫',
+    maxValue: 5,
+    statKey: 'declinedCalls',
+    category: 'calls'
+  },
 
   // Социальные
-  { id: 'first_friend', title: 'Первый друг', description: 'Добавить первого друга', icon: '❤️', maxValue: 1, statKey: 'friendsCount', category: 'social' },
-  { id: 'magnet', title: 'Магнит', description: 'Добавить 20 друзей', icon: '🧲', maxValue: 20, statKey: 'friendsCount', category: 'social' },
-  { id: 'popular', title: 'Глава захолустья', description: 'Твой профиль просмотрели 100 раз', icon: '⭐', maxValue: 100, statKey: 'profileViews', category: 'social' },
+  {
+    id: 'first_friend',
+    title: 'Первый друг',
+    description: 'Добавить первого друга',
+    icon: '❤️',
+    maxValue: 1,
+    statKey: 'friendsCount',
+    category: 'social'
+  },
+  {
+    id: 'magnet',
+    title: 'Магнит',
+    description: 'Добавить 20 друзей',
+    icon: '🧲',
+    maxValue: 20,
+    statKey: 'friendsCount',
+    category: 'social'
+  },
+  {
+    id: 'popular',
+    title: 'Глава захолустья',
+    description: 'Твой профиль просмотрели 100 раз',
+    icon: '⭐',
+    maxValue: 100,
+    statKey: 'profileViews',
+    category: 'social'
+  },
 
   // Скрытые
 ];
@@ -43,10 +179,13 @@ export const ACHIEVEMENTS: AchievementDef[] = [
 export const getAchievementDef = (id: string) => ACHIEVEMENTS.find(a => a.id === id);
 
 export const formatProgress = (value: number, max: number, unit?: string): string => {
+  const safeValue = Math.min(value ?? 0, max);
+
   if (unit === 'min') {
-    const valH = Math.floor(value / 60);
+    const valH = Math.floor(safeValue / 60);
     const maxH = Math.floor(max / 60);
     return `${valH} / ${maxH} ч`;
   }
-  return `${Math.min(value, max)} / ${max}`;
+
+  return `${safeValue} / ${max}`;
 };
