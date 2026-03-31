@@ -144,3 +144,31 @@ textarea,
   -webkit-user-select: text;
   user-select: text;
 }
+
+@keyframes shake-horizontal {
+  0%, 100% { transform: translate(-50%, 0); }
+  10%, 50%, 90% { transform: translate(calc(-50% - 6px), 0); }
+  30%, 70% { transform: translate(calc(-50% + 6px), 0); }
+}
+
+.animate-shake {
+  animation: shake-horizontal 0.6s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+
+@keyframes admin-block-in {
+  from { transform: translate(-50%, -100%); opacity: 0; }
+  to { transform: translate(-50%, 0); opacity: 1; }
+}
+
+@keyframes admin-block-out {
+  from { transform: translate(-50%, 0); opacity: 1; }
+  to { transform: translate(-50%, -100%); opacity: 0; }
+}
+
+.animate-admin-block-in {
+  animation: admin-block-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-admin-block-out {
+  animation: admin-block-out 0.35s cubic-bezier(0.7, 0, 0.84, 0) forwards;
+}

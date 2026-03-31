@@ -208,6 +208,10 @@ const [adminCopiedLogin, setAdminCopiedLogin] = useState<string | null>(null);
 const [adminRenameChannelId, setAdminRenameChannelId] = useState<string | null>(null);
 const [adminRenameChannelName, setAdminRenameChannelName] = useState('');
 
+const [controlsShake, setControlsShake] = useState(false);
+const [adminBlockToast, setAdminBlockToast] = useState<string | null>(null);
+const adminBlockTimerRef = useRef<NodeJS.Timeout | null>(null);
+
 const settingsRef = useRef({
   inputVolume: 100, outputVolume: 100,
   selectedInput: 'default', selectedOutput: 'default',
@@ -905,49 +909,49 @@ const handleLogout = useCallback(async () => {
   if (ch && u) signalRService.kickFromChannel(ch.id, u.id);
 }, [store.selectedChannelForMembers, store.userToKick]);
 
+const showAdminBlockFeedback = useCallback(() => {
+  setControlsShake(true);
+  setTimeout(() => setControlsShake(false), 600);
+
+  if (adminBlockTimerRef.current) clearTimeout(adminBlockTimerRef.current);
+
+  setAdminBlockToast('Администратор запретил это действие');
+  adminBlockTimerRef.current = setTimeout(() => {
+    setAdminBlockToast('__hiding__');
+    setTimeout(() => setAdminBlockToast(null), 400);
+  }, 2500);
+}, []);
+
   const toggleMute = useCallback(() => {
   if (!store.currentUser) return;
 
-  // Если админ глобально выключил звук или микрофон — нельзя разъмьютиться
   if (store.currentUser.isServerMuted || store.currentUser.isServerDeafened) {
+    showAdminBlockFeedback();
     return;
   }
 
-  // Если пользователь сам deafened — нельзя включить микрофон отдельно
-  if (store.currentUser.isDeafened) {
-    return;
-  }
+  if (store.currentUser.isDeafened) return;
 
   const nextMuted = !store.currentUser.isMuted;
-  const nextUser = { ...store.currentUser, isMuted: nextMuted };
-  store.setCurrentUser(nextUser);
+  store.setCurrentUser({ ...store.currentUser, isMuted: nextMuted });
   signalRService.toggleState(nextMuted, store.currentUser.isDeafened);
-}, [store.currentUser]);
+}, [store.currentUser, showAdminBlockFeedback]);
 
 const toggleDeafen = useCallback(() => {
   if (!store.currentUser) return;
 
-  // Если админ глобально заглушил звук — пользователь не может включить его сам
   if (store.currentUser.isServerDeafened) {
+    showAdminBlockFeedback();
     return;
   }
 
   const nextDeafened = !store.currentUser.isDeafened;
-
-  // Если deafened = true -> микрофон тоже должен быть muted
-  // Если deafened = false -> микрофон остаётся muted, пока пользователь сам не включит
   const nextMuted = nextDeafened ? true : store.currentUser.isMuted;
-
-  const nextUser = {
-    ...store.currentUser,
-    isDeafened: nextDeafened,
-    isMuted: nextMuted
-  };
-
-  store.setCurrentUser(nextUser);
+  store.setCurrentUser({ ...store.currentUser, isDeafened: nextDeafened, isMuted: nextMuted });
   signalRService.toggleState(nextMuted, nextDeafened);
   webrtc.setDeafened(nextDeafened);
-}, [store.currentUser]);
+}, [store.currentUser, showAdminBlockFeedback]);
+
 
   const handleAcceptCall = useCallback(async () => {
     if (store.incomingCall) await signalRService.acceptCall(store.incomingCall.callerId);
@@ -1551,32 +1555,6 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
           <div className="w-full h-full rounded-full overflow-hidden shadow-inner bg-black/20 relative">
             <AvatarImg src={store.currentCallUser.avatarBase64} size={cardSize.avatarSize} />
           </div>
-
-          {(store.currentCallUser.isServerMuted || store.currentCallUser.isServerDeafened) && (
-  <div className="absolute left-2 bottom-2 flex items-center gap-1">
-    {store.currentCallUser.isServerMuted && (
-      <div className="w-7 h-7 rounded-full bg-[#09090B] flex items-center justify-center shadow-lg">
-        <div className="relative">
-          <Mic size={14} className="text-danger" />
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="w-[16px] h-[2px] bg-danger rotate-45 rounded-full" />
-          </div>
-        </div>
-      </div>
-    )}
-
-    {store.currentCallUser.isServerDeafened && (
-      <div className="w-7 h-7 rounded-full bg-[#09090B] flex items-center justify-center shadow-lg">
-        <div className="relative">
-          <Headphones size={14} className="text-danger" />
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="w-[16px] h-[2px] bg-danger rotate-45 rounded-full" />
-          </div>
-        </div>
-      </div>
-    )}
-  </div>
-)}
         </div>
 
         {store.callStatus === 'calling' && (
@@ -1609,10 +1587,10 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
               <span className="text-textMuted text-xs font-medium">Дозвон...</span>
             )}
 
-            {store.callStatus === 'connected' && store.currentCallUser.isMuted && !store.currentCallUser.isServerMuted && (
+            {store.callStatus === 'connected' && (store.currentCallUser.isMuted || store.currentCallUser.isServerMuted) && (
   <Mic size={14} className="text-danger shrink-0" />
 )}
-{store.callStatus === 'connected' && store.currentCallUser.isDeafened && !store.currentCallUser.isServerDeafened && (
+{store.callStatus === 'connected' && (store.currentCallUser.isDeafened || store.currentCallUser.isServerDeafened) && (
   <Headphones size={14} className="text-danger shrink-0" />
 )}
           </div>
@@ -1651,37 +1629,12 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
   <div className="w-full h-full rounded-full overflow-hidden shadow-inner bg-black/20 relative">
     <AvatarImg src={user.avatarBase64} size={cardSize.avatarSize} />
   </div>
-  {(user.isServerMuted || user.isServerDeafened) && (
-  <div className="absolute left-2 bottom-2 flex items-center gap-1">
-    {user.isServerMuted && (
-      <div className="w-7 h-7 rounded-full bg-[#09090B] flex items-center justify-center shadow-lg">
-        <div className="relative">
-          <Mic size={14} className="text-danger" />
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="w-[16px] h-[2px] bg-danger rotate-45 rounded-full" />
-          </div>
-        </div>
-      </div>
-    )}
-
-    {user.isServerDeafened && (
-      <div className="w-7 h-7 rounded-full bg-[#09090B] flex items-center justify-center shadow-lg">
-        <div className="relative">
-          <Headphones size={14} className="text-danger" />
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="w-[16px] h-[2px] bg-danger rotate-45 rounded-full" />
-          </div>
-        </div>
-      </div>
-    )}
-  </div>
-)}
 </div>
                       <div className={`absolute bottom-4 left-1/2 -translate-x-1/2 transition-all duration-300 ${isIdle ? 'translate-y-8 opacity-0 pointer-events-none' : 'translate-y-0 opacity-100'}`}>
                         <div className="bg-[#09090B]/80 backdrop-blur-md border border-[#303035]/50 px-4 py-1.5 rounded-full flex items-center gap-2 shadow-lg whitespace-nowrap" style={{ maxWidth: `${cardSize.w - 40}px` }}>
                           <span className="text-white font-bold text-sm truncate">{user.displayName}</span>
-                          {user.isMuted && <Mic size={14} className="text-danger shrink-0" />}
-                          {user.isDeafened && <Headphones size={14} className="text-danger shrink-0" />}
+                          {(user.isMuted || user.isServerMuted) && <Mic size={14} className="text-danger shrink-0" />}
+{(user.isDeafened || user.isServerDeafened) && <Headphones size={14} className="text-danger shrink-0" />}
                         </div>
                       </div>
                     </div>
@@ -1691,7 +1644,10 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
             )}
 
             {store.currentCallUser && (
-              <div className="absolute bottom-10 left-1/2 -translate-x-1/2 bg-panelBg px-6 py-4 rounded-full flex gap-4 items-center shadow-2xl border border-[#303035] z-50">
+  <div className={[
+    "absolute bottom-10 left-1/2 -translate-x-1/2 bg-panelBg px-6 py-4 rounded-full flex gap-4 items-center shadow-2xl border border-[#303035] z-50",
+    controlsShake ? "animate-shake" : ""
+  ].join(" ")}>
                 <button
   onClick={toggleMute}
   className={`w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${
@@ -1725,7 +1681,10 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
             )}
 
             {store.currentChannelId && !store.currentCallUser && (
-              <div className="absolute bottom-10 left-1/2 -translate-x-1/2 bg-panelBg px-6 py-4 rounded-full flex gap-4 items-center shadow-2xl border border-[#303035] z-50">
+  <div className={[
+    "absolute bottom-10 left-1/2 -translate-x-1/2 bg-panelBg px-6 py-4 rounded-full flex gap-4 items-center shadow-2xl border border-[#303035] z-50",
+    controlsShake ? "animate-shake" : ""
+  ].join(" ")}>
                 <button
   onClick={toggleMute}
   className={`w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${
@@ -1871,7 +1830,11 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
 </div>
                 <div className="flex items-center justify-between bg-surface p-4 rounded-xl">
                   <span className="font-semibold text-white">Шумоподавление</span>
-                  <Md3Switch checked={noiseSuppression} onChange={v => setNoiseSuppression(v)} />
+                  <Md3Switch checked={noiseSuppression} onChange={v => {
+  setNoiseSuppression(v);
+  webrtc.setNoiseSuppression(v);
+  webrtc.updateSettings(selectedInput, v);
+}} />
                 </div>
               </div>
             )}
@@ -2762,6 +2725,20 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
     </div>
   </div>
 )}
+
+{adminBlockToast && (() => {
+  const isHiding = adminBlockToast === '__hiding__';
+  return (
+    <div className={`fixed top-14 left-1/2 z-[99999] ${isHiding ? 'animate-admin-block-out' : 'animate-admin-block-in'}`}>
+      <div className="bg-panelBg border border-danger/40 rounded-2xl px-6 py-4 flex items-center gap-3 shadow-2xl shadow-danger/10">
+        <div className="w-8 h-8 rounded-full bg-danger/20 flex items-center justify-center shrink-0">
+          <MicOff size={16} className="text-danger" />
+        </div>
+        <p className="text-white font-semibold text-sm">{typeof adminBlockToast === 'string' && adminBlockToast !== '__hiding__' ? adminBlockToast : 'Администратор запретил это действие'}</p>
+      </div>
+    </div>
+  );
+})()}
 
       {renderCropper()}
     </>

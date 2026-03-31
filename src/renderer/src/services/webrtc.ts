@@ -42,17 +42,15 @@ export class WebRTCManager {
     iceCandidatePoolSize: 4
   }
 
-  
+  // ── SDP Munging ───────────────────────────────────────────────
+
   private mungeOpusSDP(sdp: string): string {
     const lines = sdp.split('\r\n')
     let opusPayloadType: string | null = null
 
     for (const line of lines) {
-      const match = line.match(/^a=rtpmap:(\d+)\s+opus\/48000\/?(\d+)?/i)
-      if (match) {
-        opusPayloadType = match[1]
-        break
-      }
+      const match = line.match(/^a=rtpmap:(\d+)\s+opus\/48000/i)
+      if (match) { opusPayloadType = match[1]; break }
     }
 
     if (!opusPayloadType) return sdp
@@ -74,13 +72,13 @@ export class WebRTCManager {
       if (line.startsWith(`a=fmtp:${opusPayloadType}`)) {
         updatedLine =
           `a=fmtp:${opusPayloadType} ` +
-          `minptime=10;useinbandfec=1;usedtx=1;maxaveragebitrate=96000;` +
-          `sprop-maxcapturerate=48000;stereo=0;cbr=0`
+          `minptime=10;useinbandfec=1;usedtx=0;maxaveragebitrate=128000;` +
+          `sprop-maxcapturerate=48000;stereo=0;cbr=0;maxplaybackrate=48000`
         fmtpUpdated = true
       }
 
       if (line.startsWith('a=ptime:')) {
-        updatedLine = 'a=ptime:20'
+        updatedLine = 'a=ptime:10'
         ptimeExists = true
       }
 
@@ -90,19 +88,15 @@ export class WebRTCManager {
     if (!fmtpUpdated) {
       const rtpmapIndex = result.findIndex(line => line.startsWith(`a=rtpmap:${opusPayloadType}`))
       if (rtpmapIndex >= 0) {
-        result.splice(
-          rtpmapIndex + 1,
-          0,
-          `a=fmtp:${opusPayloadType} minptime=10;useinbandfec=1;usedtx=1;maxaveragebitrate=96000;sprop-maxcapturerate=48000;stereo=0;cbr=0`
+        result.splice(rtpmapIndex + 1, 0,
+          `a=fmtp:${opusPayloadType} minptime=10;useinbandfec=1;usedtx=0;maxaveragebitrate=128000;sprop-maxcapturerate=48000;stereo=0;cbr=0;maxplaybackrate=48000`
         )
       }
     }
 
     if (!ptimeExists) {
       const audioIndex = result.findIndex(line => line.startsWith('m=audio'))
-      if (audioIndex >= 0) {
-        result.splice(audioIndex + 1, 0, 'a=ptime:20')
-      }
+      if (audioIndex >= 0) result.splice(audioIndex + 1, 0, 'a=ptime:10')
     }
 
     return result.join('\r\n')
@@ -111,118 +105,141 @@ export class WebRTCManager {
   private async optimizeSender(sender: RTCRtpSender): Promise<void> {
     try {
       const parameters = sender.getParameters()
-      if (!parameters.encodings || parameters.encodings.length === 0) {
-        parameters.encodings = [{}]
-      }
-
-      parameters.encodings[0].maxBitrate = 96000
+      if (!parameters.encodings || parameters.encodings.length === 0) parameters.encodings = [{}]
+      parameters.encodings[0].maxBitrate = 128000
       parameters.encodings[0].priority = 'high'
       parameters.degradationPreference = 'maintain-framerate'
-
       await sender.setParameters(parameters)
     } catch {}
   }
 
-  
+  // ── Audio Pipeline ────────────────────────────────────────────
+
   private async createProcessedStream(rawStream: MediaStream): Promise<MediaStream> {
-  this.cleanupProcessedStream()
+    this.cleanupProcessedStream()
 
-  const ctx = new AudioContext({
-    sampleRate: 48000,
-    latencyHint: 'interactive'
-  })
-  this.processedContext = ctx
+    const ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' })
+    this.processedContext = ctx
 
-  const destination = ctx.createMediaStreamDestination()
+    const destination = ctx.createMediaStreamDestination()
 
-  const inputGain = ctx.createGain()
-  inputGain.gain.value = Math.max(0, Math.min(2, this.inputVolume / 100))
-  this.inputGainNode = inputGain
+    const inputGain = ctx.createGain()
+    inputGain.gain.value = Math.max(0, Math.min(2, this.inputVolume / 100))
+    this.inputGainNode = inputGain
 
-  
-  const highPass = ctx.createBiquadFilter()
-  highPass.type = 'highpass'
-  highPass.frequency.value = 95
-  highPass.Q.value = 0.8
+    // High-pass: убирает гул, вибрации стола, ветер
+    const highPass = ctx.createBiquadFilter()
+    highPass.type = 'highpass'
+    highPass.frequency.value = 85
+    highPass.Q.value = 0.71
 
-  const lowPass = ctx.createBiquadFilter()
-  lowPass.type = 'lowpass'
-  lowPass.frequency.value = 8500
-  lowPass.Q.value = 0.8
+    // Low-pass: убирает ВЧ-шипение, щелчки мыши, клавиатуру
+    const lowPass = ctx.createBiquadFilter()
+    lowPass.type = 'lowpass'
+    lowPass.frequency.value = 14000
+    lowPass.Q.value = 0.71
 
-  const deHarsh = ctx.createBiquadFilter()
-  deHarsh.type = 'peaking'
-  deHarsh.frequency.value = 6200
-  deHarsh.Q.value = 1.1
-  deHarsh.gain.value = -4.5
+    // De-ess: смягчает резкие сибилянты (С, Ш, Щ, З)
+    const deEss = ctx.createBiquadFilter()
+    deEss.type = 'peaking'
+    deEss.frequency.value = 6500
+    deEss.Q.value = 2.0
+    deEss.gain.value = -3.0
 
-  const gate = ctx.createDynamicsCompressor()
-  gate.threshold.value = -52
-  gate.knee.value = 0
-  gate.ratio.value = 12
-  gate.attack.value = 0.002
-  gate.release.value = 0.08
+    // Presence boost: добавляет ясность голосу
+    const presence = ctx.createBiquadFilter()
+    presence.type = 'peaking'
+    presence.frequency.value = 3000
+    presence.Q.value = 1.0
+    presence.gain.value = 1.5
 
-  const compressor = ctx.createDynamicsCompressor()
-  compressor.threshold.value = -24
-  compressor.knee.value = 18
-  compressor.ratio.value = 2.2
-  compressor.attack.value = 0.004
-  compressor.release.value = 0.18
+    // Warmth: лёгкое усиление низких частот голоса
+    const warmth = ctx.createBiquadFilter()
+    warmth.type = 'peaking'
+    warmth.frequency.value = 200
+    warmth.Q.value = 0.8
+    warmth.gain.value = 1.0
 
-  const makeupGain = ctx.createGain()
-  makeupGain.gain.value = 1.04
+    // Noise gate: подавляет фоновый шум в паузах
+    const gate = ctx.createDynamicsCompressor()
+    gate.threshold.value = -50
+    gate.knee.value = 5
+    gate.ratio.value = 20
+    gate.attack.value = 0.001
+    gate.release.value = 0.05
 
-  if (this.noiseSuppression) {
-    try {
-      const { createRNNoiseProcessor } = await import('./rnnoise-processor')
-      const result = await createRNNoiseProcessor(ctx, rawStream)
-      this.rnnoiseDestroy = result.destroy
+    // Compressor: выравнивает громкость
+    const compressor = ctx.createDynamicsCompressor()
+    compressor.threshold.value = -22
+    compressor.knee.value = 12
+    compressor.ratio.value = 3.0
+    compressor.attack.value = 0.003
+    compressor.release.value = 0.15
 
-      const source = ctx.createMediaStreamSource(result.stream)
-      this.processedSource = source
+    // Limiter: предотвращает клиппинг
+    const limiter = ctx.createDynamicsCompressor()
+    limiter.threshold.value = -3
+    limiter.knee.value = 0
+    limiter.ratio.value = 20
+    limiter.attack.value = 0.001
+    limiter.release.value = 0.01
 
-      source.connect(highPass)
-      highPass.connect(lowPass)
-      lowPass.connect(deHarsh)
-      deHarsh.connect(gate)
-      gate.connect(compressor)
-      compressor.connect(makeupGain)
-      makeupGain.connect(inputGain)
-      inputGain.connect(destination)
+    // Makeup gain: компенсация потерь от gate/compressor
+    const makeupGain = ctx.createGain()
+    makeupGain.gain.value = 1.15
 
-      return destination.stream
-    } catch (error) {
-      console.warn('[WebRTC] RNNoise pipeline failed, using browser NS fallback', error)
+    if (this.noiseSuppression) {
+      try {
+        const { createRNNoiseProcessor } = await import('./rnnoise-processor')
+        const result = await createRNNoiseProcessor(ctx, rawStream)
+        this.rnnoiseDestroy = result.destroy
+
+        const source = ctx.createMediaStreamSource(result.stream)
+        this.processedSource = source
+
+        // RNNoise → EQ → Gate → Compressor → Limiter → Gain → Output
+        source.connect(highPass)
+        highPass.connect(lowPass)
+        lowPass.connect(warmth)
+        warmth.connect(presence)
+        presence.connect(deEss)
+        deEss.connect(gate)
+        gate.connect(compressor)
+        compressor.connect(limiter)
+        limiter.connect(makeupGain)
+        makeupGain.connect(inputGain)
+        inputGain.connect(destination)
+
+        return destination.stream
+      } catch (error) {
+        console.warn('[WebRTC] RNNoise failed, using browser NS fallback', error)
+      }
     }
+
+    // Fallback: без RNNoise
+    const source = ctx.createMediaStreamSource(rawStream)
+    this.processedSource = source
+
+    source.connect(highPass)
+    highPass.connect(lowPass)
+    lowPass.connect(warmth)
+    warmth.connect(presence)
+    presence.connect(deEss)
+    deEss.connect(gate)
+    gate.connect(compressor)
+    compressor.connect(limiter)
+    limiter.connect(makeupGain)
+    makeupGain.connect(inputGain)
+    inputGain.connect(destination)
+
+    return destination.stream
   }
 
-  
-  const source = ctx.createMediaStreamSource(rawStream)
-  this.processedSource = source
-
-  source.connect(highPass)
-  highPass.connect(lowPass)
-  lowPass.connect(deHarsh)
-  deHarsh.connect(gate)
-  gate.connect(compressor)
-  compressor.connect(makeupGain)
-  makeupGain.connect(inputGain)
-  inputGain.connect(destination)
-
-  return destination.stream
-}
-
   private cleanupProcessedStream() {
-    if (this.rnnoiseDestroy) {
-      this.rnnoiseDestroy()
-      this.rnnoiseDestroy = null
-    }
-
+    if (this.rnnoiseDestroy) { this.rnnoiseDestroy(); this.rnnoiseDestroy = null }
     if (this.processedContext && this.processedContext.state !== 'closed') {
       this.processedContext.close().catch(() => {})
     }
-
     this.processedContext = null
     this.processedSource = null
     this.inputGainNode = null
@@ -242,22 +259,19 @@ export class WebRTCManager {
 
   public setDeafened(isDeafened: boolean) {
     this.isDeafened = isDeafened
-    this.audioElements.forEach(audio => {
-      audio.muted = isDeafened
-    })
+    this.audioElements.forEach(audio => { audio.muted = isDeafened })
   }
 
   private updateRemoteVolume(userId: string) {
     const audio = this.audioElements.get(userId)
     if (!audio) return
-
     const userVolume = useAppStore.getState().userVolumes[userId] ?? 100
     const finalVolume = (this.outputVolume / 100) * (userVolume / 100)
-
     audio.volume = Math.max(0, Math.min(1, finalVolume))
     audio.muted = this.isDeafened
   }
 
+  // ── VAD ───────────────────────────────────────────────────────
 
   private setupVAD(stream: MediaStream, userId: string, isLocal: boolean) {
     this.clearVAD(userId)
@@ -266,10 +280,7 @@ export class WebRTCManager {
       if (!this.vadContext || this.vadContext.state === 'closed') {
         this.vadContext = new AudioContext({ latencyHint: 'interactive' })
       }
-
-      if (this.vadContext.state === 'suspended') {
-        this.vadContext.resume().catch(() => {})
-      }
+      if (this.vadContext.state === 'suspended') this.vadContext.resume().catch(() => {})
 
       const clonedTracks = stream.getAudioTracks().map(t => t.clone())
       const cloned = new MediaStream(clonedTracks)
@@ -306,7 +317,7 @@ export class WebRTCManager {
       const check = () => {
         const store = useAppStore.getState()
 
-        if (isLocal && store.currentUser?.isMuted) {
+        if (isLocal && (store.currentUser?.isMuted || store.currentUser?.isServerMuted)) {
           if (wasSpeaking) {
             wasSpeaking = false
             consecutiveVoiceFrames = 0
@@ -320,7 +331,6 @@ export class WebRTCManager {
 
         let peak = 0
         let sum = 0
-
         for (let i = 0; i < timeData.length; i++) {
           const sample = Math.abs(timeData[i] - 128)
           if (sample > peak) peak = sample
@@ -330,25 +340,15 @@ export class WebRTCManager {
         const avg = sum / timeData.length
         const voiceFrame = avg >= avgThreshold || peak >= peakThreshold
 
-        if (voiceFrame) {
-          consecutiveVoiceFrames++
-        } else {
-          consecutiveVoiceFrames = 0
-        }
-
-        if (consecutiveVoiceFrames >= 1) {
-          lastVoiceTime = Date.now()
-        }
+        if (voiceFrame) { consecutiveVoiceFrames++ } else { consecutiveVoiceFrames = 0 }
+        if (consecutiveVoiceFrames >= 1) lastVoiceTime = Date.now()
 
         const isSpeakingNow = (Date.now() - lastVoiceTime) < 500
 
         if (isSpeakingNow !== wasSpeaking) {
           wasSpeaking = isSpeakingNow
           store.setSpeakingStatus(userId, isSpeakingNow)
-
-          if (isLocal) {
-            signalRService.setSpeakingState(isSpeakingNow)
-          }
+          if (isLocal) signalRService.setSpeakingState(isSpeakingNow)
         }
       }
 
@@ -363,17 +363,14 @@ export class WebRTCManager {
     const entry = this.speakingIntervals.get(userId)
     if (entry) {
       clearInterval(entry.timer)
-      entry.stream.getTracks().forEach(track => {
-        track.stop()
-        track.enabled = false
-      })
+      entry.stream.getTracks().forEach(track => { track.stop(); track.enabled = false })
       this.speakingIntervals.delete(userId)
     }
-
     useAppStore.getState().setSpeakingStatus(userId, false)
   }
 
- 
+  // ── Devices ───────────────────────────────────────────────────
+
   public async getAudioDevices() {
     try {
       await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -382,14 +379,10 @@ export class WebRTCManager {
         inputs: devices.filter(device => device.kind === 'audioinput'),
         outputs: devices.filter(device => device.kind === 'audiooutput')
       }
-    } catch {
-      return { inputs: [], outputs: [] }
-    }
+    } catch { return { inputs: [], outputs: [] } }
   }
 
-  public setInputDevice(deviceId: string) {
-    this.currentDeviceId = deviceId
-  }
+  public setInputDevice(deviceId: string) { this.currentDeviceId = deviceId }
 
   public setOutputDevice(deviceId: string) {
     this.currentOutputDeviceId = deviceId
@@ -400,22 +393,19 @@ export class WebRTCManager {
     })
   }
 
+  public setNoiseSuppression(enabled: boolean) {
+    this.noiseSuppression = enabled
+  }
+
+  // ── Local Stream ──────────────────────────────────────────────
 
   public async startLocalStream(deviceId?: string, useNoiseSuppression?: boolean): Promise<boolean> {
     if (deviceId !== undefined) this.currentDeviceId = deviceId
     if (useNoiseSuppression !== undefined) this.noiseSuppression = useNoiseSuppression
 
     try {
-      if (this.rawStream) {
-        this.rawStream.getTracks().forEach(track => track.stop())
-        this.rawStream = null
-      }
-
-      if (this.localStream) {
-        this.localStream.getTracks().forEach(track => track.stop())
-        this.localStream = null
-      }
-
+      if (this.rawStream) { this.rawStream.getTracks().forEach(track => track.stop()); this.rawStream = null }
+      if (this.localStream) { this.localStream.getTracks().forEach(track => track.stop()); this.localStream = null }
       this.cleanupProcessedStream()
 
       const rawStream = await navigator.mediaDevices.getUserMedia({
@@ -426,7 +416,7 @@ export class WebRTCManager {
           sampleSize: 16,
           echoCancellation: true,
           autoGainControl: true,
-          noiseSuppression: this.noiseSuppression
+          noiseSuppression: !this.noiseSuppression // Если RNNoise вкл — браузерный NS выкл
         },
         video: false
       })
@@ -434,26 +424,18 @@ export class WebRTCManager {
       this.rawStream = rawStream
 
       const rawTrack = rawStream.getAudioTracks()[0]
-      if (rawTrack) {
-        rawTrack.contentHint = 'speech'
-      }
+      if (rawTrack) rawTrack.contentHint = 'speech'
 
       this.localStream = await this.createProcessedStream(rawStream)
 
       const localTrack = this.localStream.getAudioTracks()[0]
-      if (localTrack) {
-        localTrack.contentHint = 'speech'
-      }
+      if (localTrack) localTrack.contentHint = 'speech'
 
       const me = useAppStore.getState().currentUser
-      if (me && this.rawStream) {
-        this.setupVAD(this.rawStream, me.id, true)
-      }
+      if (me && this.rawStream) this.setupVAD(this.rawStream, me.id, true)
 
       return true
-    } catch {
-      return false
-    }
+    } catch { return false }
   }
 
   public async updateSettings(deviceId: string, useNoiseSuppression: boolean) {
@@ -476,29 +458,16 @@ export class WebRTCManager {
 
   public stopLocalStream() {
     const me = useAppStore.getState().currentUser
-    if (me) {
-      this.clearVAD(me.id)
-    }
-
-    if (this.localStream) {
-      this.localStream.getTracks().forEach(track => track.stop())
-      this.localStream = null
-    }
-
-    if (this.rawStream) {
-      this.rawStream.getTracks().forEach(track => track.stop())
-      this.rawStream = null
-    }
-
+    if (me) this.clearVAD(me.id)
+    if (this.localStream) { this.localStream.getTracks().forEach(track => track.stop()); this.localStream = null }
+    if (this.rawStream) { this.rawStream.getTracks().forEach(track => track.stop()); this.rawStream = null }
     this.cleanupProcessedStream()
     this.leaveAll()
   }
 
   public toggleMute(isMuted: boolean) {
     if (this.localStream) {
-      this.localStream.getAudioTracks().forEach(track => {
-        track.enabled = !isMuted
-      })
+      this.localStream.getAudioTracks().forEach(track => { track.enabled = !isMuted })
     }
   }
 
@@ -508,20 +477,18 @@ export class WebRTCManager {
     this.updateRemoteVolume(userId)
   }
 
-  
+  // ── Peer Connections ──────────────────────────────────────────
+
   private createAudioElement(userId: string): HTMLAudioElement {
     let audio = this.audioElements.get(userId)
     if (!audio) {
       audio = new Audio()
       audio.autoplay = true
-      
       if (this.currentOutputDeviceId !== 'default' && typeof (audio as any).setSinkId === 'function') {
         (audio as any).setSinkId(this.currentOutputDeviceId).catch(() => {})
       }
-
       this.audioElements.set(userId, audio)
     }
-
     this.updateRemoteVolume(userId)
     return audio
   }
@@ -535,37 +502,26 @@ export class WebRTCManager {
     }
 
     pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        signalRService.sendIceCandidate(userId, JSON.stringify(event.candidate))
-      }
+      if (event.candidate) signalRService.sendIceCandidate(userId, JSON.stringify(event.candidate))
     }
 
     let disconnectedTimer: NodeJS.Timeout | null = null
 
     pc.onconnectionstatechange = () => {
       const state = pc.connectionState
-
-      if (disconnectedTimer && state !== 'disconnected') {
-        clearTimeout(disconnectedTimer)
-        disconnectedTimer = null
-      }
-
+      if (disconnectedTimer && state !== 'disconnected') { clearTimeout(disconnectedTimer); disconnectedTimer = null }
       if (state === 'failed' || state === 'closed') {
         this.disconnectFromPeer(userId)
       } else if (state === 'disconnected') {
         disconnectedTimer = setTimeout(() => {
-          if (pc.connectionState === 'disconnected') {
-            this.disconnectFromPeer(userId)
-          }
+          if (pc.connectionState === 'disconnected') this.disconnectFromPeer(userId)
         }, 5000)
       }
     }
   }
 
   public async connectToPeer(userId: string) {
-    if (this.peerConnections.has(userId)) {
-      return
-    }
+    if (this.peerConnections.has(userId)) return
 
     const pc = new RTCPeerConnection(this.config)
     this.peerConnections.set(userId, pc)
@@ -580,33 +536,20 @@ export class WebRTCManager {
     this.setupPeerHandlers(pc, userId)
 
     try {
-      const offer = await pc.createOffer({
-        offerToReceiveAudio: true
-      })
-
+      const offer = await pc.createOffer({ offerToReceiveAudio: true })
       const mungedSdp = this.mungeOpusSDP(offer.sdp ?? '')
-      const localDescription = new RTCSessionDescription({
-        type: 'offer',
-        sdp: mungedSdp
-      })
-
-      await pc.setLocalDescription(localDescription)
+      await pc.setLocalDescription(new RTCSessionDescription({ type: 'offer', sdp: mungedSdp }))
       signalRService.sendWebRTCOffer(userId, JSON.stringify(pc.localDescription))
-    } catch {
-      this.disconnectFromPeer(userId)
-    }
+    } catch { this.disconnectFromPeer(userId) }
   }
 
   public async handleOffer(senderId: string, offerStr: string) {
     const store = useAppStore.getState()
     const inChannel = !!store.currentChannelId
     const inCall = store.currentCallUser?.id === senderId
-
     if (!inChannel && !inCall) return
 
-    if (this.peerConnections.has(senderId)) {
-      this.disconnectFromPeer(senderId)
-    }
+    if (this.peerConnections.has(senderId)) this.disconnectFromPeer(senderId)
 
     const pc = new RTCPeerConnection(this.config)
     this.peerConnections.set(senderId, pc)
@@ -623,56 +566,30 @@ export class WebRTCManager {
     try {
       const offer = JSON.parse(offerStr)
       await pc.setRemoteDescription(new RTCSessionDescription(offer))
-
       const answer = await pc.createAnswer()
       const mungedSdp = this.mungeOpusSDP(answer.sdp ?? '')
-      const localDescription = new RTCSessionDescription({
-        type: 'answer',
-        sdp: mungedSdp
-      })
-
-      await pc.setLocalDescription(localDescription)
+      await pc.setLocalDescription(new RTCSessionDescription({ type: 'answer', sdp: mungedSdp }))
       signalRService.sendWebRTCAnswer(senderId, JSON.stringify(pc.localDescription))
-    } catch {
-      this.disconnectFromPeer(senderId)
-    }
+    } catch { this.disconnectFromPeer(senderId) }
   }
 
   public async handleAnswer(senderId: string, answerStr: string) {
     const pc = this.peerConnections.get(senderId)
     if (!pc) return
-
-    try {
-      await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(answerStr)))
-    } catch {}
+    try { await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(answerStr))) } catch {}
   }
 
   public async handleIceCandidate(senderId: string, candidateStr: string) {
     const pc = this.peerConnections.get(senderId)
     if (!pc) return
-
-    try {
-      await pc.addIceCandidate(new RTCIceCandidate(JSON.parse(candidateStr)))
-    } catch {}
+    try { await pc.addIceCandidate(new RTCIceCandidate(JSON.parse(candidateStr))) } catch {}
   }
 
   public disconnectFromPeer(userId: string) {
     const pc = this.peerConnections.get(userId)
-    if (pc) {
-      pc.ontrack = null
-      pc.onicecandidate = null
-      pc.onconnectionstatechange = null
-      pc.close()
-      this.peerConnections.delete(userId)
-    }
-
+    if (pc) { pc.ontrack = null; pc.onicecandidate = null; pc.onconnectionstatechange = null; pc.close(); this.peerConnections.delete(userId) }
     const audio = this.audioElements.get(userId)
-    if (audio) {
-      audio.pause()
-      audio.srcObject = null
-      this.audioElements.delete(userId)
-    }
-
+    if (audio) { audio.pause(); audio.srcObject = null; this.audioElements.delete(userId) }
     this.clearVAD(userId)
   }
 
