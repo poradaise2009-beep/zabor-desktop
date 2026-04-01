@@ -275,43 +275,38 @@ export const useAppStore = create<AppState>((set) => ({
   })),
 
   setSpeakingStatus: (userId, isSpeaking) => set((state) => {
-    const voiceUsers = updateUserInList(state.voiceUsers, userId, { isSpeaking });
+  // Только обновляем коллекции, где пользователь реально присутствует
+  const voiceUsers = updateUserInList(state.voiceUsers, userId, { isSpeaking });
 
-    let currentCallUser = state.currentCallUser;
-    if (currentCallUser?.id === userId) {
-      currentCallUser = { ...currentCallUser, isSpeaking };
+  let currentCallUser = state.currentCallUser;
+  if (currentCallUser?.id === userId) {
+    currentCallUser = { ...currentCallUser, isSpeaking };
+  }
+
+  let currentUser = state.currentUser;
+  if (currentUser?.id === userId) {
+    currentUser = { ...currentUser, isSpeaking };
+  }
+
+  // channelUsersMap — обновляем только текущий канал
+  let channelUsersMap = state.channelUsersMap;
+  if (state.currentChannelId) {
+    const channelUsers = state.channelUsersMap[state.currentChannelId];
+    if (channelUsers?.some(u => u.id === userId)) {
+      channelUsersMap = {
+        ...state.channelUsersMap,
+        [state.currentChannelId]: updateUserInList(channelUsers, userId, { isSpeaking })
+      };
     }
+  }
 
-    let currentUser = state.currentUser;
-    if (currentUser?.id === userId) {
-      currentUser = { ...currentUser, isSpeaking };
-    }
-
-    const channelUsersMap = Object.fromEntries(
-      Object.entries(state.channelUsersMap).map(([channelId, users]) => [
-        channelId,
-        updateUserInList(users, userId, { isSpeaking })
-      ])
-    );
-
-    const friends = updateUserInList(state.friends, userId, { isSpeaking });
-    const friendRequests = updateUserInList(state.friendRequests, userId, { isSpeaking });
-    const channelMembers = updateUserInList(state.channelMembers, userId, { isSpeaking });
-    const selectedProfileUser = state.selectedProfileUser?.id === userId
-      ? { ...state.selectedProfileUser, isSpeaking }
-      : state.selectedProfileUser;
-
-    return {
-      voiceUsers,
-      currentCallUser,
-      currentUser,
-      channelUsersMap,
-      friends,
-      friendRequests,
-      channelMembers,
-      selectedProfileUser
-    };
-  }),
+  return {
+    voiceUsers,
+    currentCallUser,
+    currentUser,
+    channelUsersMap
+  };
+}),
 
   updateUserStatus: (userId, updates) => set((state) => {
     const voiceUsers = updateUserInList(state.voiceUsers, userId, updates);

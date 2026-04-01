@@ -20,3 +20,7 @@ loadSession: () => Promise<string | null>;
 clearSession: () => Promise<boolean>;
   }
 }
+declare module '*.mp3' {
+  const src: string;
+  export default src;
+}
