@@ -1,6 +1,6 @@
 import { app, shell, BrowserWindow, ipcMain, Tray, Menu, nativeImage } from 'electron';
 import { join } from 'path';
-import { existsSync, rmSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, rmSync, readFileSync, writeFileSync, promises as fsPromises } from 'fs';
 
 // ── GPU stability fixes ─────────────────────────────────────────
 app.commandLine.appendSwitch('disable-gpu-compositing');
@@ -343,19 +343,19 @@ app.whenReady().then(() => {
   // ── Session persistence ──
   const SESSION_PATH = join(app.getPath('userData'), 'session.json');
 
-  ipcMain.handle('save-session', (_event, data: string) => {
-    try { writeFileSync(SESSION_PATH, data, 'utf-8'); return true; } catch { return false; }
+  ipcMain.handle('save-session', async (_event, data: string) => {
+    try { await fsPromises.writeFile(SESSION_PATH, data, 'utf-8'); return true; } catch { return false; }
   });
 
-  ipcMain.handle('load-session', () => {
+  ipcMain.handle('load-session', async () => {
     try {
-      if (existsSync(SESSION_PATH)) return readFileSync(SESSION_PATH, 'utf-8');
+      if (existsSync(SESSION_PATH)) return await fsPromises.readFile(SESSION_PATH, 'utf-8');
     } catch {}
     return null;
   });
 
-  ipcMain.handle('clear-session', () => {
-    try { if (existsSync(SESSION_PATH)) rmSync(SESSION_PATH, { force: true }); } catch {}
+  ipcMain.handle('clear-session', async () => {
+    try { if (existsSync(SESSION_PATH)) await fsPromises.rm(SESSION_PATH, { force: true }); } catch {}
     return true;
   });
 

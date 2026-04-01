@@ -226,10 +226,6 @@ useEffect(() => {
           userId: parsed.userId
         };
 
-        // Применяем к стору — UI готов мгновенно
-        store.setCurrentUser(parsed.user);
-        store.setChannels(parsed.channels || []);
-        store.setFriends(parsed.friends || []);
         if (parsed.settings) applySettings(parsed.settings);
 
         credentialsRef.current = { login: parsed.login, password: parsed.password };
@@ -361,9 +357,6 @@ setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
       login: creds.login,
       password: creds.password,
       userId: currentUser.id,
-      user: currentUser,
-      channels: useAppStore.getState().channels,
-      friends: useAppStore.getState().friends,
       settings: {
         inputVolume: settingsRef.current.inputVolume,
         outputVolume: settingsRef.current.outputVolume,
