@@ -11,105 +11,10 @@ import { isPackedGif, packGif, unpackGif, getDisplaySrc, getStaticFrameSync, pre
 import { Trophy } from 'lucide-react';
 import { ACHIEVEMENTS, getAchievementDef, formatProgress, AchievementsPayload } from './achievements';
 
-// === Title Bar ===
-function TitleBar() {
-  const [isMaximized, setIsMaximized] = useState(false);
-
-  useEffect(() => {
-    const cleanup = window.windowControls?.onMaximizeChange(setIsMaximized);
-    return () => cleanup?.();
-  }, []);
-
-  return (
-    <div className="title-bar h-9 bg-[#09090B] flex items-center justify-between shrink-0 relative z-[10000] border-b border-[#1a1a1f]">
-      <div className="flex items-center pl-4 gap-2 pointer-events-none">
-        <span className="text-[13px] font-black tracking-[0.2em] text-white/30">ZABOR</span>
-      </div>
-      <div className="flex items-center h-full title-no-drag">
-        <button onClick={() => window.windowControls?.minimize()} className="h-full w-12 flex items-center justify-center text-white/40 hover:text-white hover:bg-white/[0.06] transition-colors">
-          <svg width="12" height="1" viewBox="0 0 12 1" fill="currentColor"><rect width="12" height="1" rx="0.5" /></svg>
-        </button>
-        <button onClick={() => window.windowControls?.maximize()} className="h-full w-12 flex items-center justify-center text-white/40 hover:text-white hover:bg-white/[0.06] transition-colors">
-          {isMaximized ? (
-            <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" strokeWidth="1"><rect x="3" y="0.5" width="7.5" height="7.5" rx="1" /><rect x="0.5" y="3" width="7.5" height="7.5" rx="1" /></svg>
-          ) : (
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1"><rect x="0.5" y="0.5" width="9" height="9" rx="1.5" /></svg>
-          )}
-        </button>
-        <button onClick={() => window.windowControls?.close()} className="h-full w-12 flex items-center justify-center text-white/40 hover:text-white hover:bg-[#c70060] transition-colors">
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"><line x1="1" y1="1" x2="11" y2="11" /><line x1="11" y1="1" x2="1" y2="11" /></svg>
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// === MD3 Components ===
-function Md3Slider({ min, max, value, step = 1, onChange, className = '' }: {
-  min: number; max: number; value: number; step?: number;
-  onChange: (v: number) => void; className?: string;
-}) {
-  const pct = ((value - min) / (max - min)) * 100;
-  return (
-    <input type="range" min={min} max={max} step={step} value={value}
-      onChange={e => onChange(Number(e.target.value))}
-      className={`md3-range w-full ${className}`}
-      style={{ '--slider-pct': `${pct}%` } as React.CSSProperties} />
-  );
-}
-
-function Md3Switch({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void; }) {
-  return (
-    <button role="switch" aria-checked={checked} onClick={() => onChange(!checked)}
-      className={`relative w-[52px] h-[32px] rounded-full transition-all duration-300 shrink-0 border-2
-        ${checked ? 'bg-[#c70060] border-[#c70060]' : 'bg-transparent border-[#79747E]'}`}>
-      <span className={`absolute top-1/2 -translate-y-1/2 rounded-full transition-all duration-300 flex items-center justify-center
-        ${checked ? 'left-[22px] w-6 h-6 bg-white shadow-md' : 'left-[4px] w-4 h-4 bg-[#79747E]'}`}>
-        {checked && (
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c70060" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="20 6 9 17 4 12" />
-          </svg>
-        )}
-      </span>
-    </button>
-  );
-}
-
-function AvatarImg({ src, size, animate = true, className = '' }: {
-  src: string | null | undefined;
-  size: number;
-  animate?: boolean;
-  className?: string;
-}) {
-  if (!src) return null;
-
-  const packed = unpackGif(src);
-
-  if (packed && animate) {
-    return (
-      <div className={`w-full h-full overflow-hidden relative ${className}`}>
-        <img
-          src={packed.g}
-          draggable={false}
-          className="absolute left-1/2 top-1/2 pointer-events-none"
-          style={{
-            transform: `translate(calc(-50% + ${packed.x * (size / 200)}px), calc(-50% + ${packed.y * (size / 200)}px)) scale(${packed.s})`,
-            maxWidth: '100%',
-            maxHeight: '100%',
-            objectFit: 'contain',
-          }}
-        />
-      </div>
-    );
-  }
-
-  if (packed && !animate) {
-    const staticSrc = getStaticFrameSync(src);
-    return staticSrc ? <img src={staticSrc} className={`w-full h-full object-cover ${className}`} /> : null;
-  }
-
-  return <img src={src} className={`w-full h-full object-cover ${className}`} />;
-}
+import { TitleBar } from './components/Layout/TitleBar';
+import { Md3Slider } from './components/Shared/Md3Slider';
+import { Md3Switch } from './components/Shared/Md3Switch';
+import { AvatarImg } from './components/Shared/AvatarImg';
 
 // === Main App ===
 export default function App() {
@@ -230,21 +135,35 @@ useEffect(() => {
 }, [login, password]);
 
   useEffect(() => {
-    if (!containerRef.current) return;
+  if (!containerRef.current) return;
 
-    // Мгновенное измерение при монтировании
-    const rect = containerRef.current.getBoundingClientRect();
+  let rafId: number | null = null;
+  const el = containerRef.current;
+
+  const measure = () => {
+    const rect = el.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
-      setContainerSize({ width: rect.width, height: rect.height });
+      setContainerSize(prev => {
+        if (Math.abs(prev.width - rect.width) < 2 && Math.abs(prev.height - rect.height) < 2) return prev;
+        return { width: rect.width, height: rect.height };
+      });
     }
+  };
 
-    const observer = new ResizeObserver((entries) => {
-      const { width, height } = entries[0].contentRect;
-      setContainerSize({ width, height });
-    });
-    observer.observe(containerRef.current);
-    return () => observer.disconnect();
-  }, [store.currentChannelId, store.currentCallUser?.id, appLoading]);
+  measure();
+
+  const observer = new ResizeObserver(() => {
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(measure);
+  });
+
+  observer.observe(el);
+
+  return () => {
+    observer.disconnect();
+    if (rafId) cancelAnimationFrame(rafId);
+  };
+}, [store.currentChannelId, store.currentCallUser?.id]);
 
   const getCardSize = (count: number, cw: number, ch: number) => {
     if (count === 0 || cw === 0 || ch === 0) return { w: 320, h: 180, avatarSize: 96 };
@@ -268,10 +187,10 @@ useEffect(() => {
 
   const activeUserCount = store.currentCallUser ? 1 : store.voiceUsers.length;
 
-  const cardSize = useMemo(
-    () => getCardSize(activeUserCount, containerSize.width, containerSize.height),
-    [activeUserCount, containerSize.width, containerSize.height]
-  );
+  const cardSize = useMemo(() => {
+  const { w, h, avatarSize } = getCardSize(activeUserCount, containerSize.width, containerSize.height);
+  return { w, h, avatarSize };
+}, [activeUserCount, containerSize.width, containerSize.height]);
 
   useEffect(() => {
     const unsubConnection = signalRService.onConnectionUpdate((isConnected) => {

@@ -1,7 +1,13 @@
 import { app, shell, BrowserWindow, ipcMain, Tray, Menu, nativeImage } from 'electron';
 import { join } from 'path';
 import { existsSync, rmSync, readFileSync, writeFileSync } from 'fs';
-import { electronApp, optimizer, is } from '@electron-toolkit/utils';
+
+// ── GPU stability fixes ─────────────────────────────────────────
+app.commandLine.appendSwitch('disable-gpu-compositing');
+app.commandLine.appendSwitch('force-color-profile', 'srgb');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+
+const isDev = !app.isPackaged;
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -24,9 +30,9 @@ if (!gotLock) {
   });
 }
 
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════
 // App Settings
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════
 interface AppSettings {
   openAtLogin: boolean;
 }
@@ -52,11 +58,10 @@ function saveAppSettings(settings: AppSettings): void {
 }
 
 function applyAutoLaunch(enabled: boolean): void {
-  if (!app.isPackaged) {
+  if (isDev) {
     app.setLoginItemSettings({ openAtLogin: false });
     return;
   }
-
   app.setLoginItemSettings({
     openAtLogin: enabled,
     args: enabled ? ['--autostart'] : [],
@@ -64,10 +69,60 @@ function applyAutoLaunch(enabled: boolean): void {
 }
 
 // ═══════════════════════════════════
+// Window State
+// ═══════════════════════════════════
+interface WindowState {
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  isMaximized?: boolean;
+}
+
+function getWindowStatePath(): string {
+  return join(app.getPath('userData'), 'window-state.json');
+}
+
+function loadWindowState(): WindowState | null {
+  try {
+    const filePath = getWindowStatePath();
+    if (existsSync(filePath)) {
+      return JSON.parse(readFileSync(filePath, 'utf-8'));
+    }
+  } catch {}
+  return null;
+}
+
+function saveWindowState(state: WindowState): void {
+  try {
+    writeFileSync(getWindowStatePath(), JSON.stringify(state, null, 2), 'utf-8');
+  } catch {}
+}
+
+let stateSaveTimer: NodeJS.Timeout | null = null;
+function scheduleWindowStateSave() {
+  if (stateSaveTimer) clearTimeout(stateSaveTimer);
+  stateSaveTimer = setTimeout(() => {
+    if (!mainWindow) return;
+    try {
+      const state: WindowState = {
+        isMaximized: mainWindow.isMaximized(),
+      };
+      const bounds = mainWindow.getNormalBounds();
+      state.x = bounds.x;
+      state.y = bounds.y;
+      state.width = bounds.width;
+      state.height = bounds.height;
+      saveWindowState(state);
+    } catch {}
+  }, 500);
+}
+
+// ═══════════════════════════════════
 // Tray
 // ═══════════════════════════════════
 function createTray(): void {
-  const iconPath = is.dev
+  const iconPath = isDev
     ? join(__dirname, '../../build/icon.ico')
     : join(process.resourcesPath, 'icon.ico');
 
@@ -122,39 +177,91 @@ function createTray(): void {
 // Window
 // ═══════════════════════════════════
 function createWindow(): void {
+  const isAutoStart = process.argv.includes('--autostart');
+  
+  let stateOptions: Partial<Electron.BrowserWindowConstructorOptions> = {};
+  let savedState: WindowState | null = null;
+  
+  if (isAutoStart) {
+    savedState = loadWindowState();
+    if (savedState) {
+      if (savedState.x !== undefined && savedState.y !== undefined) {
+        const { screen } = require('electron');
+        const displays = screen.getAllDisplays();
+        const isVisible = displays.some((display: Electron.Display) => {
+          const bounds = display.bounds;
+          return (
+            savedState!.x! >= bounds.x &&
+            savedState!.y! >= bounds.y &&
+            savedState!.x! < bounds.x + bounds.width &&
+            savedState!.y! < bounds.y + bounds.height
+          );
+        });
+        
+        if (isVisible) {
+          stateOptions = {
+            x: savedState.x,
+            y: savedState.y,
+            width: savedState.width || 1280,
+            height: savedState.height || 800,
+          };
+        } else if (savedState.width && savedState.height) {
+          stateOptions = {
+            width: savedState.width,
+            height: savedState.height,
+          };
+        }
+      } else {
+        stateOptions = {
+          width: savedState.width || 1280,
+          height: savedState.height || 800,
+        };
+      }
+    }
+  }
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     minWidth: 900,
     minHeight: 600,
-    show: false,
-    backgroundColor: '#09090B',
-    autoHideMenuBar: true,
     frame: false,
+    backgroundColor: '#0B0B0B',
+    ...stateOptions,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false,
-      backgroundThrottling: false,
-      spellcheck: false,
-    },
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false
+    }
   });
 
-  mainWindow.once('ready-to-show', () => {
-    mainWindow?.show();
-  });
+  if (isAutoStart && savedState?.isMaximized) {
+    mainWindow.maximize();
+  }
+
+  mainWindow.show();
+
+  mainWindow.on('resize', scheduleWindowStateSave);
+  mainWindow.on('move', scheduleWindowStateSave);
 
   mainWindow.on('maximize', () => {
+    scheduleWindowStateSave();
     mainWindow?.webContents.send('window-maximized');
   });
 
   mainWindow.on('unmaximize', () => {
+    scheduleWindowStateSave();
     mainWindow?.webContents.send('window-unmaximized');
   });
 
   mainWindow.on('close', (event) => {
     if (!isQuitting) {
       event.preventDefault();
+      scheduleWindowStateSave();
       mainWindow?.hide();
+    } else {
+      scheduleWindowStateSave();
     }
   });
 
@@ -167,7 +274,7 @@ function createWindow(): void {
     return { action: 'deny' };
   });
 
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+  if (isDev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL']);
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
@@ -178,14 +285,8 @@ function createWindow(): void {
 // App lifecycle
 // ═══════════════════════════════════
 app.whenReady().then(() => {
-  electronApp.setAppUserModelId('com.zabor.app');
-
   const settings = loadAppSettings();
   applyAutoLaunch(settings.openAtLogin);
-
-  app.on('browser-window-created', (_, window) => {
-    optimizer.watchWindowShortcuts(window);
-  });
 
   // ── Window controls ──
   ipcMain.on('window-minimize', () => {
@@ -284,7 +385,7 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-  // Ничего — живём в трее
+  
 });
 
 app.on('before-quit', (event) => {

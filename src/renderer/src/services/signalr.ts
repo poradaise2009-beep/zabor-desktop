@@ -1,6 +1,10 @@
 import * as signalR from '@microsoft/signalr';
 import { useAppStore, User, VoiceChannel, ChannelUpdate, IncomingCall } from '../store/useAppStore';
 import { webrtc } from './webrtc';
+import callRingSound from '../assets/sounds/call.mp3';
+import channelJoinSound from '../assets/sounds/join.mp3';
+import channelLeaveSound from '../assets/sounds/leave.mp3';
+import achievementSound from '../assets/sounds/achievement.mp3';
 
 const SERVER_URL = "http://150.241.64.108:8080/zabor_v3";
 
@@ -17,6 +21,28 @@ class SignalRService {
   private lastSpeakingState: boolean | null = null;
   private wasInChannel: string | null = null;
   private sfxContext: AudioContext | null = null;
+  private sfxElements: Map<string, HTMLAudioElement> = new Map();
+
+private playSfx(src: string, volume = 0.5) {
+  try {
+    let audio = this.sfxElements.get(src);
+    if (!audio) {
+      audio = new Audio(src);
+      this.sfxElements.set(src, audio);
+    }
+    audio.volume = volume;
+    audio.currentTime = 0;
+    audio.play().catch(() => {});
+  } catch {}
+}
+
+private stopSfx(src: string) {
+  const audio = this.sfxElements.get(src);
+  if (audio) {
+    audio.pause();
+    audio.currentTime = 0;
+  }
+}
 
   private pingCallbacks: Set<(ping: number) => void> = new Set();
   private connectionCallbacks: Set<(isConnected: boolean) => void> = new Set();
@@ -196,6 +222,8 @@ class SignalRService {
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     if (this.connection) { this.connection.stop(); this.connection = null; this.listenersAttached = false; }
     if (this.sfxContext) { this.sfxContext.close().catch(() => {}); this.sfxContext = null; }
+    this.sfxElements.forEach(audio => { audio.pause(); audio.srcObject = null; });
+this.sfxElements.clear();
   }
 
   private setupListeners() {
@@ -228,6 +256,7 @@ class SignalRService {
       store().addUserToChannelMap(channelId, { ...user, currentChannelId: channelId, currentCallUserId: null });
       if (store().currentChannelId === channelId && user.id !== store().currentUser?.id) {
         webrtc.connectToPeer(user.id);
+        this.playSfx(channelJoinSound, 0.3);
       }
     });
 
@@ -235,6 +264,9 @@ class SignalRService {
       store().updateUserStatus(userId, { currentChannelId: null, isSpeaking: false });
       store().removeUserFromChannelMap(channelId || '', userId);
       webrtc.disconnectFromPeer(userId);
+      if (store().currentChannelId === channelId && userId !== store().currentUser?.id) {
+        this.playSfx(channelLeaveSound, 0.3);
+      }
     });
 
     this.connection.on("ChannelCreated", (channel: VoiceChannel) => {
@@ -366,34 +398,7 @@ class SignalRService {
       store().setAchievementToast(achievementId);
       setTimeout(() => store().setAchievementToast('__hiding__' + achievementId), 4500);
       setTimeout(() => store().setAchievementToast(null), 5000);
-      try {
-        const sfx = this.getSfxContext(0.25);
-        if (!sfx) throw new Error('no sfx');
-        const { ctx, master } = sfx;
-        const notes1 = [
-          { freq: 523.25, time: 0 }, { freq: 659.25, time: 0.07 },
-          { freq: 783.99, time: 0.14 }, { freq: 1046.5, time: 0.21 }
-        ];
-        const notes2 = [
-          { freq: 659.25, time: 0.45 }, { freq: 783.99, time: 0.52 },
-          { freq: 1046.5, time: 0.59 }, { freq: 1318.51, time: 0.66 }
-        ];
-        [...notes1, ...notes2].forEach(({ freq, time }) => {
-          const osc = ctx.createOscillator(); const gain = ctx.createGain();
-          osc.connect(gain); gain.connect(master); osc.type = 'square'; osc.frequency.value = freq;
-          const t = ctx.currentTime + time;
-          gain.gain.setValueAtTime(0, t); gain.gain.linearRampToValueAtTime(0.6, t + 0.01);
-          gain.gain.exponentialRampToValueAtTime(0.01, t + 0.5); osc.start(t); osc.stop(t + 0.5);
-          const osc2 = ctx.createOscillator(); const gain2 = ctx.createGain();
-          osc2.connect(gain2); gain2.connect(master); osc2.type = 'sine'; osc2.frequency.value = freq * 2;
-          gain2.gain.setValueAtTime(0, t); gain2.gain.linearRampToValueAtTime(0.15, t + 0.01);
-          gain2.gain.exponentialRampToValueAtTime(0.01, t + 0.3); osc2.start(t); osc2.stop(t + 0.3);
-        });
-      } catch {}
-      const currentData = store().achievementsData;
-      if (currentData && !store().achievementsViewUserId) {
-        store().setAchievementsData({ ...currentData, unlockedIds: [...(currentData.unlockedIds || []), achievementId] });
-      }
+      this.playSfx(achievementSound, 0.4);
     });
 
     this.connection.on("ReceiveWebRTCOffer", async (sId: string, o: string) => { await webrtc.handleOffer(sId, o); });
@@ -419,41 +424,22 @@ class SignalRService {
   private ringtoneInterval: NodeJS.Timeout | null = null;
 
   private playNotificationSound() {
-    try {
-      const sfx = this.getSfxContext(1); if (!sfx) return;
-      const { ctx, master } = sfx;
-      const osc = ctx.createOscillator(); const gain = ctx.createGain();
-      osc.connect(gain); gain.connect(master); osc.frequency.value = 800; osc.type = 'sine';
-      gain.gain.setValueAtTime(0.3, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
-      osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.3);
-    } catch {}
-  }
+  this.playSfx(channelJoinSound, 0.4);
+}
 
   private playRingtone() {
-    this.stopRingtone();
-    const playMelody = () => {
-      try {
-        const sfx = this.getSfxContext(0.15); if (!sfx) return;
-        const { ctx, master } = sfx;
-        const up = [{ freq: 587.33, time: 0 }, { freq: 739.99, time: 0.12 }, { freq: 880.0, time: 0.24 }, { freq: 1174.66, time: 0.36 }];
-        const down = [{ freq: 1174.66, time: 0.6 }, { freq: 880.0, time: 0.72 }, { freq: 739.99, time: 0.84 }, { freq: 587.33, time: 0.96 }];
-        [...up, ...down].forEach(({ freq, time }) => {
-          const osc = ctx.createOscillator(); const gain = ctx.createGain();
-          osc.connect(gain); gain.connect(master); osc.type = 'sine'; osc.frequency.value = freq;
-          const t = ctx.currentTime + time;
-          gain.gain.setValueAtTime(0, t); gain.gain.linearRampToValueAtTime(1, t + 0.03);
-          gain.gain.exponentialRampToValueAtTime(0.01, t + 0.3); osc.start(t); osc.stop(t + 0.3);
-        });
-      } catch {}
-    };
-    playMelody();
-    this.ringtoneInterval = setInterval(playMelody, 3000);
-  }
+  this.stopRingtone();
+  this.playSfx(callRingSound, 0.3);
+  const audio = this.sfxElements.get(callRingSound);
+  if (audio) audio.loop = true;
+}
 
-  private stopRingtone() {
-    if (this.ringtoneInterval) { clearInterval(this.ringtoneInterval); this.ringtoneInterval = null; }
-  }
+private stopRingtone() {
+  if (this.ringtoneInterval) { clearInterval(this.ringtoneInterval); this.ringtoneInterval = null; }
+  this.stopSfx(callRingSound);
+  const audio = this.sfxElements.get(callRingSound);
+  if (audio) audio.loop = false;
+}
 
   // ── Network helpers ───────────────────────────────────────────
 
@@ -644,6 +630,7 @@ class SignalRService {
     webrtc.leaveAll();
     store.setCallStatus('idle');
     store.setCurrentCallUser(null);
+    this.playSfx(channelJoinSound, 0.3);
 
     try {
       const micStarted = await webrtc.startLocalStream();
@@ -675,6 +662,11 @@ class SignalRService {
   }
 
   public async leaveChannel(): Promise<void> {
+    const prevChannelId = useAppStore.getState().currentChannelId;
+    if (prevChannelId) {
+      this.playSfx(channelLeaveSound, 0.3);
+    }
+
     // Optimistic: clear state immediately
     webrtc.leaveAll();
     webrtc.stopLocalStream();
