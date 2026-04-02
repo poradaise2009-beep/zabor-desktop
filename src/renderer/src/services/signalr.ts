@@ -87,15 +87,25 @@ private stopSfx(src: string) {
     } catch { return null; }
   }
 
+  private missedPings = 0;
+
   private startPingMeasurement() {
     if (this.pingInterval) clearInterval(this.pingInterval);
+    this.missedPings = 0;
     const measurePing = async () => {
       if (!this.isConnected()) { this.notifyPingUpdate(-1); return; }
       try {
         const start = performance.now();
         await this.connection!.invoke("Ping");
+        this.missedPings = 0;
         this.notifyPingUpdate(Math.round(performance.now() - start));
-      } catch { this.notifyPingUpdate(-1); }
+      } catch { 
+        this.missedPings++;
+        this.notifyPingUpdate(-1);
+        if (this.missedPings >= 2 && this.connection) {
+          try { this.connection.stop(); } catch {}
+        }
+      }
     };
     measurePing();
     this.pingInterval = setInterval(measurePing, 5000);
@@ -122,6 +132,8 @@ private stopSfx(src: string) {
         })
         .withAutomaticReconnect([0, 1000, 2000, 5000, 5000, 10000, 10000, 30000, 30000])
         .build();
+      this.connection.serverTimeoutInMilliseconds = 15000;
+      this.connection.keepAliveIntervalInMilliseconds = 5000;
       this.setupListeners();
       this.setupReconnectionHandlers();
       await this.connection.start();
@@ -424,7 +436,7 @@ this.sfxElements.clear();
   private ringtoneInterval: NodeJS.Timeout | null = null;
 
   private playNotificationSound() {
-  this.playSfx(channelJoinSound, 0.4);
+  // this.playSfx(channelJoinSound, 0.4);
 }
 
   private playRingtone() {
@@ -721,6 +733,7 @@ private stopRingtone() {
     const store = useAppStore.getState();
 
     // Optimistic
+    store.closeProfileOnly();
     store.setCallStatus('calling');
     const targetUser = store.friends.find((f: User) => f.id === targetUserId);
     if (targetUser) store.setCurrentCallUser(targetUser);
