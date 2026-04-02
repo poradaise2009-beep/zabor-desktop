@@ -68,7 +68,7 @@ export class WebRTCManager {
       }
 
       if (line.startsWith(`a=fmtp:${opusPT}`)) {
-        l = `a=fmtp:${opusPT} minptime=10;useinbandfec=1;usedtx=0;maxaveragebitrate=128000;sprop-maxcapturerate=48000;stereo=0;cbr=0`
+        l = `a=fmtp:${opusPT} minptime=10;useinbandfec=1;usedtx=1;maxaveragebitrate=64000;sprop-maxcapturerate=48000;stereo=0;cbr=0`
         fmtpDone = true
       }
 
@@ -79,7 +79,7 @@ export class WebRTCManager {
       const idx = out.findIndex(l => l.startsWith(`a=rtpmap:${opusPT}`))
       if (idx >= 0) {
         out.splice(idx + 1, 0,
-          `a=fmtp:${opusPT} minptime=10;useinbandfec=1;usedtx=0;maxaveragebitrate=128000;sprop-maxcapturerate=48000;stereo=0;cbr=0`
+          `a=fmtp:${opusPT} minptime=10;useinbandfec=1;usedtx=1;maxaveragebitrate=64000;sprop-maxcapturerate=48000;stereo=0;cbr=0`
         )
       }
     }
@@ -91,7 +91,7 @@ export class WebRTCManager {
     try {
       const params = sender.getParameters()
       if (!params.encodings || params.encodings.length === 0) params.encodings = [{}]
-      params.encodings[0].maxBitrate = 128000
+      params.encodings[0].maxBitrate = 64000
       params.encodings[0].priority = 'high'
       await sender.setParameters(params)
     } catch {}
