@@ -90,80 +90,80 @@ export default function App() {
   const [isCopied, setIsCopied] = useState(false);
 
   const [isIdle, setIsIdle] = useState(false);
-const [joke, setJoke] = useState<string>('');
+  const [joke, setJoke] = useState<string>('');
   const idleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const settingsSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const settingsLoadedRef = useRef(false);
   const credentialsRef = useRef<{ login: string; password: string }>({ login: '', password: '' });
-const initCompleteRef = useRef(false);
-const loginInputRef = useRef<HTMLInputElement>(null);
-const passwordInputRef = useRef<HTMLInputElement>(null);
+  const initCompleteRef = useRef(false);
+  const loginInputRef = useRef<HTMLInputElement>(null);
+  const passwordInputRef = useRef<HTMLInputElement>(null);
 
-const [isAdmin, setIsAdmin] = useState(false);
-const [adminUsers, setAdminUsers] = useState<any[]>([]);
-const [adminSearch, setAdminSearch] = useState('');
-const [adminLoading, setAdminLoading] = useState(false);
-const [adminActionUserId, setAdminActionUserId] = useState<string | null>(null);
-const [adminError, setAdminError] = useState('');
-const [adminSelectedUser, setAdminSelectedUser] = useState<any | null>(null);
-const [adminDetailsLoading, setAdminDetailsLoading] = useState(false);
-const [adminEditDisplayName, setAdminEditDisplayName] = useState('');
-const [adminEditAchievements, setAdminEditAchievements] = useState('');
-const [adminCopiedLogin, setAdminCopiedLogin] = useState<string | null>(null);
-const [adminRenameChannelId, setAdminRenameChannelId] = useState<string | null>(null);
-const [adminRenameChannelName, setAdminRenameChannelName] = useState('');
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [adminUsers, setAdminUsers] = useState<any[]>([]);
+  const [adminSearch, setAdminSearch] = useState('');
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [adminActionUserId, setAdminActionUserId] = useState<string | null>(null);
+  const [adminError, setAdminError] = useState('');
+  const [adminSelectedUser, setAdminSelectedUser] = useState<any | null>(null);
+  const [adminDetailsLoading, setAdminDetailsLoading] = useState(false);
+  const [adminEditDisplayName, setAdminEditDisplayName] = useState('');
+  const [adminEditAchievements, setAdminEditAchievements] = useState('');
+  const [adminCopiedLogin, setAdminCopiedLogin] = useState<string | null>(null);
+  const [adminRenameChannelId, setAdminRenameChannelId] = useState<string | null>(null);
+  const [adminRenameChannelName, setAdminRenameChannelName] = useState('');
 
-const [controlsShake, setControlsShake] = useState(false);
-const [adminBlockToast, setAdminBlockToast] = useState<string | null>(null);
-const adminBlockTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [controlsShake, setControlsShake] = useState(false);
+  const [adminBlockToast, setAdminBlockToast] = useState<string | null>(null);
+  const adminBlockTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-const settingsRef = useRef({
-  inputVolume: 100, outputVolume: 100,
-  selectedInput: 'default', selectedOutput: 'default',
-  noiseSuppression: true
-});
+  const settingsRef = useRef({
+    inputVolume: 100, outputVolume: 100,
+    selectedInput: 'default', selectedOutput: 'default',
+    noiseSuppression: true
+  });
 
-useEffect(() => {
-  settingsRef.current = { inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression };
-}, [inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression]);
+  useEffect(() => {
+    settingsRef.current = { inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression };
+  }, [inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
-  credentialsRef.current = { login, password };
-}, [login, password]);
+    credentialsRef.current = { login, password };
+  }, [login, password]);
 
   useEffect(() => {
-  if (!containerRef.current) return;
+    if (!containerRef.current) return;
 
-  let rafId: number | null = null;
-  const el = containerRef.current;
+    let rafId: number | null = null;
+    const el = containerRef.current;
 
-  const measure = () => {
-    const rect = el.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-      setContainerSize(prev => {
-        if (Math.abs(prev.width - rect.width) < 2 && Math.abs(prev.height - rect.height) < 2) return prev;
-        return { width: rect.width, height: rect.height };
-      });
-    }
-  };
+    const measure = () => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        setContainerSize(prev => {
+          if (Math.abs(prev.width - rect.width) < 2 && Math.abs(prev.height - rect.height) < 2) return prev;
+          return { width: rect.width, height: rect.height };
+        });
+      }
+    };
 
-  measure();
+    measure();
 
-  const observer = new ResizeObserver(() => {
-    if (rafId) cancelAnimationFrame(rafId);
-    rafId = requestAnimationFrame(measure);
-  });
+    const observer = new ResizeObserver(() => {
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(measure);
+    });
 
-  observer.observe(el);
+    observer.observe(el);
 
-  return () => {
-    observer.disconnect();
-    if (rafId) cancelAnimationFrame(rafId);
-  };
-}, [store.currentChannelId, store.currentCallUser?.id]);
+    return () => {
+      observer.disconnect();
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [store.currentChannelId, store.currentCallUser?.id]);
 
   const getCardSize = (count: number, cw: number, ch: number) => {
     if (count === 0 || cw === 0 || ch === 0) return { w: 320, h: 180, avatarSize: 96 };
@@ -188,9 +188,9 @@ useEffect(() => {
   const activeUserCount = store.currentCallUser ? 1 : store.voiceUsers.length;
 
   const cardSize = useMemo(() => {
-  const { w, h, avatarSize } = getCardSize(activeUserCount, containerSize.width, containerSize.height);
-  return { w, h, avatarSize };
-}, [activeUserCount, containerSize.width, containerSize.height]);
+    const { w, h, avatarSize } = getCardSize(activeUserCount, containerSize.width, containerSize.height);
+    return { w, h, avatarSize };
+  }, [activeUserCount, containerSize.width, containerSize.height]);
 
   useEffect(() => {
     const unsubConnection = signalRService.onConnectionUpdate((isConnected) => {
@@ -212,101 +212,101 @@ useEffect(() => {
   }, [isAuth]);
 
   useEffect(() => {
-  const init = async () => {
-    // 1. Загружаем сессию с диска
-    let cachedCredentials: { login: string; password: string; userId?: string } | null = null;
+    const init = async () => {
+      // 1. Загружаем сессию с диска
+      let cachedCredentials: { login: string; password: string; userId?: string } | null = null;
 
-    try {
-      const raw = await window.windowControls.loadSession();
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        cachedCredentials = {
-          login: parsed.login,
-          password: parsed.password,
-          userId: parsed.userId
-        };
+      try {
+        const raw = await window.windowControls.loadSession();
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          cachedCredentials = {
+            login: parsed.login,
+            password: parsed.password,
+            userId: parsed.userId
+          };
 
-        if (parsed.settings) applySettings(parsed.settings);
+          if (parsed.settings) applySettings(parsed.settings);
 
-        credentialsRef.current = { login: parsed.login, password: parsed.password };
-        setLogin(parsed.login);
-        setPassword(parsed.password);
+          credentialsRef.current = { login: parsed.login, password: parsed.password };
+          setLogin(parsed.login);
+          setPassword(parsed.password);
+        }
+      } catch { }
+
+      // 2. Если нет кредов — сразу показываем экран логина
+      if (!cachedCredentials) {
+        initCompleteRef.current = true;
+        setLoadingFadeOut(true);
+        setTimeout(() => setAppLoading(false), 300);
+        return;
       }
-    } catch {}
 
-    // 2. Если нет кредов — сразу показываем экран логина
-    if (!cachedCredentials) {
+      // 3. Подключаемся к серверу (с таймером на текст ошибки)
+      setShowInitConnectionError(false);
+      const errorTimer = setTimeout(() => setShowInitConnectionError(true), 10000);
+      const connected = await signalRService.connect();
+      clearTimeout(errorTimer);
+
+      if (connected) {
+        setShowErrorText(false);
+        setShowInitConnectionError(false);
+
+        // 4. Автологин
+        const loginSuccess = await signalRService.login(
+          cachedCredentials.login,
+          cachedCredentials.password
+        );
+
+        if (loginSuccess) {
+          const serverUser = useAppStore.getState().currentUser;
+          if (cachedCredentials.userId && serverUser && cachedCredentials.userId !== serverUser.id) {
+            resetToDefaults();
+          }
+
+          setIsAuth(true);
+          signalRService.isCurrentUserAdmin().then(setIsAdmin).catch(() => setIsAdmin(false));
+
+          const serverSettings = await signalRService.loadAudioSettings();
+          if (serverSettings) applySettings(serverSettings);
+
+          try {
+            const jokeText = await signalRService.getJokeOfTheDay();
+            setJoke(jokeText || 'Сегодня сервер шутит молча.');
+          } catch {
+            setJoke('Сегодня сервер шутит молча.');
+          }
+
+          saveLocalCache();
+          setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
+
+        } else {
+          // Пароль изменён или аккаунт удалён
+          await window.windowControls.clearSession();
+          resetToDefaults();
+          store.setCurrentUser(null);
+          store.setChannels([]);
+          store.setFriends([]);
+          store.setFriendRequests([]);
+          store.setChannelInvites([]);
+          credentialsRef.current = { login: '', password: '' };
+          setLogin('');
+          setPassword('');
+          setIsAuth(false);
+        }
+      } else {
+        // Офлайн, но есть кэш — даём таймеру showInitConnectionError самому показать ошибку
+        setIsAuth(true);
+      }
+
+      // 5. Показываем главный экран
       initCompleteRef.current = true;
       setLoadingFadeOut(true);
-      setTimeout(() => setAppLoading(false), 300);
-      return;
-    }
+      setTimeout(() => setAppLoading(false), 600);
+    };
 
-    // 3. Подключаемся к серверу (с таймером на текст ошибки)
-    setShowInitConnectionError(false);
-const errorTimer = setTimeout(() => setShowInitConnectionError(true), 10000);
-const connected = await signalRService.connect();
-clearTimeout(errorTimer);
-
-   if (connected) {
-  setShowErrorText(false);
-  setShowInitConnectionError(false);
-
-      // 4. Автологин
-      const loginSuccess = await signalRService.login(
-        cachedCredentials.login,
-        cachedCredentials.password
-      );
-
-      if (loginSuccess) {
-        const serverUser = useAppStore.getState().currentUser;
-        if (cachedCredentials.userId && serverUser && cachedCredentials.userId !== serverUser.id) {
-          resetToDefaults();
-        }
-
-        setIsAuth(true);
-        signalRService.isCurrentUserAdmin().then(setIsAdmin).catch(() => setIsAdmin(false));
-
-const serverSettings = await signalRService.loadAudioSettings();
-if (serverSettings) applySettings(serverSettings);
-
-try {
-  const jokeText = await signalRService.getJokeOfTheDay();
-  setJoke(jokeText || 'Сегодня сервер шутит молча.');
-} catch {
-  setJoke('Сегодня сервер шутит молча.');
-}
-
-saveLocalCache();
-setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
-        
-      } else {
-        // Пароль изменён или аккаунт удалён
-        await window.windowControls.clearSession();
-        resetToDefaults();
-        store.setCurrentUser(null);
-        store.setChannels([]);
-        store.setFriends([]);
-        store.setFriendRequests([]);
-        store.setChannelInvites([]);
-        credentialsRef.current = { login: '', password: '' };
-        setLogin('');
-        setPassword('');
-        setIsAuth(false);
-      }
-    } else {
-  // Офлайн, но есть кэш — даём таймеру showInitConnectionError самому показать ошибку
-  setIsAuth(true);
-}
-
-    // 5. Показываем главный экран
-    initCompleteRef.current = true;
-    setLoadingFadeOut(true);
-    setTimeout(() => setAppLoading(false), 600);
-  };
-
-  init();
-}, []);
+    init();
+  }, []);
 
   useEffect(() => {
     const resetIdle = () => {
@@ -341,186 +341,186 @@ setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
   }, [store.channelInvites.length, store.friendRequests.length]);
 
   useEffect(() => {
-  Object.values(store.channelUsersMap).flat().forEach(u => preloadStaticFrame(u.avatarBase64));
-  store.friends.forEach(f => preloadStaticFrame(f.avatarBase64));
-  store.voiceUsers.forEach(u => preloadStaticFrame(u.avatarBase64));
-  preloadStaticFrame(store.currentUser?.avatarBase64);
-  preloadStaticFrame(store.currentCallUser?.avatarBase64);
-}, [store.channelUsersMap, store.friends, store.voiceUsers, store.currentUser?.avatarBase64, store.currentCallUser?.avatarBase64]);
+    Object.values(store.channelUsersMap).flat().forEach(u => preloadStaticFrame(u.avatarBase64));
+    store.friends.forEach(f => preloadStaticFrame(f.avatarBase64));
+    store.voiceUsers.forEach(u => preloadStaticFrame(u.avatarBase64));
+    preloadStaticFrame(store.currentUser?.avatarBase64);
+    preloadStaticFrame(store.currentCallUser?.avatarBase64);
+  }, [store.channelUsersMap, store.friends, store.voiceUsers, store.currentUser?.avatarBase64, store.currentCallUser?.avatarBase64]);
 
   const saveLocalCache = useCallback(() => {
-  try {
-    const currentUser = useAppStore.getState().currentUser;
-    const creds = credentialsRef.current;
-    if (!currentUser || !creds.login || !creds.password) return;
-    const data = JSON.stringify({
-      login: creds.login,
-      password: creds.password,
-      userId: currentUser.id,
-      settings: {
-        inputVolume: settingsRef.current.inputVolume,
-        outputVolume: settingsRef.current.outputVolume,
-        selectedInput: settingsRef.current.selectedInput,
-        selectedOutput: settingsRef.current.selectedOutput,
-        noiseSuppression: settingsRef.current.noiseSuppression
-      }
-    });
-    window.windowControls.saveSession(data).catch(() => {});
-  } catch {}
-}, []);
+    try {
+      const currentUser = useAppStore.getState().currentUser;
+      const creds = credentialsRef.current;
+      if (!currentUser || !creds.login || !creds.password) return;
+      const data = JSON.stringify({
+        login: creds.login,
+        password: creds.password,
+        userId: currentUser.id,
+        settings: {
+          inputVolume: settingsRef.current.inputVolume,
+          outputVolume: settingsRef.current.outputVolume,
+          selectedInput: settingsRef.current.selectedInput,
+          selectedOutput: settingsRef.current.selectedOutput,
+          noiseSuppression: settingsRef.current.noiseSuppression
+        }
+      });
+      window.windowControls.saveSession(data).catch(() => { });
+    } catch { }
+  }, []);
 
-const loadAdminUsers = useCallback(async () => {
-  setAdminLoading(true);
-  setAdminError('');
-  try {
-    const users = await signalRService.adminGetAllUsers();
-    setAdminUsers(users);
-  } catch {
-    setAdminError('Не удалось загрузить список пользователей');
-  } finally {
-    setAdminLoading(false);
-  }
-}, []);
-
-const loadAdminUserDetails = useCallback(async (userId: string) => {
-  setAdminDetailsLoading(true);
-  setAdminError('');
-  try {
-    const details = await signalRService.adminGetUserDetails(userId);
-    setAdminSelectedUser(details);
-
-    if (details) {
-      setAdminEditDisplayName(details.displayName ?? '');
-      setAdminEditAchievements((details.achievements?.unlockedIds || []).join(', '));
+  const loadAdminUsers = useCallback(async () => {
+    setAdminLoading(true);
+    setAdminError('');
+    try {
+      const users = await signalRService.adminGetAllUsers();
+      setAdminUsers(users);
+    } catch {
+      setAdminError('Не удалось загрузить список пользователей');
+    } finally {
+      setAdminLoading(false);
     }
-  } catch {
-    setAdminError('Не удалось загрузить профиль пользователя');
-  } finally {
-    setAdminDetailsLoading(false);
-  }
-}, []);
+  }, []);
 
-const softClearCache = useCallback(() => {
-}, []);
+  const loadAdminUserDetails = useCallback(async (userId: string) => {
+    setAdminDetailsLoading(true);
+    setAdminError('');
+    try {
+      const details = await signalRService.adminGetUserDetails(userId);
+      setAdminSelectedUser(details);
 
-const deepWipeOnLogout = useCallback(async () => {
-  try {
-    await window.windowControls.clearSession();
-    await window.windowControls.wipeAppData();
-  } catch {}
-  await new Promise(r => setTimeout(r, 300));
-}, []);
+      if (details) {
+        setAdminEditDisplayName(details.displayName ?? '');
+        setAdminEditAchievements((details.achievements?.unlockedIds || []).join(', '));
+      }
+    } catch {
+      setAdminError('Не удалось загрузить профиль пользователя');
+    } finally {
+      setAdminDetailsLoading(false);
+    }
+  }, []);
 
-const resetToDefaults = useCallback(() => {
-  setInputVolume(100);
-  setOutputVolume(100);
-  setSelectedInput('default');
-  setSelectedOutput('default');
-  setNoiseSuppression(true);
-  setDisplayName('');
-  setAvatarBase64(null);
-  setAvatarColor('#c70060');
-  setEditProfileAvatarBase64(null);
-  setEditProfileAvatarColor('#c70060');
-  setEditProfileDisplayName('');
-  webrtc.setInputDevice('default');
-  webrtc.setOutputDevice('default');
-}, []);
+  const softClearCache = useCallback(() => {
+  }, []);
 
-const applySettings = useCallback((s: {
-  inputVolume?: number; outputVolume?: number;
-  selectedInput?: string; selectedOutput?: string;
-  noiseSuppression?: boolean;
-}) => {
-  const iv = s.inputVolume ?? 100;
-  const ov = s.outputVolume ?? 100;
-  setInputVolume(iv);
-  setOutputVolume(ov);
-  setSelectedInput(s.selectedInput ?? 'default');
-  setSelectedOutput(s.selectedOutput ?? 'default');
-  setNoiseSuppression(s.noiseSuppression ?? true);
-  webrtc.setInputDevice(s.selectedInput ?? 'default');
-  webrtc.setOutputDevice(s.selectedOutput ?? 'default');
-  webrtc.setInputVolume(iv);
-  webrtc.setOutputVolume(ov);
-}, []);
+  const deepWipeOnLogout = useCallback(async () => {
+    try {
+      await window.windowControls.clearSession();
+      await window.windowControls.wipeAppData();
+    } catch { }
+    await new Promise(r => setTimeout(r, 300));
+  }, []);
+
+  const resetToDefaults = useCallback(() => {
+    setInputVolume(100);
+    setOutputVolume(100);
+    setSelectedInput('default');
+    setSelectedOutput('default');
+    setNoiseSuppression(true);
+    setDisplayName('');
+    setAvatarBase64(null);
+    setAvatarColor('#c70060');
+    setEditProfileAvatarBase64(null);
+    setEditProfileAvatarColor('#c70060');
+    setEditProfileDisplayName('');
+    webrtc.setInputDevice('default');
+    webrtc.setOutputDevice('default');
+  }, []);
+
+  const applySettings = useCallback((s: {
+    inputVolume?: number; outputVolume?: number;
+    selectedInput?: string; selectedOutput?: string;
+    noiseSuppression?: boolean;
+  }) => {
+    const iv = s.inputVolume ?? 100;
+    const ov = s.outputVolume ?? 100;
+    setInputVolume(iv);
+    setOutputVolume(ov);
+    setSelectedInput(s.selectedInput ?? 'default');
+    setSelectedOutput(s.selectedOutput ?? 'default');
+    setNoiseSuppression(s.noiseSuppression ?? true);
+    webrtc.setInputDevice(s.selectedInput ?? 'default');
+    webrtc.setOutputDevice(s.selectedOutput ?? 'default');
+    webrtc.setInputVolume(iv);
+    webrtc.setOutputVolume(ov);
+  }, []);
 
   useEffect(() => {
-  if (!settingsLoadedRef.current || !isAuth) return;
+    if (!settingsLoadedRef.current || !isAuth) return;
 
-  if (settingsSaveTimerRef.current) clearTimeout(settingsSaveTimerRef.current);
-  settingsSaveTimerRef.current = setTimeout(() => {
-    const s = settingsRef.current;
-    signalRService.saveAudioSettings({
-      inputVolume: s.inputVolume,
-      outputVolume: s.outputVolume,
-      selectedInput: s.selectedInput,
-      selectedOutput: s.selectedOutput,
-      noiseSuppression: s.noiseSuppression
+    if (settingsSaveTimerRef.current) clearTimeout(settingsSaveTimerRef.current);
+    settingsSaveTimerRef.current = setTimeout(() => {
+      const s = settingsRef.current;
+      signalRService.saveAudioSettings({
+        inputVolume: s.inputVolume,
+        outputVolume: s.outputVolume,
+        selectedInput: s.selectedInput,
+        selectedOutput: s.selectedOutput,
+        noiseSuppression: s.noiseSuppression
+      });
+      saveLocalCache();
+    }, 500);
+  }, [inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression, isAuth]);
+
+  useEffect(() => {
+    if (!isAuth || !serverConnected || joke) return;
+
+    let cancelled = false;
+
+    signalRService.getJokeOfTheDay().then((j: string) => {
+      if (!cancelled) {
+        setJoke(j || 'Сегодня сервер шутит молча.');
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        setJoke('Сегодня сервер шутит молча.');
+      }
     });
-    saveLocalCache();
-  }, 500);
-}, [inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression, isAuth]);
 
-useEffect(() => {
-  if (!isAuth || !serverConnected || joke) return;
-
-  let cancelled = false;
-
-  signalRService.getJokeOfTheDay().then((j: string) => {
-    if (!cancelled) {
-      setJoke(j || 'Сегодня сервер шутит молча.');
-    }
-  }).catch(() => {
-    if (!cancelled) {
-      setJoke('Сегодня сервер шутит молча.');
-    }
-  });
-
-  return () => {
-    cancelled = true;
-  };
-}, [isAuth, serverConnected, joke]);
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuth, serverConnected, joke]);
 
   const closeAndResetModals = useCallback(() => {
-  setNewChannelName('');
-  setEditChannelName('');
-  setEditChannelId(null);
+    setNewChannelName('');
+    setEditChannelName('');
+    setEditChannelId(null);
 
-  setFriendName('');
-  setNewPassword('');
-  setError('');
-  setPrivacyError('');
-  setShowPrivacyPass(false);
+    setFriendName('');
+    setNewPassword('');
+    setError('');
+    setPrivacyError('');
+    setShowPrivacyPass(false);
 
-  setEditProfileAvatarBase64(null);
-  setEditProfileAvatarColor('#c70060');
+    setEditProfileAvatarBase64(null);
+    setEditProfileAvatarColor('#c70060');
 
-  setInviteFriendSearch('');
-  setSentInvites(new Set());
+    setInviteFriendSearch('');
+    setSentInvites(new Set());
 
-  setAdminSearch('');
-  setAdminError('');
-  setAdminActionUserId(null);
-  setAdminSelectedUser(null);
-  setAdminDetailsLoading(false);
-  setAdminEditDisplayName('');
-  setAdminCopiedLogin(null);
-  setAdminRenameChannelId(null);
-  setAdminRenameChannelName('');
+    setAdminSearch('');
+    setAdminError('');
+    setAdminActionUserId(null);
+    setAdminSelectedUser(null);
+    setAdminDetailsLoading(false);
+    setAdminEditDisplayName('');
+    setAdminCopiedLogin(null);
+    setAdminRenameChannelId(null);
+    setAdminRenameChannelName('');
 
-  setContextMenu(null);
-  setShowInvitesPanel(false);
+    setContextMenu(null);
+    setShowInvitesPanel(false);
 
-  setShowCropper(false);
-  setCropGifDataUrl(null);
-  setCropImageSrc(null);
-  setCropScale(1);
-  setCropPos({ x: 0, y: 0 });
-  setIsDragging(false);
+    setShowCropper(false);
+    setCropGifDataUrl(null);
+    setCropImageSrc(null);
+    setCropScale(1);
+    setCropPos({ x: 0, y: 0 });
+    setIsDragging(false);
 
-  store.closeAllModals();
-}, [store]);
+    store.closeAllModals();
+  }, [store]);
 
   const validateInput = useCallback((str: string) => {
     if (str.length < 4) return "Минимум 4 символа";
@@ -552,165 +552,165 @@ useEffect(() => {
   }, [store.currentUser?.username]);
 
   const handleAuth = useCallback(async () => {
-  setError('');
-  const loginErr = validateInput(login);
-  const passErr = validateInput(password);
-  if (loginErr) { setError(`Логин: ${loginErr}`); return; }
-  if (passErr && authStep === 'login') { setError(`Пароль: ${passErr}`); return; }
-  if (authStep === 'setup') {
-    const nameErr = validateName(displayName);
-    if (nameErr) { setError(nameErr); return; }
-  }
+    setError('');
+    const loginErr = validateInput(login);
+    const passErr = validateInput(password);
+    if (loginErr) { setError(`Логин: ${loginErr}`); return; }
+    if (passErr && authStep === 'login') { setError(`Пароль: ${passErr}`); return; }
+    if (authStep === 'setup') {
+      const nameErr = validateName(displayName);
+      if (nameErr) { setError(nameErr); return; }
+    }
 
-  setIsLoading(true);
-  try {
-    const connected = await signalRService.connect();
-    if (!connected) { setError("Ошибка подключения к серверу"); return; }
+    setIsLoading(true);
+    try {
+      const connected = await signalRService.connect();
+      if (!connected) { setError("Ошибка подключения к серверу"); return; }
 
-    if (authStep === 'login') {
-      const exists = await signalRService.checkUserExists(login);
-      if (exists) {
+      if (authStep === 'login') {
+        const exists = await signalRService.checkUserExists(login);
+        if (exists) {
+          settingsLoadedRef.current = false;
+          resetToDefaults();
+
+          const success = await signalRService.login(login, password);
+          if (success) {
+            setIsAuth(true);
+            signalRService.isCurrentUserAdmin().then(setIsAdmin).catch(() => setIsAdmin(false));
+            credentialsRef.current = { login, password };
+
+            const serverSettings = await signalRService.loadAudioSettings();
+            if (serverSettings) applySettings(serverSettings);
+
+            try {
+              const jokeText = await signalRService.getJokeOfTheDay();
+              setJoke(jokeText || 'Сегодня сервер шутит молча.');
+            } catch {
+              setJoke('Сегодня сервер шутит молча.');
+            }
+
+            saveLocalCache();
+            setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
+
+          } else {
+            setError("Неверный пароль!");
+          }
+        } else {
+          setAuthStep('confirm');
+        }
+      } else if (authStep === 'setup') {
         settingsLoadedRef.current = false;
         resetToDefaults();
 
-        const success = await signalRService.login(login, password);
+        const success = await signalRService.register(
+          login, password, displayName.trim(), avatarBase64, avatarColor
+        );
         if (success) {
           setIsAuth(true);
           signalRService.isCurrentUserAdmin().then(setIsAdmin).catch(() => setIsAdmin(false));
-credentialsRef.current = { login, password };
+          credentialsRef.current = { login, password };
 
-const serverSettings = await signalRService.loadAudioSettings();
-if (serverSettings) applySettings(serverSettings);
+          try {
+            const jokeText = await signalRService.getJokeOfTheDay();
+            setJoke(jokeText || 'Сегодня сервер шутит молча.');
+          } catch {
+            setJoke('Сегодня сервер шутит молча.');
+          }
 
-try {
-  const jokeText = await signalRService.getJokeOfTheDay();
-  setJoke(jokeText || 'Сегодня сервер шутит молча.');
-} catch {
-  setJoke('Сегодня сервер шутит молча.');
-}
+          saveLocalCache();
+          setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
 
-saveLocalCache();
-setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
-          
         } else {
-          setError("Неверный пароль!");
+          setError("Ошибка регистрации");
         }
-      } else {
-        setAuthStep('confirm');
       }
-    } else if (authStep === 'setup') {
-      settingsLoadedRef.current = false;
-      resetToDefaults();
-
-      const success = await signalRService.register(
-        login, password, displayName.trim(), avatarBase64, avatarColor
-      );
-      if (success) {
-        setIsAuth(true);
-        signalRService.isCurrentUserAdmin().then(setIsAdmin).catch(() => setIsAdmin(false));
-credentialsRef.current = { login, password };
-
-try {
-  const jokeText = await signalRService.getJokeOfTheDay();
-  setJoke(jokeText || 'Сегодня сервер шутит молча.');
-} catch {
-  setJoke('Сегодня сервер шутит молча.');
-}
-
-saveLocalCache();
-setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
-        
-      } else {
-        setError("Ошибка регистрации");
-      }
+    } catch {
+      setError("Ошибка подключения");
+    } finally {
+      setIsLoading(false);
     }
-  } catch {
-    setError("Ошибка подключения");
-  } finally {
-    setIsLoading(false);
-  }
-}, [login, password, authStep, displayName, avatarBase64, avatarColor,
+  }, [login, password, authStep, displayName, avatarBase64, avatarColor,
     validateInput, validateName, saveLocalCache, softClearCache,
     resetToDefaults, applySettings]);
 
-const handleLogout = useCallback(async () => {
-  settingsLoadedRef.current = false;
+  const handleLogout = useCallback(async () => {
+    settingsLoadedRef.current = false;
 
-  
-  closeAndResetModals();
 
-  if (store.currentCallUser) {
-    await signalRService.endCall();
-  }
+    closeAndResetModals();
 
-  if (store.currentChannelId) {
-    await signalRService.leaveChannel();
-  }
+    if (store.currentCallUser) {
+      await signalRService.endCall();
+    }
 
-  webrtc.stopLocalStream();
-  signalRService.disconnect();
+    if (store.currentChannelId) {
+      await signalRService.leaveChannel();
+    }
 
-  await deepWipeOnLogout();
+    webrtc.stopLocalStream();
+    signalRService.disconnect();
 
-  resetToDefaults();
+    await deepWipeOnLogout();
 
-  store.setCurrentUser(null);
-  store.setChannels([]);
-  store.setFriends([]);
-  store.setFriendRequests([]);
-  store.setChannelInvites([]);
-  store.setVoiceUsers([]);
-  store.setCurrentChannelId(null);
-  store.setCallStatus('idle');
-  store.setCurrentCallUser(null);
-  store.setFullChannelState({});
+    resetToDefaults();
 
-  setJoke('');
+    store.setCurrentUser(null);
+    store.setChannels([]);
+    store.setFriends([]);
+    store.setFriendRequests([]);
+    store.setChannelInvites([]);
+    store.setVoiceUsers([]);
+    store.setCurrentChannelId(null);
+    store.setCallStatus('idle');
+    store.setCurrentCallUser(null);
+    store.setFullChannelState({});
 
-  setIsAdmin(false);
-  setAdminUsers([]);
-  setAdminSearch('');
+    setJoke('');
 
-  setDisplayName('');
-  setAvatarBase64(null);
-  setAvatarColor('#c70060');
+    setIsAdmin(false);
+    setAdminUsers([]);
+    setAdminSearch('');
 
-  credentialsRef.current = { login: '', password: '' };
+    setDisplayName('');
+    setAvatarBase64(null);
+    setAvatarColor('#c70060');
 
-  setLogin('');
-  setPassword('');
-  setShowPassword(false);
-  setError('');
-  setAuthStep('login');
-  setIsAuth(false);
+    credentialsRef.current = { login: '', password: '' };
 
-  
-  requestAnimationFrame(() => {
+    setLogin('');
+    setPassword('');
+    setShowPassword(false);
+    setError('');
+    setAuthStep('login');
+    setIsAuth(false);
+
+
     requestAnimationFrame(() => {
-      const loginInput = document.querySelector(
-        'input[type="text"]'
-      ) as HTMLInputElement | null;
+      requestAnimationFrame(() => {
+        const loginInput = document.querySelector(
+          'input[type="text"]'
+        ) as HTMLInputElement | null;
 
-      loginInput?.focus();
+        loginInput?.focus();
+      });
     });
-  });
-}, [
-  closeAndResetModals,
-  deepWipeOnLogout,
-  resetToDefaults,
-  store.currentCallUser,
-  store.currentChannelId
-]);
+  }, [
+    closeAndResetModals,
+    deepWipeOnLogout,
+    resetToDefaults,
+    store.currentCallUser,
+    store.currentChannelId
+  ]);
 
-    const handleAutoLaunchToggle = useCallback(async (enabled: boolean) => {
-  const prev = autoLaunch;
-  setAutoLaunch(enabled); // Optimistic UI
-  try {
-    await window.windowControls.setAutoLaunch(enabled);
-  } catch {
-    setAutoLaunch(prev); // Откат при ошибке
-  }
-}, [autoLaunch]);
+  const handleAutoLaunchToggle = useCallback(async (enabled: boolean) => {
+    const prev = autoLaunch;
+    setAutoLaunch(enabled); // Optimistic UI
+    try {
+      await window.windowControls.setAutoLaunch(enabled);
+    } catch {
+      setAutoLaunch(prev); // Откат при ошибке
+    }
+  }, [autoLaunch]);
 
   const changePassword = useCallback(async () => {
     setPrivacyError('');
@@ -739,21 +739,21 @@ const handleLogout = useCallback(async () => {
   }, [store.currentUser, editProfileDisplayName, editProfileAvatarBase64, editProfileAvatarColor, validateName, saveLocalCache]);
 
   const handleCreateChannel = useCallback(async () => {
-  const nameErr = validateName(newChannelName);
-  if (nameErr) { setError(nameErr); return; }
-  closeAndResetModals();
-  signalRService.createChannel(newChannelName.trim());
-}, [newChannelName, validateName, closeAndResetModals]);
+    const nameErr = validateName(newChannelName);
+    if (nameErr) { setError(nameErr); return; }
+    closeAndResetModals();
+    signalRService.createChannel(newChannelName.trim());
+  }, [newChannelName, validateName, closeAndResetModals]);
 
   const saveChannelEdit = useCallback(async () => {
-  if (!editChannelId) return;
-  const nameErr = validateName(editChannelName);
-  if (nameErr) { setError(nameErr); return; }
-  const id = editChannelId;
-  const name = editChannelName.trim();
-  closeAndResetModals();
-  signalRService.updateChannel(id, name);
-}, [editChannelId, editChannelName, validateName, closeAndResetModals]);
+    if (!editChannelId) return;
+    const nameErr = validateName(editChannelName);
+    if (nameErr) { setError(nameErr); return; }
+    const id = editChannelId;
+    const name = editChannelName.trim();
+    closeAndResetModals();
+    signalRService.updateChannel(id, name);
+  }, [editChannelId, editChannelName, validateName, closeAndResetModals]);
 
   const handleChannelClick = useCallback(async (channelId: string) => {
     if (store.currentChannelId === channelId) return;
@@ -775,15 +775,15 @@ const handleLogout = useCallback(async () => {
   }, [store.pendingChannelSwitch, store.currentCallUser]);
 
   const handleAddFriend = useCallback(async () => {
-  if (!friendName.trim()) return;
-  const name = friendName.trim();
-  closeAndResetModals();
-  const success = await signalRService.sendFriendRequest(name);
-  if (!success) {
-    setOfflineToast('Пользователь не найден');
-    setTimeout(() => setOfflineToast(null), 3000);
-  }
-}, [friendName, closeAndResetModals]);
+    if (!friendName.trim()) return;
+    const name = friendName.trim();
+    closeAndResetModals();
+    const success = await signalRService.sendFriendRequest(name);
+    if (!success) {
+      setOfflineToast('Пользователь не найден');
+      setTimeout(() => setOfflineToast(null), 3000);
+    }
+  }, [friendName, closeAndResetModals]);
 
   const handleAcceptChannelInvite = useCallback(async (channelId: string) => {
     store.setChannelInvites(store.channelInvites.filter(i => i.channelId !== channelId));
@@ -814,55 +814,55 @@ const handleLogout = useCallback(async () => {
   }, []);
 
   const handleKickConfirm = useCallback(async () => {
-  const ch = store.selectedChannelForMembers;
-  const u = store.userToKick;
-  store.setModal('kickConfirm', false);
-  store.setUserToKick(null);
-  if (ch && u) signalRService.kickFromChannel(ch.id, u.id);
-}, [store.selectedChannelForMembers, store.userToKick]);
+    const ch = store.selectedChannelForMembers;
+    const u = store.userToKick;
+    store.setModal('kickConfirm', false);
+    store.setUserToKick(null);
+    if (ch && u) signalRService.kickFromChannel(ch.id, u.id);
+  }, [store.selectedChannelForMembers, store.userToKick]);
 
-const showAdminBlockFeedback = useCallback(() => {
-  setControlsShake(true);
-  setTimeout(() => setControlsShake(false), 600);
+  const showAdminBlockFeedback = useCallback(() => {
+    setControlsShake(true);
+    setTimeout(() => setControlsShake(false), 600);
 
-  if (adminBlockTimerRef.current) clearTimeout(adminBlockTimerRef.current);
+    if (adminBlockTimerRef.current) clearTimeout(adminBlockTimerRef.current);
 
-  setAdminBlockToast('Администратор запретил это действие');
-  adminBlockTimerRef.current = setTimeout(() => {
-    setAdminBlockToast('__hiding__');
-    setTimeout(() => setAdminBlockToast(null), 400);
-  }, 2500);
-}, []);
+    setAdminBlockToast('Администратор запретил это действие');
+    adminBlockTimerRef.current = setTimeout(() => {
+      setAdminBlockToast('__hiding__');
+      setTimeout(() => setAdminBlockToast(null), 400);
+    }, 2500);
+  }, []);
 
   const toggleMute = useCallback(() => {
-  if (!store.currentUser) return;
+    if (!store.currentUser) return;
 
-  if (store.currentUser.isServerMuted || store.currentUser.isServerDeafened) {
-    showAdminBlockFeedback();
-    return;
-  }
+    if (store.currentUser.isServerMuted || store.currentUser.isServerDeafened) {
+      showAdminBlockFeedback();
+      return;
+    }
 
-  if (store.currentUser.isDeafened) return;
+    if (store.currentUser.isDeafened) return;
 
-  const nextMuted = !store.currentUser.isMuted;
-  store.setCurrentUser({ ...store.currentUser, isMuted: nextMuted });
-  signalRService.toggleState(nextMuted, store.currentUser.isDeafened);
-}, [store.currentUser, showAdminBlockFeedback]);
+    const nextMuted = !store.currentUser.isMuted;
+    store.setCurrentUser({ ...store.currentUser, isMuted: nextMuted });
+    signalRService.toggleState(nextMuted, store.currentUser.isDeafened);
+  }, [store.currentUser, showAdminBlockFeedback]);
 
-const toggleDeafen = useCallback(() => {
-  if (!store.currentUser) return;
+  const toggleDeafen = useCallback(() => {
+    if (!store.currentUser) return;
 
-  if (store.currentUser.isServerDeafened) {
-    showAdminBlockFeedback();
-    return;
-  }
+    if (store.currentUser.isServerDeafened) {
+      showAdminBlockFeedback();
+      return;
+    }
 
-  const nextDeafened = !store.currentUser.isDeafened;
-  const nextMuted = nextDeafened ? true : store.currentUser.isMuted;
-  store.setCurrentUser({ ...store.currentUser, isDeafened: nextDeafened, isMuted: nextMuted });
-  signalRService.toggleState(nextMuted, nextDeafened);
-  webrtc.setDeafened(nextDeafened);
-}, [store.currentUser, showAdminBlockFeedback]);
+    const nextDeafened = !store.currentUser.isDeafened;
+    const nextMuted = nextDeafened ? true : store.currentUser.isMuted;
+    store.setCurrentUser({ ...store.currentUser, isDeafened: nextDeafened, isMuted: nextMuted });
+    signalRService.toggleState(nextMuted, nextDeafened);
+    webrtc.setDeafened(nextDeafened);
+  }, [store.currentUser, showAdminBlockFeedback]);
 
 
   const handleAcceptCall = useCallback(async () => {
@@ -874,24 +874,24 @@ const toggleDeafen = useCallback(() => {
   }, [store.incomingCall]);
 
   const handleEndCall = useCallback(async () => {
-  await signalRService.endCall();
-}, []);
+    await signalRService.endCall();
+  }, []);
 
-const openMyAchievements = useCallback(async () => {
-  store.setAchievementsData(null); // Показать "Загрузка..."
-  store.setAchievementsViewUserId(null);
-  store.setModal('achievements', true);
-  const data = await signalRService.getMyAchievements();
-  store.setAchievementsData(data);
-}, []);
+  const openMyAchievements = useCallback(async () => {
+    store.setAchievementsData(null); // Показать "Загрузка..."
+    store.setAchievementsViewUserId(null);
+    store.setModal('achievements', true);
+    const data = await signalRService.getMyAchievements();
+    store.setAchievementsData(data);
+  }, []);
 
-const openUserAchievements = useCallback(async (userId: string) => {
-  store.setAchievementsData(null);
-  store.setAchievementsViewUserId(userId);
-  store.setModal('achievements', true);
-  const data = await signalRService.getUserAchievements(userId);
-  store.setAchievementsData(data);
-}, []);
+  const openUserAchievements = useCallback(async (userId: string) => {
+    store.setAchievementsData(null);
+    store.setAchievementsViewUserId(userId);
+    store.setModal('achievements', true);
+    const data = await signalRService.getUserAchievements(userId);
+    store.setAchievementsData(data);
+  }, []);
 
   const handleContextMenu = useCallback((e: React.MouseEvent, type: 'channel' | 'friend' | 'voiceUser' | 'channelMember', item: any) => {
     e.preventDefault();
@@ -957,175 +957,175 @@ const openUserAchievements = useCallback(async (userId: string) => {
   }, [rgbToHsl, hslToRgb]);
 
   const applyCrop = useCallback(() => {
-  if (!imgRef.current) return;
-  const img = imgRef.current;
+    if (!imgRef.current) return;
+    const img = imgRef.current;
 
-  const canvas = document.createElement('canvas');
-  canvas.width = 200;
-  canvas.height = 200;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = 200;
+    canvas.height = 200;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
-  const ratio = Math.min(200 / img.naturalWidth, 200 / img.naturalHeight);
-  const baseW = img.naturalWidth * ratio;
-  const baseH = img.naturalHeight * ratio;
+    const ratio = Math.min(200 / img.naturalWidth, 200 / img.naturalHeight);
+    const baseW = img.naturalWidth * ratio;
+    const baseH = img.naturalHeight * ratio;
 
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, 200, 200);
-  ctx.translate(100, 100);
-  ctx.scale(cropScale, cropScale);
-  ctx.translate(cropPos.x / cropScale, cropPos.y / cropScale);
-  ctx.drawImage(img, -baseW / 2, -baseH / 2, baseW, baseH);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, 200, 200);
+    ctx.translate(100, 100);
+    ctx.scale(cropScale, cropScale);
+    ctx.translate(cropPos.x / cropScale, cropPos.y / cropScale);
+    ctx.drawImage(img, -baseW / 2, -baseH / 2, baseW, baseH);
 
-  const hex = getDominantColor(ctx, 200, 200);
+    const hex = getDominantColor(ctx, 200, 200);
 
-  let base64: string;
+    let base64: string;
 
-  if (cropGifDataUrl) {
-    // GIF: пакуем оригинал + параметры кропа
-    base64 = packGif(cropGifDataUrl, cropScale, cropPos.x, cropPos.y);
-  } else {
-    // Статичное изображение: рендерим через canvas
-    base64 = canvas.toDataURL('image/png');
-  }
-
-  if (cropContext === 'setup') {
-    setAvatarBase64(base64);
-    setAvatarColor(hex);
-  } else {
-    setEditProfileAvatarBase64(base64);
-    setEditProfileAvatarColor(hex);
-  }
-  setCropGifDataUrl(null);
-  setShowCropper(false);
-}, [cropScale, cropPos, cropContext, cropGifDataUrl, getDominantColor]);
-
-
-const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, context: 'setup' | 'profile') => {
-  if (e.target.files?.[0]) {
-    const file = e.target.files[0];
-    if (file.size > 5 * 1024 * 1024) { alert('Макс 5 МБ'); return; }
-    if (!file.type.startsWith('image/')) { alert('Только изображения'); return; }
-
-    if (file.type === 'image/gif') {
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        const gifDataUrl = ev.target?.result as string;
-        if (gifDataUrl) {
-          setCropGifDataUrl(gifDataUrl);
-          setCropImageSrc(URL.createObjectURL(file));
-          setCropScale(1);
-          setCropPos({ x: 0, y: 0 });
-          setCropContext(context);
-          setShowCropper(true);
-        }
-      };
-      reader.readAsDataURL(file);
-      e.target.value = '';
-      return;
+    if (cropGifDataUrl) {
+      // GIF: пакуем оригинал + параметры кропа
+      base64 = packGif(cropGifDataUrl, cropScale, cropPos.x, cropPos.y);
+    } else {
+      // Статичное изображение: рендерим через canvas
+      base64 = canvas.toDataURL('image/png');
     }
 
+    if (cropContext === 'setup') {
+      setAvatarBase64(base64);
+      setAvatarColor(hex);
+    } else {
+      setEditProfileAvatarBase64(base64);
+      setEditProfileAvatarColor(hex);
+    }
     setCropGifDataUrl(null);
-    setCropImageSrc(URL.createObjectURL(file));
-    setCropScale(1);
-    setCropPos({ x: 0, y: 0 });
-    setCropContext(context);
-    setShowCropper(true);
-  }
-  e.target.value = '';
-}, []);
+    setShowCropper(false);
+  }, [cropScale, cropPos, cropContext, cropGifDataUrl, getDominantColor]);
 
- const renderModal = useCallback((key: keyof typeof store.modals, content: React.ReactNode) => {
-  if (!store.modals[key]) return null;
 
-  return (
-    <div className="absolute inset-0 z-[150] bg-black/80 flex items-center justify-center p-4">
-      {content}
-    </div>
-  );
-}, [store.modals]);
+  const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, context: 'setup' | 'profile') => {
+    if (e.target.files?.[0]) {
+      const file = e.target.files[0];
+      if (file.size > 5 * 1024 * 1024) { alert('Макс 5 МБ'); return; }
+      if (!file.type.startsWith('image/')) { alert('Только изображения'); return; }
+
+      if (file.type === 'image/gif') {
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const gifDataUrl = ev.target?.result as string;
+          if (gifDataUrl) {
+            setCropGifDataUrl(gifDataUrl);
+            setCropImageSrc(URL.createObjectURL(file));
+            setCropScale(1);
+            setCropPos({ x: 0, y: 0 });
+            setCropContext(context);
+            setShowCropper(true);
+          }
+        };
+        reader.readAsDataURL(file);
+        e.target.value = '';
+        return;
+      }
+
+      setCropGifDataUrl(null);
+      setCropImageSrc(URL.createObjectURL(file));
+      setCropScale(1);
+      setCropPos({ x: 0, y: 0 });
+      setCropContext(context);
+      setShowCropper(true);
+    }
+    e.target.value = '';
+  }, []);
+
+  const renderModal = useCallback((key: keyof typeof store.modals, content: React.ReactNode) => {
+    if (!store.modals[key]) return null;
+
+    return (
+      <div className="absolute inset-0 z-[150] bg-black/80 flex items-center justify-center p-4">
+        {content}
+      </div>
+    );
+  }, [store.modals]);
 
   const renderCropper = () => {
-  if (!showCropper || !cropImageSrc) return null;
+    if (!showCropper || !cropImageSrc) return null;
 
-  return (
-    <div className="fixed inset-0 z-[99999] bg-black/90 flex items-center justify-center p-4">
-      <div className="bg-panelBg p-6 rounded-3xl flex flex-col items-center shadow-2xl w-[360px] max-w-full">
-        <div className="w-full flex items-center justify-between mb-6">
-          <h2 className="text-white text-xl font-bold">Обрезка аватара</h2>
-          <button
-            onClick={() => {
-              setShowCropper(false);
-              setCropGifDataUrl(null);
-              setCropImageSrc(null);
-              setCropScale(1);
-              setCropPos({ x: 0, y: 0 });
-              setIsDragging(false);
+    return (
+      <div className="fixed inset-0 z-[99999] bg-black/90 flex items-center justify-center p-4">
+        <div className="bg-panelBg p-6 rounded-3xl flex flex-col items-center shadow-2xl w-[360px] max-w-full">
+          <div className="w-full flex items-center justify-between mb-6">
+            <h2 className="text-white text-xl font-bold">Обрезка аватара</h2>
+            <button
+              onClick={() => {
+                setShowCropper(false);
+                setCropGifDataUrl(null);
+                setCropImageSrc(null);
+                setCropScale(1);
+                setCropPos({ x: 0, y: 0 });
+                setIsDragging(false);
+              }}
+              className="text-textMuted hover:text-white transition-colors"
+            >
+              <X size={24} />
+            </button>
+          </div>
+
+          <div
+            className="w-[200px] h-[200px] rounded-full overflow-hidden relative cursor-move bg-black shadow-inner"
+            onMouseDown={e => {
+              setIsDragging(true);
+              setDragStart({ x: e.clientX - cropPos.x, y: e.clientY - cropPos.y });
             }}
-            className="text-textMuted hover:text-white transition-colors"
-          >
-            <X size={24} />
-          </button>
-        </div>
-
-        <div
-          className="w-[200px] h-[200px] rounded-full overflow-hidden relative cursor-move bg-black shadow-inner"
-          onMouseDown={e => {
-            setIsDragging(true);
-            setDragStart({ x: e.clientX - cropPos.x, y: e.clientY - cropPos.y });
-          }}
-          onMouseMove={e => {
-            if (isDragging) {
-              setCropPos({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y });
-            }
-          }}
-          onMouseUp={() => setIsDragging(false)}
-          onMouseLeave={() => setIsDragging(false)}
-          onWheel={e => setCropScale(s => Math.max(0.5, Math.min(5, s + (e.deltaY > 0 ? -0.1 : 0.1))))}
-        >
-          <img
-            ref={imgRef}
-            src={cropImageSrc}
-            draggable={false}
-            style={{
-              position: 'absolute',
-              left: '50%',
-              top: '50%',
-              transform: `translate(calc(-50% + ${cropPos.x}px), calc(-50% + ${cropPos.y}px)) scale(${cropScale})`,
-              maxWidth: '100%',
-              maxHeight: '100%',
-              objectFit: 'contain'
+            onMouseMove={e => {
+              if (isDragging) {
+                setCropPos({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y });
+              }
             }}
-          />
-        </div>
-
-        <Md3Slider min={0.5} max={3} step={0.05} value={cropScale} onChange={setCropScale} className="mt-6" />
-
-        <div className="flex gap-4 mt-6 w-full">
-          <button
-            onClick={() => {
-              setShowCropper(false);
-              setCropGifDataUrl(null);
-              setCropImageSrc(null);
-              setCropScale(1);
-              setCropPos({ x: 0, y: 0 });
-              setIsDragging(false);
-            }}
-            className="flex-1 py-3 text-textMuted hover:bg-surface rounded-xl font-bold transition-colors"
+            onMouseUp={() => setIsDragging(false)}
+            onMouseLeave={() => setIsDragging(false)}
+            onWheel={e => setCropScale(s => Math.max(0.5, Math.min(5, s + (e.deltaY > 0 ? -0.1 : 0.1))))}
           >
-            Отмена
-          </button>
-          <button
-            onClick={applyCrop}
-            className="flex-1 py-3 bg-[#c70060] text-white font-bold rounded-xl hover:opacity-90 transition-opacity"
-          >
-            Применить
-          </button>
+            <img
+              ref={imgRef}
+              src={cropImageSrc}
+              draggable={false}
+              style={{
+                position: 'absolute',
+                left: '50%',
+                top: '50%',
+                transform: `translate(calc(-50% + ${cropPos.x}px), calc(-50% + ${cropPos.y}px)) scale(${cropScale})`,
+                maxWidth: '100%',
+                maxHeight: '100%',
+                objectFit: 'contain'
+              }}
+            />
+          </div>
+
+          <Md3Slider min={0.5} max={3} step={0.05} value={cropScale} onChange={setCropScale} className="mt-6" />
+
+          <div className="flex gap-4 mt-6 w-full">
+            <button
+              onClick={() => {
+                setShowCropper(false);
+                setCropGifDataUrl(null);
+                setCropImageSrc(null);
+                setCropScale(1);
+                setCropPos({ x: 0, y: 0 });
+                setIsDragging(false);
+              }}
+              className="flex-1 py-3 text-textMuted hover:bg-surface rounded-xl font-bold transition-colors"
+            >
+              Отмена
+            </button>
+            <button
+              onClick={applyCrop}
+              className="flex-1 py-3 bg-[#c70060] text-white font-bold rounded-xl hover:opacity-90 transition-opacity"
+            >
+              Применить
+            </button>
+          </div>
         </div>
       </div>
-    </div>
-  );
-};
+    );
+  };
 
   // === Screens ===
 
@@ -1145,23 +1145,23 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
   }
 
   if (appLoading) {
-  return (
-    <div className={`flex flex-col h-screen w-screen bg-appBg transition-opacity duration-[600ms] select-none`}>
-      <TitleBar />
-      <div className="flex-1 flex items-center justify-center">
-        <div className="flex flex-col items-center gap-6">
-          <h1 className="text-5xl font-black text-white tracking-widest animate-pulse">ZABOR</h1>
-          <div className="w-10 h-10 border-4 border-[#c70060] border-t-transparent rounded-full animate-spin" />
-          {showInitConnectionError && (
-  <p className="text-danger font-bold mt-2 animate-fade-in">
-    Нет соединения с сервером
-  </p>
-)}
+    return (
+      <div className={`flex flex-col h-screen w-screen bg-appBg transition-opacity duration-[600ms] select-none`}>
+        <TitleBar />
+        <div className="flex-1 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-6">
+            <h1 className="text-5xl font-black text-white tracking-widest animate-pulse">ZABOR</h1>
+            <div className="w-10 h-10 border-4 border-[#c70060] border-t-transparent rounded-full animate-spin" />
+            {showInitConnectionError && (
+              <p className="text-danger font-bold mt-2 animate-fade-in">
+                Нет соединения с сервером
+              </p>
+            )}
+          </div>
         </div>
       </div>
-    </div>
-  );
-}
+    );
+  }
 
   if (!isAuth) {
     return (
@@ -1173,31 +1173,31 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
               <h1 className="text-4xl font-black text-center mb-8 tracking-wider text-white">ZABOR</h1>
               <label className="text-xs font-bold text-textMuted mb-2 tracking-wider">ЛОГИН</label>
               <input
-  ref={loginInputRef}
-  type="text"
-  value={login}
-  onChange={e => setLogin(e.target.value)}
-  maxLength={25}
-  className="bg-surface text-white rounded-xl p-3 mb-4 outline-none focus:ring-2 focus:ring-[#c70060]"
-/>
+                ref={loginInputRef}
+                type="text"
+                value={login}
+                onChange={e => setLogin(e.target.value)}
+                maxLength={25}
+                className="bg-surface text-white rounded-xl p-3 mb-4 outline-none focus:ring-2 focus:ring-[#c70060]"
+              />
               <label className="text-xs font-bold text-textMuted mb-2 tracking-wider">ПАРОЛЬ</label>
               <div className="relative mb-6">
-  <input
-    ref={passwordInputRef}
-    type={showPassword ? 'text' : 'password'}
-    value={password}
-    onChange={e => setPassword(e.target.value)}
-    maxLength={25}
-    onKeyDown={e => e.key === 'Enter' && handleAuth()}
-    className="w-full bg-surface text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060] pr-10"
-  />
-  <button
-    onClick={() => setShowPassword(!showPassword)}
-    className="absolute right-3 top-3 text-textMuted hover:text-white transition-colors"
-  >
-    {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
-  </button>
-</div>
+                <input
+                  ref={passwordInputRef}
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  maxLength={25}
+                  onKeyDown={e => e.key === 'Enter' && handleAuth()}
+                  className="w-full bg-surface text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060] pr-10"
+                />
+                <button
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-3 text-textMuted hover:text-white transition-colors"
+                >
+                  {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                </button>
+              </div>
               {error && <p className="text-danger text-sm mb-4 text-center font-medium">{error}</p>}
               <button onClick={handleAuth} disabled={isLoading} className="bg-[#c70060] text-white font-bold py-3 rounded-xl disabled:opacity-50 hover:opacity-90 transition-opacity">{isLoading ? 'ЗАГРУЗКА...' : 'ПРОДОЛЖИТЬ'}</button>
             </div>
@@ -1241,39 +1241,39 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
         <div className="flex flex-1 overflow-hidden">
 
           {contextMenu?.visible && (
-  <div
-    className="absolute z-[200] bg-surface border border-[#303035] rounded-xl shadow-xl py-2 w-48"
-    style={{ top: contextMenu.y, left: contextMenu.x }}
-    onClick={e => e.stopPropagation()}
-    onContextMenu={e => e.stopPropagation()}
-  >
-    {contextMenu.type === 'channel' ? (
-      <>
-        {contextMenu.item.ownerId === store.currentUser?.id && (
-          <button onClick={() => { setEditChannelId(contextMenu.item.id); setEditChannelName(contextMenu.item.name); store.setModal('channelEdit', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Edit2 size={16} /> Переименовать</button>
-        )}
-        <button onClick={() => { signalRService.quitAccessChannel(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><LeaveIcon size={16} /> Выйти из канала</button>
-      </>
-    ) : contextMenu.type === 'channelMember' ? (
-      <>
-        <button onClick={() => { store.setSelectedProfileUser(contextMenu.item); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
-        {store.selectedChannelForMembers?.ownerId === store.currentUser?.id && contextMenu.item.id !== store.currentUser?.id && (
-          <button onClick={() => { store.setUserToKick(contextMenu.item); store.setModal('kickConfirm', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserX size={16} /> Исключить</button>
-        )}
-      </>
-    ) : contextMenu.type === 'voiceUser' ? (
-      <>
-        <button onClick={() => { setVolumeUser(contextMenu.item); setVolumeUserValue(store.userVolumes[contextMenu.item.id] ?? 100); store.setModal('userVolume', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Volume2 size={16} /> Громкость</button>
-        <button onClick={() => { store.setSelectedProfileUser(contextMenu.item); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><Settings size={16} /> Профиль</button>
-      </>
-    ) : (
-      <>
-        <button onClick={() => { store.setSelectedProfileUser(contextMenu.item); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
-        <button onClick={() => { signalRService.removeFriend(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserMinus size={16} /> Удалить</button>
-      </>
-    )}
-  </div>
-)}
+            <div
+              className="absolute z-[200] bg-surface border border-[#303035] rounded-xl shadow-xl py-2 w-48"
+              style={{ top: contextMenu.y, left: contextMenu.x }}
+              onClick={e => e.stopPropagation()}
+              onContextMenu={e => e.stopPropagation()}
+            >
+              {contextMenu.type === 'channel' ? (
+                <>
+                  {contextMenu.item.ownerId === store.currentUser?.id && (
+                    <button onClick={() => { setEditChannelId(contextMenu.item.id); setEditChannelName(contextMenu.item.name); store.setModal('channelEdit', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Edit2 size={16} /> Переименовать</button>
+                  )}
+                  <button onClick={() => { signalRService.quitAccessChannel(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><LeaveIcon size={16} /> Выйти из канала</button>
+                </>
+              ) : contextMenu.type === 'channelMember' ? (
+                <>
+                  <button onClick={() => { store.setSelectedProfileUser(contextMenu.item); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
+                  {store.selectedChannelForMembers?.ownerId === store.currentUser?.id && contextMenu.item.id !== store.currentUser?.id && (
+                    <button onClick={() => { store.setUserToKick(contextMenu.item); store.setModal('kickConfirm', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserX size={16} /> Исключить</button>
+                  )}
+                </>
+              ) : contextMenu.type === 'voiceUser' ? (
+                <>
+                  <button onClick={() => { setVolumeUser(contextMenu.item); setVolumeUserValue(store.userVolumes[contextMenu.item.id] ?? 100); store.setModal('userVolume', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Volume2 size={16} /> Громкость</button>
+                  <button onClick={() => { store.setSelectedProfileUser(contextMenu.item); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><Settings size={16} /> Профиль</button>
+                </>
+              ) : (
+                <>
+                  <button onClick={() => { store.setSelectedProfileUser(contextMenu.item); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
+                  <button onClick={() => { signalRService.removeFriend(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserMinus size={16} /> Удалить</button>
+                </>
+              )}
+            </div>
+          )}
 
           <div className="w-80 bg-panelBg flex flex-col border-r border-[#303035] relative shrink-0">
 
@@ -1288,8 +1288,8 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
                     <div key={req.id} className="bg-surface p-4 rounded-xl">
                       <div className="flex items-center gap-3 mb-3">
                         <div className="w-10 h-10 rounded-full shrink-0 overflow-hidden relative" style={{ backgroundColor: req.avatarColor }}>
-  <AvatarImg src={req.avatarBase64} size={40} />
-</div>
+                          <AvatarImg src={req.avatarBase64} size={40} />
+                        </div>
                         <div className="flex-1 min-w-0">
                           <p className="text-white font-semibold text-sm truncate">{req.displayName}</p>
                           <p className="text-textMuted text-xs font-medium">Запрос в друзья</p>
@@ -1348,10 +1348,10 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
                         {channelUsers.length > 0 && (
                           <div className="flex items-center -space-x-2 px-8 mt-1.5 pointer-events-none">
                             {channelUsers.map(u => (
-  <div key={u.id} className="w-6 h-6 rounded-full border-2 border-panelBg bg-surface overflow-hidden relative" title={u.displayName} style={{ backgroundColor: u.avatarColor }}>
-    <AvatarImg src={u.avatarBase64} size={24} animate={false} />
-  </div>
-))}
+                              <div key={u.id} className="w-6 h-6 rounded-full border-2 border-panelBg bg-surface overflow-hidden relative" title={u.displayName} style={{ backgroundColor: u.avatarColor }}>
+                                <AvatarImg src={u.avatarBase64} size={24} animate={false} />
+                              </div>
+                            ))}
                           </div>
                         )}
                       </div>
@@ -1370,11 +1370,11 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
                       onClick={() => { store.setSelectedProfileUser(f); setEditProfileDisplayName(f.displayName); store.setModal('profile', true); signalRService.viewProfile(f.id); }}
                       className="px-3 py-2 rounded-xl mb-1 cursor-pointer hover:bg-surfaceHover flex items-center gap-3 transition-colors">
                       <div className="relative w-10 h-10 shrink-0">
-  <div className="w-full h-full rounded-full overflow-hidden" style={{ backgroundColor: f.avatarColor }}>
-    <AvatarImg src={f.avatarBase64} size={40} />
-  </div>
-  <div className={`absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full border-[3px] border-panelBg ${f.isOnline ? 'bg-success' : 'bg-gray-500'}`} />
-</div>
+                        <div className="w-full h-full rounded-full overflow-hidden" style={{ backgroundColor: f.avatarColor }}>
+                          <AvatarImg src={f.avatarBase64} size={40} />
+                        </div>
+                        <div className={`absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full border-[3px] border-panelBg ${f.isOnline ? 'bg-success' : 'bg-gray-500'}`} />
+                      </div>
                       <span className={`font-semibold text-[15px] truncate ${f.isOnline ? 'text-white' : 'text-textMuted'}`}>{f.displayName}</span>
                     </div>
                   ))}
@@ -1399,9 +1399,9 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
               <div onClick={() => { store.setSelectedProfileUser(store.currentUser); setEditProfileDisplayName(store.currentUser!.displayName); setEditProfileAvatarBase64(null); store.setModal('profile', true); }}
                 className="relative w-11 h-11 rounded-full mr-3 cursor-pointer shrink-0 hover:opacity-80 transition-opacity" style={{ backgroundColor: store.currentUser?.avatarColor }}>
                 <div className="w-full h-full rounded-full overflow-hidden relative">
-  <AvatarImg src={store.currentUser?.avatarBase64} size={44} />
-</div>
-                <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-[3px] border-[#09090B] bg-success" />
+                  <AvatarImg src={store.currentUser?.avatarBase64} size={44} />
+                </div>
+                <div className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-[3px] border-[#09090B] ${serverConnected ? 'bg-success' : 'bg-gray-500'}`} />
               </div>
               <div className="flex-1 min-w-0 flex flex-col justify-center">
                 <div className="font-bold text-sm truncate text-white">{store.currentUser?.displayName}</div>
@@ -1410,124 +1410,123 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
                 </div>
               </div>
               <div className="flex items-center gap-1 shrink-0">
-  {isAdmin && (
-    <button
-  onClick={() => {
-    store.setModal('adminConsole', true);
-    loadAdminUsers();
-  }}
-  className="text-textMuted hover:text-white p-2 hover:bg-surface rounded-xl transition-colors"
-  title="Админ-консоль"
->
-  <Crown size={20} />
-</button>
-  )}
+                {isAdmin && (
+                  <button
+                    onClick={() => {
+                      store.setModal('adminConsole', true);
+                      loadAdminUsers();
+                    }}
+                    className="text-textMuted hover:text-white p-2 hover:bg-surface rounded-xl transition-colors"
+                    title="Админ-консоль"
+                  >
+                    <Crown size={20} />
+                  </button>
+                )}
 
-  <button
-    onClick={() => {
-      store.setModal('settings', true);
-      loadDevices();
-      window.windowControls.getAutoLaunch().then(setAutoLaunch).catch(() => {});
-    }}
-    className="text-textMuted hover:text-white p-2 hover:bg-surface rounded-xl transition-colors"
-  >
-    <Settings size={20} />
-  </button>
-</div>
+                <button
+                  onClick={() => {
+                    store.setModal('settings', true);
+                    loadDevices();
+                    window.windowControls.getAutoLaunch().then(setAutoLaunch).catch(() => { });
+                  }}
+                  className="text-textMuted hover:text-white p-2 hover:bg-surface rounded-xl transition-colors"
+                >
+                  <Settings size={20} />
+                </button>
+              </div>
             </div>
           </div>
 
           <div className="flex-1 flex flex-col relative bg-[#181818]">
 
             {store.currentCallUser && (
-  <div className="absolute top-0 left-0 right-0 bottom-[120px] p-6 flex items-center justify-center overflow-hidden">
-    <div ref={containerRef} className="w-full h-full flex items-center justify-center">
-      <div
-        className={`relative flex flex-col items-center justify-center overflow-hidden shrink-0 transition-all duration-200
+              <div className="absolute top-0 left-0 right-0 bottom-[120px] p-6 flex items-center justify-center overflow-hidden">
+                <div ref={containerRef} className="w-full h-full flex items-center justify-center">
+                  <div
+                    className={`relative flex flex-col items-center justify-center overflow-hidden shrink-0 transition-all duration-200
           ${store.callStatus === 'calling' ? 'animate-call-pulse' : ''}
           ${store.currentCallUser.isSpeaking && store.callStatus === 'connected'
-            ? 'shadow-[inset_0_0_0_3px_#3BA55C,inset_0_0_0_5px_#181818,0_10px_15px_-3px_rgba(0,0,0,0.5)]'
-            : 'shadow-xl'
-          }`}
-        style={{
-          backgroundColor: store.currentCallUser.avatarColor,
-          width: `${cardSize.w}px`,
-          height: `${cardSize.h}px`,
-          borderRadius: '24px'
-        }}
-      >
-        <div
-          className="relative"
-          style={{
-            width: `${cardSize.avatarSize}px`,
-            height: `${cardSize.avatarSize}px`,
-            marginBottom: '16px'
-          }}
-        >
-          <div className="w-full h-full rounded-full overflow-hidden shadow-inner bg-black/20 relative">
-            <AvatarImg src={store.currentCallUser.avatarBase64} size={cardSize.avatarSize} />
-          </div>
-        </div>
+                        ? 'shadow-[inset_0_0_0_3px_#3BA55C,inset_0_0_0_5px_#181818,0_10px_15px_-3px_rgba(0,0,0,0.5)]'
+                        : 'shadow-xl'
+                      }`}
+                    style={{
+                      backgroundColor: store.currentCallUser.avatarColor,
+                      width: `${cardSize.w}px`,
+                      height: `${cardSize.h}px`,
+                      borderRadius: '24px'
+                    }}
+                  >
+                    <div
+                      className="relative"
+                      style={{
+                        width: `${cardSize.avatarSize}px`,
+                        height: `${cardSize.avatarSize}px`,
+                        marginBottom: '16px'
+                      }}
+                    >
+                      <div className="w-full h-full rounded-full overflow-hidden relative transform-gpu">
+                        <AvatarImg src={store.currentCallUser.avatarBase64} size={cardSize.avatarSize} />
+                      </div>
+                    </div>
 
-        {store.callStatus === 'calling' && (
-          <div
-            className="absolute inset-0 bg-black/25 flex items-center justify-center"
-            style={{ borderRadius: '24px' }}
-          >
-            <div className="flex gap-2.5">
-              <div className="w-3 h-3 bg-white/90 rounded-full animate-bounce" />
-              <div className="w-3 h-3 bg-white/90 rounded-full animate-bounce" style={{ animationDelay: '0.15s' }} />
-              <div className="w-3 h-3 bg-white/90 rounded-full animate-bounce" style={{ animationDelay: '0.3s' }} />
-            </div>
-          </div>
-        )}
+                    {store.callStatus === 'calling' && (
+                      <div
+                        className="absolute inset-0 bg-black/25 flex items-center justify-center"
+                        style={{ borderRadius: '24px' }}
+                      >
+                        <div className="flex gap-2.5">
+                          <div className="w-3 h-3 bg-white/90 rounded-full animate-bounce" />
+                          <div className="w-3 h-3 bg-white/90 rounded-full animate-bounce" style={{ animationDelay: '0.15s' }} />
+                          <div className="w-3 h-3 bg-white/90 rounded-full animate-bounce" style={{ animationDelay: '0.3s' }} />
+                        </div>
+                      </div>
+                    )}
 
-        <div
-          className={`absolute bottom-4 left-1/2 -translate-x-1/2 transition-all duration-300 ${
-            isIdle && store.callStatus === 'connected'
-              ? 'translate-y-8 opacity-0 pointer-events-none'
-              : 'translate-y-0 opacity-100'
-          }`}
-        >
-          <div
-            className="bg-[#09090B]/80 backdrop-blur-md border border-[#303035]/50 px-4 py-1.5 rounded-full flex items-center gap-2 shadow-lg whitespace-nowrap"
-            style={{ maxWidth: `${cardSize.w - 40}px` }}
-          >
-            <span className="text-white font-bold text-sm truncate">{store.currentCallUser.displayName}</span>
+                    <div
+                      className={`absolute bottom-4 left-1/2 -translate-x-1/2 transition-all duration-300 ${isIdle && store.callStatus === 'connected'
+                        ? 'translate-y-8 opacity-0 pointer-events-none'
+                        : 'translate-y-0 opacity-100'
+                        }`}
+                    >
+                      <div
+                        className="bg-[#09090B]/80 backdrop-blur-md border border-[#303035]/50 px-4 py-1.5 rounded-full flex items-center gap-2 shadow-lg whitespace-nowrap"
+                        style={{ maxWidth: `${cardSize.w - 40}px` }}
+                      >
+                        <span className="text-white font-bold text-sm truncate">{store.currentCallUser.displayName}</span>
 
-            {store.callStatus === 'calling' && (
-              <span className="text-textMuted text-xs font-medium">Дозвон...</span>
+                        {store.callStatus === 'calling' && (
+                          <span className="text-textMuted text-xs font-medium">Дозвон...</span>
+                        )}
+
+                        {store.callStatus === 'connected' && (store.currentCallUser.isMuted || store.currentCallUser.isServerMuted) && (
+                          <Mic size={14} className="text-danger shrink-0" />
+                        )}
+                        {store.callStatus === 'connected' && (store.currentCallUser.isDeafened || store.currentCallUser.isServerDeafened) && (
+                          <Headphones size={14} className="text-danger shrink-0" />
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             )}
 
-            {store.callStatus === 'connected' && (store.currentCallUser.isMuted || store.currentCallUser.isServerMuted) && (
-  <Mic size={14} className="text-danger shrink-0" />
-)}
-{store.callStatus === 'connected' && (store.currentCallUser.isDeafened || store.currentCallUser.isServerDeafened) && (
-  <Headphones size={14} className="text-danger shrink-0" />
-)}
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-)}
-
             {!store.currentCallUser && !store.currentChannelId && (
-  <div className="flex-1 flex flex-col items-center justify-center px-16">
-    <div className="max-w-lg text-center">
-      {joke ? (
-        <>
-  <p className="text-xs text-white/20 mb-3 font-semibold tracking-wider">ШУТЕЙКА:</p>
-  <p className="text-lg text-white/50 font-medium leading-relaxed whitespace-pre-line">
-    {joke}
-  </p>
-</>
-      ) : (
-        <div className="w-6 h-6 border-2 border-white/10 border-t-white/30 rounded-full animate-spin mx-auto" />
-      )}
-    </div>
-  </div>
-)}
+              <div className="flex-1 flex flex-col items-center justify-center px-16">
+                <div className="max-w-lg text-center">
+                  {joke ? (
+                    <>
+                      <p className="text-xs text-white/20 mb-3 font-semibold tracking-wider">ШУТЕЙКА:</p>
+                      <p className="text-lg text-white/50 font-medium leading-relaxed whitespace-pre-line">
+                        {joke}
+                      </p>
+                    </>
+                  ) : (
+                    <div className="w-6 h-6 border-2 border-white/10 border-t-white/30 rounded-full animate-spin mx-auto" />
+                  )}
+                </div>
+              </div>
+            )}
 
             {!store.currentCallUser && store.currentChannelId && (
               <div className="absolute top-0 left-0 right-0 bottom-[120px] p-6 flex items-center justify-center overflow-hidden">
@@ -1537,16 +1536,16 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
                       className={`relative flex flex-col items-center justify-center cursor-pointer transition-all duration-200 overflow-hidden shrink-0 hover:-translate-y-1
                         ${user.isSpeaking ? 'shadow-[inset_0_0_0_3px_#3BA55C,inset_0_0_0_5px_#181818,0_10px_15px_-3px_rgba(0,0,0,0.5)] z-10' : 'shadow-xl'}`}
                       style={{ backgroundColor: user.avatarColor, width: `${cardSize.w}px`, height: `${cardSize.h}px`, borderRadius: '24px' }}>
-                     <div className="relative" style={{ width: `${cardSize.avatarSize}px`, height: `${cardSize.avatarSize}px`, marginBottom: '16px' }}>
-  <div className="w-full h-full rounded-full overflow-hidden shadow-inner bg-black/20 relative">
-    <AvatarImg src={user.avatarBase64} size={cardSize.avatarSize} />
-  </div>
-</div>
+                      <div className="relative" style={{ width: `${cardSize.avatarSize}px`, height: `${cardSize.avatarSize}px`, marginBottom: '16px' }}>
+                        <div className="w-full h-full rounded-full overflow-hidden relative transform-gpu">
+                          <AvatarImg src={user.avatarBase64} size={cardSize.avatarSize} />
+                        </div>
+                      </div>
                       <div className={`absolute bottom-4 left-1/2 -translate-x-1/2 transition-all duration-300 ${isIdle ? 'translate-y-8 opacity-0 pointer-events-none' : 'translate-y-0 opacity-100'}`}>
                         <div className="bg-[#09090B]/80 backdrop-blur-md border border-[#303035]/50 px-4 py-1.5 rounded-full flex items-center gap-2 shadow-lg whitespace-nowrap" style={{ maxWidth: `${cardSize.w - 40}px` }}>
                           <span className="text-white font-bold text-sm truncate">{user.displayName}</span>
                           {(user.isMuted || user.isServerMuted) && <Mic size={14} className="text-danger shrink-0" />}
-{(user.isDeafened || user.isServerDeafened) && <Headphones size={14} className="text-danger shrink-0" />}
+                          {(user.isDeafened || user.isServerDeafened) && <Headphones size={14} className="text-danger shrink-0" />}
                         </div>
                       </div>
                     </div>
@@ -1556,36 +1555,34 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
             )}
 
             {store.currentCallUser && (
-  <div className={[
-    "absolute bottom-10 left-1/2 -translate-x-1/2 bg-panelBg px-6 py-4 rounded-full flex gap-4 items-center shadow-2xl border border-[#303035] z-50",
-    controlsShake ? "animate-shake" : ""
-  ].join(" ")}>
+              <div className={[
+                "absolute bottom-10 left-1/2 -translate-x-1/2 bg-panelBg px-6 py-4 rounded-full flex gap-4 items-center shadow-2xl border border-[#303035] z-50",
+                controlsShake ? "animate-shake" : ""
+              ].join(" ")}>
                 <button
-  onClick={toggleMute}
-  className={`w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${
-    (store.currentUser?.isMuted || store.currentUser?.isServerMuted || store.currentUser?.isServerDeafened)
-      ? 'bg-[#2B2D31] text-white'
-      : 'bg-surface hover:bg-surfaceHover text-white'
-  }`}
->
-  <Mic size={24} />
-  {(store.currentUser?.isMuted || store.currentUser?.isServerMuted || store.currentUser?.isServerDeafened) && (
-    <div className="absolute w-[30px] h-[3px] bg-danger rotate-45 rounded-full" />
-  )}
-</button>
+                  onClick={toggleMute}
+                  className={`w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${(store.currentUser?.isMuted || store.currentUser?.isServerMuted || store.currentUser?.isServerDeafened)
+                    ? 'bg-[#2B2D31] text-white'
+                    : 'bg-surface hover:bg-surfaceHover text-white'
+                    }`}
+                >
+                  <Mic size={24} />
+                  {(store.currentUser?.isMuted || store.currentUser?.isServerMuted || store.currentUser?.isServerDeafened) && (
+                    <div className="absolute w-[30px] h-[3px] bg-danger rotate-45 rounded-full" />
+                  )}
+                </button>
                 <button
-  onClick={toggleDeafen}
-  className={`w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${
-    (store.currentUser?.isDeafened || store.currentUser?.isServerDeafened)
-      ? 'bg-[#2B2D31] text-white'
-      : 'bg-surface hover:bg-surfaceHover text-white'
-  }`}
->
-  <Headphones size={24} />
-  {(store.currentUser?.isDeafened || store.currentUser?.isServerDeafened) && (
-    <div className="absolute w-[30px] h-[3px] bg-danger rotate-45 rounded-full" />
-  )}
-</button>
+                  onClick={toggleDeafen}
+                  className={`w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${(store.currentUser?.isDeafened || store.currentUser?.isServerDeafened)
+                    ? 'bg-[#2B2D31] text-white'
+                    : 'bg-surface hover:bg-surfaceHover text-white'
+                    }`}
+                >
+                  <Headphones size={24} />
+                  {(store.currentUser?.isDeafened || store.currentUser?.isServerDeafened) && (
+                    <div className="absolute w-[30px] h-[3px] bg-danger rotate-45 rounded-full" />
+                  )}
+                </button>
                 <button onClick={handleEndCall} className="bg-danger hover:bg-red-600 text-white font-bold py-3.5 px-8 rounded-full flex items-center gap-3 transition-colors text-[15px]">
                   <PhoneOff size={20} /> Завершить
                 </button>
@@ -1593,36 +1590,34 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
             )}
 
             {store.currentChannelId && !store.currentCallUser && (
-  <div className={[
-    "absolute bottom-10 left-1/2 -translate-x-1/2 bg-panelBg px-6 py-4 rounded-full flex gap-4 items-center shadow-2xl border border-[#303035] z-50",
-    controlsShake ? "animate-shake" : ""
-  ].join(" ")}>
+              <div className={[
+                "absolute bottom-10 left-1/2 -translate-x-1/2 bg-panelBg px-6 py-4 rounded-full flex gap-4 items-center shadow-2xl border border-[#303035] z-50",
+                controlsShake ? "animate-shake" : ""
+              ].join(" ")}>
                 <button
-  onClick={toggleMute}
-  className={`w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${
-    (store.currentUser?.isMuted || store.currentUser?.isServerMuted || store.currentUser?.isServerDeafened)
-      ? 'bg-[#2B2D31] text-white'
-      : 'bg-surface hover:bg-surfaceHover text-white'
-  }`}
->
-  <Mic size={24} />
-  {(store.currentUser?.isMuted || store.currentUser?.isServerMuted || store.currentUser?.isServerDeafened) && (
-    <div className="absolute w-[30px] h-[3px] bg-danger rotate-45 rounded-full" />
-  )}
-</button>
+                  onClick={toggleMute}
+                  className={`w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${(store.currentUser?.isMuted || store.currentUser?.isServerMuted || store.currentUser?.isServerDeafened)
+                    ? 'bg-[#2B2D31] text-white'
+                    : 'bg-surface hover:bg-surfaceHover text-white'
+                    }`}
+                >
+                  <Mic size={24} />
+                  {(store.currentUser?.isMuted || store.currentUser?.isServerMuted || store.currentUser?.isServerDeafened) && (
+                    <div className="absolute w-[30px] h-[3px] bg-danger rotate-45 rounded-full" />
+                  )}
+                </button>
                 <button
-  onClick={toggleDeafen}
-  className={`w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${
-    (store.currentUser?.isDeafened || store.currentUser?.isServerDeafened)
-      ? 'bg-[#2B2D31] text-white'
-      : 'bg-surface hover:bg-surfaceHover text-white'
-  }`}
->
-  <Headphones size={24} />
-  {(store.currentUser?.isDeafened || store.currentUser?.isServerDeafened) && (
-    <div className="absolute w-[30px] h-[3px] bg-danger rotate-45 rounded-full" />
-  )}
-</button>
+                  onClick={toggleDeafen}
+                  className={`w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${(store.currentUser?.isDeafened || store.currentUser?.isServerDeafened)
+                    ? 'bg-[#2B2D31] text-white'
+                    : 'bg-surface hover:bg-surfaceHover text-white'
+                    }`}
+                >
+                  <Headphones size={24} />
+                  {(store.currentUser?.isDeafened || store.currentUser?.isServerDeafened) && (
+                    <div className="absolute w-[30px] h-[3px] bg-danger rotate-45 rounded-full" />
+                  )}
+                </button>
                 <button onClick={() => signalRService.leaveChannel()} className="bg-danger hover:bg-red-600 text-white font-bold py-3.5 px-8 rounded-full flex items-center gap-3 transition-colors text-[15px]">
                   <Phone size={20} /> Завершить
                 </button>
@@ -1691,62 +1686,62 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
             <button onClick={closeAndResetModals} className="text-textMuted hover:text-white transition-colors"><X size={24} /></button>
           </div>
           <div className="flex gap-2 px-6 pt-4">
-  <button onClick={() => setSettingsTab('general')} className={`px-4 py-2 rounded-xl font-bold text-sm transition-colors ${settingsTab === 'general' ? 'bg-[#c70060] text-white' : 'bg-surface text-textMuted hover:text-white'}`}>Общие</button>
-  <button onClick={() => setSettingsTab('audio')} className={`px-4 py-2 rounded-xl font-bold text-sm transition-colors ${settingsTab === 'audio' ? 'bg-[#c70060] text-white' : 'bg-surface text-textMuted hover:text-white'}`}>Звук</button>
-  <button onClick={() => setSettingsTab('privacy')} className={`px-4 py-2 rounded-xl font-bold text-sm transition-colors ${settingsTab === 'privacy' ? 'bg-[#c70060] text-white' : 'bg-surface text-textMuted hover:text-white'}`}>Безопасность</button>
-</div>
+            <button onClick={() => setSettingsTab('general')} className={`px-4 py-2 rounded-xl font-bold text-sm transition-colors ${settingsTab === 'general' ? 'bg-[#c70060] text-white' : 'bg-surface text-textMuted hover:text-white'}`}>Общие</button>
+            <button onClick={() => setSettingsTab('audio')} className={`px-4 py-2 rounded-xl font-bold text-sm transition-colors ${settingsTab === 'audio' ? 'bg-[#c70060] text-white' : 'bg-surface text-textMuted hover:text-white'}`}>Звук</button>
+            <button onClick={() => setSettingsTab('privacy')} className={`px-4 py-2 rounded-xl font-bold text-sm transition-colors ${settingsTab === 'privacy' ? 'bg-[#c70060] text-white' : 'bg-surface text-textMuted hover:text-white'}`}>Безопасность</button>
+          </div>
           <div className="p-6 overflow-y-auto flex-1">
             {settingsTab === 'general' && (
-  <div className="space-y-6">
-    <div>
-      <label className="text-xs font-bold text-textMuted mb-3 block tracking-wider">СИСТЕМА</label>
-      <div className="flex items-center justify-between bg-surface p-4 rounded-xl">
-        <div className="mr-4">
-          <span className="font-semibold text-white text-[15px]">Запускать вместе с Windows</span>
-          <p className="text-xs text-textMuted mt-1">ZABOR откроется автоматически при включении компьютера</p>
-        </div>
-        <Md3Switch checked={autoLaunch} onChange={handleAutoLaunchToggle} />
-      </div>
-    </div>
-  </div>
-)}
+              <div className="space-y-6">
+                <div>
+                  <label className="text-xs font-bold text-textMuted mb-3 block tracking-wider">СИСТЕМА</label>
+                  <div className="flex items-center justify-between bg-surface p-4 rounded-xl">
+                    <div className="mr-4">
+                      <span className="font-semibold text-white text-[15px]">Запускать вместе с Windows</span>
+                      <p className="text-xs text-textMuted mt-1">ZABOR откроется автоматически при включении компьютера</p>
+                    </div>
+                    <Md3Switch checked={autoLaunch} onChange={handleAutoLaunchToggle} />
+                  </div>
+                </div>
+              </div>
+            )}
             {settingsTab === 'audio' && (
               <div className="space-y-6">
                 <div>
-  <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">УСТРОЙСТВО ВВОДА</label>
-  <select value={selectedInput} onChange={e => { setSelectedInput(e.target.value); webrtc.updateSettings(e.target.value, noiseSuppression); }} className="w-full bg-surface text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060]">
-    <option value="default">По умолчанию</option>
-    {audioDevices.inputs.length === 0 && selectedInput !== 'default' && (
-      <option value={selectedInput}>Загрузка...</option>
-    )}
-    {audioDevices.inputs.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || 'Микрофон'}</option>)}
-  </select>
-</div>
-<div>
-  <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">УСТРОЙСТВО ВЫВОДА</label>
-  <select value={selectedOutput} onChange={e => { setSelectedOutput(e.target.value); webrtc.setOutputDevice(e.target.value); }} className="w-full bg-surface text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060]">
-    <option value="default">По умолчанию</option>
-    {audioDevices.outputs.length === 0 && selectedOutput !== 'default' && (
-      <option value={selectedOutput}>Загрузка...</option>
-    )}
-    {audioDevices.outputs.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || 'Динамики'}</option>)}
-  </select>
-</div>
+                  <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">УСТРОЙСТВО ВВОДА</label>
+                  <select value={selectedInput} onChange={e => { setSelectedInput(e.target.value); webrtc.updateSettings(e.target.value, noiseSuppression); }} className="w-full bg-surface text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060]">
+                    <option value="default">По умолчанию</option>
+                    {audioDevices.inputs.length === 0 && selectedInput !== 'default' && (
+                      <option value={selectedInput}>Загрузка...</option>
+                    )}
+                    {audioDevices.inputs.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || 'Микрофон'}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">УСТРОЙСТВО ВЫВОДА</label>
+                  <select value={selectedOutput} onChange={e => { setSelectedOutput(e.target.value); webrtc.setOutputDevice(e.target.value); }} className="w-full bg-surface text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060]">
+                    <option value="default">По умолчанию</option>
+                    {audioDevices.outputs.length === 0 && selectedOutput !== 'default' && (
+                      <option value={selectedOutput}>Загрузка...</option>
+                    )}
+                    {audioDevices.outputs.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || 'Динамики'}</option>)}
+                  </select>
+                </div>
                 <div>
                   <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">ГРОМКОСТЬ МИКРОФОНА — {inputVolume}%</label>
                   <Md3Slider min={0} max={200} step={5} value={inputVolume} onChange={v => { setInputVolume(v); webrtc.setInputVolume(v); }} />
                 </div>
                 <div>
-  <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">ГРОМКОСТЬ ЗВУКА — {outputVolume}%</label>
-  <Md3Slider min={0} max={200} step={5} value={outputVolume} onChange={v => { setOutputVolume(v); webrtc.setOutputVolume(v); }} />
-</div>
+                  <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">ГРОМКОСТЬ ЗВУКА — {outputVolume}%</label>
+                  <Md3Slider min={0} max={200} step={5} value={outputVolume} onChange={v => { setOutputVolume(v); webrtc.setOutputVolume(v); }} />
+                </div>
                 <div className="flex items-center justify-between bg-surface p-4 rounded-xl">
                   <span className="font-semibold text-white">Шумоподавление</span>
                   <Md3Switch checked={noiseSuppression} onChange={v => {
-  setNoiseSuppression(v);
-  webrtc.setNoiseSuppression(v);
-  webrtc.updateSettings(selectedInput, v);
-}} />
+                    setNoiseSuppression(v);
+                    webrtc.setNoiseSuppression(v);
+                    webrtc.updateSettings(selectedInput, v);
+                  }} />
                 </div>
               </div>
             )}
@@ -1769,41 +1764,41 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
       )}
 
       {store.pendingChannelSwitch && (
-  <div className="fixed inset-0 z-[999] bg-black/80 flex items-center justify-center p-4">
-    <div className="bg-panelBg p-8 rounded-3xl w-[400px] text-center shadow-2xl">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-bold text-white">Сменить канал?</h2>
-        <button
-          onClick={() => store.setPendingChannelSwitch(null)}
-          className="text-textMuted hover:text-white transition-colors"
-        >
-          <X size={24} />
-        </button>
-      </div>
+        <div className="fixed inset-0 z-[999] bg-black/80 flex items-center justify-center p-4">
+          <div className="bg-panelBg p-8 rounded-3xl w-[400px] text-center shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold text-white">Сменить канал?</h2>
+              <button
+                onClick={() => store.setPendingChannelSwitch(null)}
+                className="text-textMuted hover:text-white transition-colors"
+              >
+                <X size={24} />
+              </button>
+            </div>
 
-      <p className="text-textMuted mb-8 font-medium">
-        Вы покинете текущий канал и перейдёте в другой.
-      </p>
+            <p className="text-textMuted mb-8 font-medium">
+              Вы покинете текущий канал и перейдёте в другой.
+            </p>
 
-      <div className="flex gap-4">
-        <button
-          onClick={() => store.setPendingChannelSwitch(null)}
-          disabled={isSwitchingChannel}
-          className="flex-1 bg-surface text-white py-3 rounded-xl font-bold hover:bg-surfaceHover transition-colors"
-        >
-          Остаться
-        </button>
-        <button
-          onClick={confirmChannelSwitch}
-          disabled={isSwitchingChannel}
-          className="flex-1 bg-[#c70060] text-white py-3 rounded-xl font-bold hover:opacity-90 transition-opacity"
-        >
-          {isSwitchingChannel ? 'Переход...' : 'Перейти'}
-        </button>
-      </div>
-    </div>
-  </div>
-)}
+            <div className="flex gap-4">
+              <button
+                onClick={() => store.setPendingChannelSwitch(null)}
+                disabled={isSwitchingChannel}
+                className="flex-1 bg-surface text-white py-3 rounded-xl font-bold hover:bg-surfaceHover transition-colors"
+              >
+                Остаться
+              </button>
+              <button
+                onClick={confirmChannelSwitch}
+                disabled={isSwitchingChannel}
+                className="flex-1 bg-[#c70060] text-white py-3 rounded-xl font-bold hover:opacity-90 transition-opacity"
+              >
+                {isSwitchingChannel ? 'Переход...' : 'Перейти'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {renderModal('inviteToChannel',
         <div className="bg-panelBg p-8 rounded-3xl w-[400px] shadow-2xl">
@@ -1816,16 +1811,15 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
                 <div className="w-10 h-10 rounded-full shrink-0 overflow-hidden relative" style={{ backgroundColor: f.avatarColor }}><AvatarImg src={f.avatarBase64} size={40} /></div>
                 <span className="flex-1 font-semibold text-white truncate">{f.displayName}</span>
                 <button
-  onClick={() => handleInviteToChannel(f.id)}
-  disabled={sentInvites.has(f.id)}
-  className={`py-2 px-4 rounded-xl text-sm font-bold transition-all shrink-0 ${
-    sentInvites.has(f.id)
-      ? 'bg-success/20 text-success cursor-default'
-      : 'bg-[#c70060] hover:opacity-90 text-white'
-  }`}
->
-  {sentInvites.has(f.id) ? '✓ Отправлено' : 'Пригласить'}
-</button>
+                  onClick={() => handleInviteToChannel(f.id)}
+                  disabled={sentInvites.has(f.id)}
+                  className={`py-2 px-4 rounded-xl text-sm font-bold transition-all shrink-0 ${sentInvites.has(f.id)
+                    ? 'bg-success/20 text-success cursor-default'
+                    : 'bg-[#c70060] hover:opacity-90 text-white'
+                    }`}
+                >
+                  {sentInvites.has(f.id) ? '✓ Отправлено' : 'Пригласить'}
+                </button>
               </div>
             ))}
             {store.friends.filter(f => f.displayName.toLowerCase().includes(inviteFriendSearch.toLowerCase())).length === 0 && (
@@ -1845,18 +1839,18 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
           <p className="text-textMuted text-sm mb-6 truncate">{store.selectedChannelForMembers?.name}</p>
           <div className="max-h-[350px] overflow-y-auto space-y-2 pr-2">
             {store.channelMembers.length === 0 && (
-  <div className="flex justify-center py-8">
-    <div className="w-6 h-6 border-2 border-[#c70060] border-t-transparent rounded-full animate-spin" />
-  </div>
-)}
+              <div className="flex justify-center py-8">
+                <div className="w-6 h-6 border-2 border-[#c70060] border-t-transparent rounded-full animate-spin" />
+              </div>
+            )}
             {store.channelMembers.map(m => (
               <div key={m.id} onContextMenu={e => handleContextMenu(e, 'channelMember', m)} className="flex items-center gap-3 p-3 bg-surface rounded-xl hover:bg-surfaceHover transition-colors cursor-pointer">
                 <div className="relative w-10 h-10 shrink-0">
-  <div className="w-full h-full rounded-full overflow-hidden" style={{ backgroundColor: m.avatarColor }}>
-    <AvatarImg src={m.avatarBase64} size={40} />
-  </div>
-  <div className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-[3px] border-surface ${m.isOnline ? 'bg-success' : 'bg-gray-500'}`} />
-</div>
+                  <div className="w-full h-full rounded-full overflow-hidden" style={{ backgroundColor: m.avatarColor }}>
+                    <AvatarImg src={m.avatarBase64} size={40} />
+                  </div>
+                  <div className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-[3px] border-surface ${m.isOnline ? 'bg-success' : 'bg-gray-500'}`} />
+                </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="font-semibold text-white truncate">{m.displayName}</span>
@@ -1894,28 +1888,28 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
       )}
 
       {renderModal('userVolume',
-  <div className="bg-panelBg p-8 rounded-3xl w-[400px] shadow-2xl">
-    <h2 className="text-xl font-bold mb-2 text-white">Громкость пользователя</h2>
-    <p className="text-textMuted text-sm mb-6 font-medium">{volumeUser?.displayName}</p>
-    <div>
-      <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">ГРОМКОСТЬ — {volumeUserValue}%</label>
-      <Md3Slider min={0} max={200} step={5} value={volumeUserValue} onChange={v => {
-  setVolumeUserValue(v);
-  if (volumeUser) webrtc.setUserVolume(volumeUser.id, v);
-}} />
-    </div>
-    <button onClick={closeAndResetModals} className="w-full mt-6 bg-surface text-white py-3 rounded-xl font-bold hover:bg-surfaceHover transition-colors">Закрыть</button>
-  </div>
-)}
+        <div className="bg-panelBg p-8 rounded-3xl w-[400px] shadow-2xl">
+          <h2 className="text-xl font-bold mb-2 text-white">Громкость пользователя</h2>
+          <p className="text-textMuted text-sm mb-6 font-medium">{volumeUser?.displayName}</p>
+          <div>
+            <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">ГРОМКОСТЬ — {volumeUserValue}%</label>
+            <Md3Slider min={0} max={200} step={5} value={volumeUserValue} onChange={v => {
+              setVolumeUserValue(v);
+              if (volumeUser) webrtc.setUserVolume(volumeUser.id, v);
+            }} />
+          </div>
+          <button onClick={closeAndResetModals} className="w-full mt-6 bg-surface text-white py-3 rounded-xl font-bold hover:bg-surfaceHover transition-colors">Закрыть</button>
+        </div>
+      )}
 
       {renderModal('incomingCall',
         <div className="bg-panelBg p-8 rounded-3xl w-[350px] text-center shadow-2xl">
-         <div
-  className="w-20 h-20 rounded-full mx-auto mb-4 overflow-hidden"
-  style={{ backgroundColor: store.incomingCall?.callerAvatarColor }}
->
-  <AvatarImg src={store.incomingCall?.callerAvatarBase64 || null} size={80} />
-</div>
+          <div
+            className="w-20 h-20 rounded-full mx-auto mb-4 overflow-hidden"
+            style={{ backgroundColor: store.incomingCall?.callerAvatarColor }}
+          >
+            <AvatarImg src={store.incomingCall?.callerAvatarBase64 || null} size={80} />
+          </div>
           <h2 className="text-xl font-bold mb-2 text-white">{store.incomingCall?.callerName}</h2>
           <p className="text-textMuted mb-8 font-medium">Входящий звонок...</p>
           <div className="flex gap-4">
@@ -1926,731 +1920,734 @@ const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, contex
       )}
 
       {store.modals.profile && store.selectedProfileUser && (
-  <div className="fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4">
-    <div className="bg-panelBg w-[350px] rounded-3xl overflow-hidden shadow-2xl relative">
-      <div
-        className="h-28 w-full relative"
-        style={{ backgroundColor: editProfileAvatarBase64 ? editProfileAvatarColor : store.selectedProfileUser?.avatarColor }}
-      >
-        <button
-  onClick={() => {
-    const uid = store.selectedProfileUser!.id;
-    if (uid === store.currentUser?.id) openMyAchievements();
-    else openUserAchievements(uid);
-    store.closeProfileOnly();
-  }}
-  className="absolute bottom-3 right-4 w-10 h-10 rounded-xl bg-transparent border-2 border-white/90 flex items-center justify-center hover:bg-white/5 transition-colors shadow-lg"
-  title="Достижения"
->
-  <span
-    className="w-full h-full flex items-center justify-center text-white text-[20px] leading-none select-none"
-    style={{
-      WebkitFontSmoothing: 'antialiased',
-      MozOsxFontSmoothing: 'grayscale',
-      textRendering: 'geometricPrecision'
-    }}
-  >
-    ✦
-  </span>
-</button>
-
-        <button
-          onClick={() => store.closeProfileOnly()}
-          className="absolute top-4 right-4 text-textMuted hover:text-white transition-colors"
-        >
-          <X size={20} />
-        </button>
-      </div>
-
-      <div className="px-6 pb-8 relative bg-panelBg">
-        <div
-          className="absolute -top-12 left-6 w-24 h-24 rounded-full border-[6px] border-panelBg overflow-hidden"
-          style={{ backgroundColor: editProfileAvatarBase64 ? editProfileAvatarColor : store.selectedProfileUser?.avatarColor }}
-        >
-          <AvatarImg src={editProfileAvatarBase64 || store.selectedProfileUser?.avatarBase64} size={84} />
-        </div>
-
-        <div className="pt-14 mb-6">
-          {store.selectedProfileUser?.id === store.currentUser?.id ? (
-            <>
-              <label className="text-[10px] font-bold text-textMuted mb-2 block tracking-wider">ОТОБРАЖАЕМОЕ ИМЯ</label>
-              <input
-                type="text"
-                value={editProfileDisplayName}
-                onChange={e => {
-                  setEditProfileDisplayName(e.target.value);
-                  setError('');
+        <div className="fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4">
+          <div className="bg-panelBg w-[350px] rounded-3xl overflow-hidden shadow-2xl relative">
+            <div
+              className="h-28 w-full relative"
+              style={{ backgroundColor: editProfileAvatarBase64 ? editProfileAvatarColor : store.selectedProfileUser?.avatarColor }}
+            >
+              <button
+                onClick={() => {
+                  const uid = store.selectedProfileUser!.id;
+                  if (uid === store.currentUser?.id) openMyAchievements();
+                  else openUserAchievements(uid);
+                  store.closeProfileOnly();
                 }}
-                maxLength={20}
-                className="bg-surface w-full p-3 rounded-xl text-white font-bold text-lg mb-3 outline-none focus:ring-2 focus:ring-[#c70060]"
-              />
-              {error && <p className="text-danger text-xs mb-2 font-medium">{error}</p>}
-              <p className="text-textMuted text-sm font-medium">@{store.selectedProfileUser?.username}</p>
-            </>
-          ) : (
-            <>
-              <h2 className="text-2xl font-bold text-white truncate">{store.selectedProfileUser?.displayName}</h2>
-              <p className="text-textMuted text-sm mt-1 font-medium">@{store.selectedProfileUser?.username}</p>
-            </>
-          )}
-        </div>
-
-        {store.selectedProfileUser?.id === store.currentUser?.id ? (
-          <div className="flex flex-col gap-3">
-            <input
-              ref={profileFileInputRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={e => onFileChange(e, 'profile')}
-            />
-            <button
-              onClick={() => profileFileInputRef.current?.click()}
-              className="w-full bg-surface text-white py-3.5 rounded-xl font-bold flex items-center justify-center hover:bg-surfaceHover transition-colors"
-            >
-              <Camera size={18} className="mr-2" /> Сменить аватар
-            </button>
-            <button
-              onClick={saveProfileChanges}
-              className="w-full bg-[#c70060] text-white py-3.5 rounded-xl font-bold hover:opacity-90 transition-opacity"
-            >
-              Сохранить
-            </button>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-3">
-            <button
-              onClick={async () => {
-                if (store.selectedProfileUser) {
-                  const ok = await signalRService.startCall(store.selectedProfileUser.id);
-                  if (!ok) {
-                    setOfflineToast('Пользователь не в сети');
-                    setTimeout(() => setOfflineToast(null), 3000);
-                  }
-                }
-                store.closeProfileOnly();
-              }}
-              className="w-full bg-success text-white py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-green-600 transition-colors"
-            >
-              <Phone size={18} /> Позвонить
-            </button>
-            <button
-              onClick={() => {
-                if (store.selectedProfileUser) signalRService.removeFriend(store.selectedProfileUser.id);
-                store.closeProfileOnly();
-              }}
-              className="w-full bg-surface text-danger py-3.5 rounded-xl font-bold hover:bg-[#2B2D31] transition-colors"
-            >
-              Удалить из друзей
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  </div>
-)}
-      {/* Achievement Toast */}
-{/* Achievement Toast */}
-{store.achievementToast && (() => {
-  const isHiding = store.achievementToast.startsWith('__hiding__');
-  const achId = isHiding ? store.achievementToast.replace('__hiding__', '') : store.achievementToast;
-  const def = getAchievementDef(achId);
-  if (!def) return null;
-  return (
-    <div className={`fixed top-14 left-1/2 z-[99999] ${isHiding ? 'animate-toast-out' : 'animate-toast-in'}`}>
-      <div className="bg-panelBg border border-[#c70060]/30 rounded-2xl px-6 py-4 flex items-center gap-4 shadow-2xl shadow-[#c70060]/10">
-        <span className="text-3xl">{def.icon}</span>
-        <div>
-          <p className="text-xs font-bold text-[#c70060] tracking-wider">ДОСТИЖЕНИЕ ПОЛУЧЕНО</p>
-          <p className="text-white font-bold text-lg">{def.title}</p>
-        </div>
-      </div>
-    </div>
-  );
-})()}
-
-{/* Achievements Modal */}
-{renderModal('achievements',
-  <div className="bg-panelBg rounded-3xl w-[500px] max-h-[80vh] flex flex-col overflow-hidden shadow-2xl">
-    <div className="flex items-center justify-between p-6 pb-4">
-      <h2 className="text-xl font-bold text-white flex items-center gap-3">
-        <Trophy size={24} />
-        {store.achievementsViewUserId ? 'Достижения' : 'Мои достижения'}
-      </h2>
-      <button onClick={closeAndResetModals} className="text-textMuted hover:text-white transition-colors"><X size={24} /></button>
-    </div>
-    <div className="px-6 overflow-y-auto flex-1 space-y-3 pb-6">
-      {(() => {
-        const data = store.achievementsData;
-        if (!data) return <p className="text-textMuted text-center py-8">Загрузка...</p>;
-        const isOwnProfile = !store.achievementsViewUserId;
-        const stats = data.stats || {};
-        const unlocked = data.unlockedIds || [];
-
-        const categoryOrder: Record<string, number> = { voice: 0, calls: 1, social: 2, hidden: 3 };
-
-        const filtered = ACHIEVEMENTS
-          .filter(a => {
-            if (a.hidden && !unlocked.includes(a.id) && !isOwnProfile) return false;
-            return true;
-          })
-          .sort((a, b) => {
-            const aUnlocked = unlocked.includes(a.id) ? 1 : 0;
-            const bUnlocked = unlocked.includes(b.id) ? 1 : 0;
-            if (aUnlocked !== bUnlocked) return bUnlocked - aUnlocked;
-
-            const aProgress = Math.min((stats[a.statKey] ?? 0) / a.maxValue, 1);
-            const bProgress = Math.min((stats[b.statKey] ?? 0) / b.maxValue, 1);
-            if (aProgress > 0 && bProgress === 0) return -1;
-            if (aProgress === 0 && bProgress > 0) return 1;
-            if (aProgress > 0 && bProgress > 0) return bProgress - aProgress;
-
-            return (categoryOrder[a.category] ?? 99) - (categoryOrder[b.category] ?? 99);
-          });
-
-        if (filtered.length === 0) return <p className="text-textMuted text-center py-8 font-medium">Нет достижений</p>;
-
-        return filtered.map(a => {
-          const isUnlocked = unlocked.includes(a.id);
-          const statVal = stats[a.statKey] ?? 0;
-          const progress = Math.min(statVal / a.maxValue, 1);
-          const showHidden = a.hidden && !isUnlocked;
-          return (
-            <div key={a.id} className={`p-4 rounded-xl border transition-colors ${isUnlocked ? 'bg-[#c70060]/10 border-[#c70060]/30' : 'bg-surface border-transparent'}`}>
-              <div className="flex items-center gap-4">
-                <span className={`text-3xl ${showHidden ? 'blur-sm' : ''}`}>{showHidden ? '❓' : a.icon}</span>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-bold text-white truncate">{showHidden ? 'Скрытое достижение' : a.title}</span>
-                    {isUnlocked && <span className="text-[10px] font-bold bg-[#c70060]/20 text-[#c70060] px-2 py-0.5 rounded-md shrink-0">✓ Получено</span>}
-                  </div>
-                  <p className="text-textMuted text-sm truncate">{showHidden ? '???' : a.description}</p>
-                  {!showHidden && (
-                    <div className="mt-2 flex items-center gap-3">
-                      <div className="flex-1 h-1.5 bg-black/30 rounded-full overflow-hidden">
-                        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${progress * 100}%`, backgroundColor: isUnlocked ? '#c70060' : '#555' }} />
-                      </div>
-                      <span className="text-xs text-textMuted font-mono shrink-0">{formatProgress(statVal, a.maxValue, a.unit)}</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          );
-        });
-      })()}
-    </div>
-    <div className="p-4 pt-0 text-center">
-      <span className="text-xs text-textMuted">{store.achievementsData?.unlockedIds?.length ?? 0} / {ACHIEVEMENTS.length} получено</span>
-    </div>
-  </div>
-)}
-
-{offlineToast && (
-  <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[99999] animate-fade-in">
-    <div className="bg-panelBg border border-danger/30 rounded-2xl px-5 py-3 shadow-2xl">
-      <p className="text-danger font-semibold">{offlineToast}</p>
-    </div>
-  </div>
-)}
-
-{renderModal('adminConsole',
-  <div className="bg-panelBg rounded-3xl w-[760px] max-h-[82vh] flex flex-col overflow-hidden shadow-2xl">
-    <div className="flex items-center justify-between p-6 pb-4">
-      <h2 className="text-xl font-bold text-white flex items-center gap-3">
-        <Crown size={24} className="text-[#c70060]" />
-        Админ-консоль
-      </h2>
-
-      <div className="flex items-center gap-2">
-        <button
-          onClick={loadAdminUsers}
-          disabled={adminLoading}
-          className="bg-surface text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-surfaceHover transition-colors disabled:opacity-50"
-        >
-          Обновить
-        </button>
-        <button
-          onClick={closeAndResetModals}
-          className="text-textMuted hover:text-white transition-colors"
-        >
-          <X size={24} />
-        </button>
-      </div>
-    </div>
-
-    <div className="px-6 pb-4">
-      <input
-        type="text"
-        value={adminSearch}
-        onChange={e => setAdminSearch(e.target.value)}
-        placeholder="Поиск по логину / имени"
-        className="w-full bg-surface text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060]"
-      />
-    </div>
-
-    {adminError && (
-      <div className="px-6 pb-3">
-        <div className="bg-danger/10 border border-danger/30 rounded-xl px-4 py-3 text-danger text-sm font-medium">
-          {adminError}
-        </div>
-      </div>
-    )}
-
-    <div className="px-6 overflow-y-auto flex-1 space-y-2 pb-6 custom-scrollbar">
-      {adminLoading ? (
-        <div className="flex justify-center py-12">
-          <div className="w-8 h-8 border-2 border-[#c70060] border-t-transparent rounded-full animate-spin" />
-        </div>
-      ) : (
-        adminUsers
-          .filter(u =>
-            u.username.toLowerCase().includes(adminSearch.toLowerCase()) ||
-            u.displayName.toLowerCase().includes(adminSearch.toLowerCase())
-          )
-          .map(u => (
-            <div key={u.id} className="bg-surface rounded-xl p-4 flex items-center gap-4">
-              <div
-                className="w-10 h-10 rounded-full overflow-hidden shrink-0"
-                style={{ backgroundColor: u.avatarColor }}
+                className="absolute bottom-3 right-4 w-10 h-10 rounded-xl bg-transparent border-2 border-white/90 flex items-center justify-center hover:bg-white/5 transition-colors shadow-lg"
+                title="Достижения"
               >
-                <AvatarImg src={u.avatarBase64} size={40} />
-              </div>
-
-              <div className="flex-1 min-w-0">
-                <p className="text-white font-semibold truncate">{u.displayName}</p>
-                <p className="text-textMuted text-xs truncate">@{u.username}</p>
-                <p className="text-textMuted text-[11px] mt-1 truncate">
-                  {u.currentChannelId
-                    ? `В канале: ${u.currentChannelId}`
-                    : u.currentCallUserId
-                      ? `В звонке: ${u.currentCallUserId}`
-                      : 'Не в голосе'}
-                </p>
-              </div>
-
-              <div className="text-xs text-textMuted shrink-0 min-w-[70px] text-right">
-                {u.isOnline ? 'Онлайн' : 'Оффлайн'}
-              </div>
+                <span
+                  className="w-full h-full flex items-center justify-center text-white text-[20px] leading-none select-none"
+                  style={{
+                    WebkitFontSmoothing: 'antialiased',
+                    MozOsxFontSmoothing: 'grayscale',
+                    textRendering: 'geometricPrecision'
+                  }}
+                >
+                  ✦
+                </span>
+              </button>
 
               <button
-                disabled={adminActionUserId === u.id}
-                onClick={async () => {
-                  setAdminSelectedUser(null);
-                  setAdminDetailsLoading(true);
-                  setAdminError('');
-                  store.setModal('adminUserSettings', true);
-
-                  try {
-                    const details = await signalRService.adminGetUserDetails(u.id);
-
-                    if (!details) {
-                      setAdminError('Не удалось загрузить профиль пользователя');
-                    } else {
-                      setAdminSelectedUser(details);
-                      setAdminEditDisplayName(details.displayName ?? '');
-                    }
-                  } catch (e) {
-                    setAdminError('Не удалось загрузить профиль пользователя');
-                  } finally {
-                    setAdminDetailsLoading(false);
-                  }
-                }}
-                className="bg-surfaceHover hover:bg-white/10 text-white px-3 py-2 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50"
+                onClick={() => store.closeProfileOnly()}
+                className="absolute top-4 right-4 text-textMuted hover:text-white transition-colors"
               >
-                Настройки
+                <X size={20} />
               </button>
             </div>
-          ))
-      )}
 
-      {!adminLoading && adminUsers.length > 0 && adminUsers.filter(u =>
-        u.username.toLowerCase().includes(adminSearch.toLowerCase()) ||
-        u.displayName.toLowerCase().includes(adminSearch.toLowerCase())
-      ).length === 0 && (
-        <p className="text-textMuted text-center py-8 font-medium">Пользователи не найдены</p>
-      )}
-    </div>
-  </div>
-)}
-
-{renderModal('adminUserSettings',
-  <div className="bg-panelBg rounded-3xl w-[760px] max-h-[84vh] flex flex-col overflow-hidden shadow-2xl">
-    <div className="flex items-center justify-between p-6 pb-4 border-b border-white/5">
-      <h2 className="text-xl font-bold text-white flex items-center gap-3">
-        <Settings size={24} />
-        Профиль: {adminSelectedUser?.username}
-      </h2>
-      <button
-        onClick={() => {
-          setAdminSelectedUser(null);
-          setAdminEditDisplayName('');
-          setAdminRenameChannelId(null);
-          store.setModal('adminUserSettings', false);
-        }}
-        className="text-textMuted hover:text-white transition-colors"
-      >
-        <X size={24} />
-      </button>
-    </div>
-
-    {adminError && (
-      <div className="px-6 pt-4">
-        <div className="bg-danger/10 border border-danger/30 rounded-xl px-4 py-3 text-danger text-sm font-medium">
-          {adminError}
-        </div>
-      </div>
-    )}
-
-    <div className="px-6 overflow-y-auto flex-1 py-6 custom-scrollbar">
-      {adminDetailsLoading ? (
-        <div className="flex justify-center py-12">
-          <div className="w-8 h-8 border-2 border-[#c70060] border-t-transparent rounded-full animate-spin" />
-        </div>
-      ) : adminSelectedUser ? (
-        <div className="space-y-6">
-          {/* ПРОФИЛЬ */}
-          <section className="bg-surface rounded-2xl p-5">
-  <div className="flex items-center gap-4 mb-5">
-    <div
-      className="w-16 h-16 rounded-full overflow-hidden shrink-0"
-      style={{ backgroundColor: adminSelectedUser.avatarColor }}
-    >
-      <AvatarImg src={adminSelectedUser.avatarBase64} size={64} />
-    </div>
-    <div className="min-w-0">
-      <p className="text-white font-bold text-lg truncate">{adminSelectedUser.displayName}</p>
-      <p className="text-textMuted text-sm truncate">@{adminSelectedUser.username}</p>
-      <p className="text-textMuted text-xs mt-1">
-        {adminSelectedUser.isOnline ? <span className="text-success">Онлайн</span> : 'Оффлайн'}
-      </p>
-    </div>
-  </div>
-
-  <div className="space-y-4">
-    <div>
-      <label className="text-[10px] font-bold text-textMuted tracking-wider block mb-2">
-        ОТОБРАЖАЕМОЕ ИМЯ
-      </label>
-      <input
-        type="text"
-        value={adminEditDisplayName}
-        onChange={e => setAdminEditDisplayName(e.target.value)}
-        className="w-full bg-surfaceHover text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060]"
-      />
-    </div>
-
-    <button
-      onClick={async () => {
-        if (!adminEditDisplayName.trim()) return;
-        const ok = await signalRService.adminUpdateUser({
-          userId: adminSelectedUser.id,
-          displayName: adminEditDisplayName.trim()
-        });
-
-        if (ok) {
-          await loadAdminUserDetails(adminSelectedUser.id);
-          await loadAdminUsers();
-        } else {
-          setAdminError('Не удалось изменить имя');
-        }
-      }}
-      className="w-full bg-surfaceHover hover:bg-white/10 text-white py-3 rounded-xl font-semibold transition-colors"
-    >
-      Сохранить имя
-    </button>
-  </div>
-</section>
-
-          {/* ГОЛОС И КАНАЛЫ */}
-          <section className="bg-surface rounded-2xl p-5">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-white font-bold">Голос и каналы</h3>
-              {adminSelectedUser.currentChannelId && (
-                <button
-                  onClick={async () => {
-                    const ok = await signalRService.adminKickFromCurrentChannel(adminSelectedUser.id);
-                    if (ok) {
-                      await loadAdminUserDetails(adminSelectedUser.id);
-                      await loadAdminUsers();
-                    }
-                  }}
-                  className="text-xs bg-danger/20 text-danger px-3 py-1.5 rounded-lg hover:bg-danger hover:text-white transition-colors font-semibold"
+            <div className="px-6 pb-8 relative bg-panelBg">
+              <div className="absolute -top-12 left-6 w-24 h-24">
+                <div
+                  className="w-full h-full rounded-full border-[6px] border-panelBg overflow-hidden"
+                  style={{ backgroundColor: editProfileAvatarBase64 ? editProfileAvatarColor : store.selectedProfileUser?.avatarColor }}
                 >
-                  Исключить из канала
-                </button>
+                  <AvatarImg src={editProfileAvatarBase64 || store.selectedProfileUser?.avatarBase64} size={84} />
+                </div>
+                <div className={`absolute bottom-0.5 right-0.5 w-6 h-6 rounded-full border-[4px] border-panelBg ${store.selectedProfileUser?.id === store.currentUser?.id
+                  ? (serverConnected ? 'bg-success' : 'bg-gray-500')
+                  : (store.selectedProfileUser?.isOnline ? 'bg-success' : 'bg-gray-500')
+                  }`} />
+              </div>
+
+              <div className="pt-14 mb-6">
+                {store.selectedProfileUser?.id === store.currentUser?.id ? (
+                  <>
+                    <label className="text-[10px] font-bold text-textMuted mb-2 block tracking-wider">ОТОБРАЖАЕМОЕ ИМЯ</label>
+                    <input
+                      type="text"
+                      value={editProfileDisplayName}
+                      onChange={e => {
+                        setEditProfileDisplayName(e.target.value);
+                        setError('');
+                      }}
+                      maxLength={20}
+                      className="bg-surface w-full p-3 rounded-xl text-white font-bold text-lg mb-3 outline-none focus:ring-2 focus:ring-[#c70060]"
+                    />
+                    {error && <p className="text-danger text-xs mb-2 font-medium">{error}</p>}
+                    <p className="text-textMuted text-sm font-medium">@{store.selectedProfileUser?.username}</p>
+                  </>
+                ) : (
+                  <>
+                    <h2 className="text-2xl font-bold text-white truncate">{store.selectedProfileUser?.displayName}</h2>
+                    <p className="text-textMuted text-sm mt-1 font-medium">@{store.selectedProfileUser?.username}</p>
+                  </>
+                )}
+              </div>
+
+              {store.selectedProfileUser?.id === store.currentUser?.id ? (
+                <div className="flex flex-col gap-3">
+                  <input
+                    ref={profileFileInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={e => onFileChange(e, 'profile')}
+                  />
+                  <button
+                    onClick={() => profileFileInputRef.current?.click()}
+                    className="w-full bg-surface text-white py-3.5 rounded-xl font-bold flex items-center justify-center hover:bg-surfaceHover transition-colors"
+                  >
+                    <Camera size={18} className="mr-2" /> Сменить аватар
+                  </button>
+                  <button
+                    onClick={saveProfileChanges}
+                    className="w-full bg-[#c70060] text-white py-3.5 rounded-xl font-bold hover:opacity-90 transition-opacity"
+                  >
+                    Сохранить
+                  </button>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  <button
+                    onClick={async () => {
+                      if (store.selectedProfileUser) {
+                        const ok = await signalRService.startCall(store.selectedProfileUser.id);
+                        if (!ok) {
+                          setOfflineToast('Пользователь не в сети');
+                          setTimeout(() => setOfflineToast(null), 3000);
+                        }
+                      }
+                      store.closeProfileOnly();
+                    }}
+                    className="w-full bg-success text-white py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-green-600 transition-colors"
+                  >
+                    <Phone size={18} /> Позвонить
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (store.selectedProfileUser) signalRService.removeFriend(store.selectedProfileUser.id);
+                      store.closeProfileOnly();
+                    }}
+                    className="w-full bg-surface text-danger py-3.5 rounded-xl font-bold hover:bg-[#2B2D31] transition-colors"
+                  >
+                    Удалить из друзей
+                  </button>
+                </div>
               )}
             </div>
+          </div>
+        </div>
+      )}
+      {/* Achievement Toast */}
+      {/* Achievement Toast */}
+      {store.achievementToast && (() => {
+        const isHiding = store.achievementToast.startsWith('__hiding__');
+        const achId = isHiding ? store.achievementToast.replace('__hiding__', '') : store.achievementToast;
+        const def = getAchievementDef(achId);
+        if (!def) return null;
+        return (
+          <div className={`fixed top-14 left-1/2 z-[99999] ${isHiding ? 'animate-toast-out' : 'animate-toast-in'}`}>
+            <div className="bg-panelBg border border-[#c70060]/30 rounded-2xl px-6 py-4 flex items-center gap-4 shadow-2xl shadow-[#c70060]/10">
+              <span className="text-3xl">{def.icon}</span>
+              <div>
+                <p className="text-xs font-bold text-[#c70060] tracking-wider">ДОСТИЖЕНИЕ ПОЛУЧЕНО</p>
+                <p className="text-white font-bold text-lg">{def.title}</p>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
-            <p className="text-textMuted text-sm mb-4 bg-surfaceHover p-3 rounded-xl">
-              {adminSelectedUser.currentChannelId
-                ? `Сейчас в канале: ${adminSelectedUser.currentChannelId}`
-                : adminSelectedUser.currentCallUserId
-                  ? `Сейчас в звонке: ${adminSelectedUser.currentCallUserId}`
-                  : 'Сейчас не в голосе'}
-            </p>
+      {/* Achievements Modal */}
+      {renderModal('achievements',
+        <div className="bg-panelBg rounded-3xl w-[500px] max-h-[80vh] flex flex-col overflow-hidden shadow-2xl">
+          <div className="flex items-center justify-between p-6 pb-4">
+            <h2 className="text-xl font-bold text-white flex items-center gap-3">
+              <Trophy size={24} />
+              {store.achievementsViewUserId ? 'Достижения' : 'Мои достижения'}
+            </h2>
+            <button onClick={closeAndResetModals} className="text-textMuted hover:text-white transition-colors"><X size={24} /></button>
+          </div>
+          <div className="px-6 overflow-y-auto flex-1 space-y-3 pb-6">
+            {(() => {
+              const data = store.achievementsData;
+              if (!data) return <p className="text-textMuted text-center py-8">Загрузка...</p>;
+              const isOwnProfile = !store.achievementsViewUserId;
+              const stats = data.stats || {};
+              const unlocked = data.unlockedIds || [];
 
-            <div className="grid grid-cols-2 gap-3 mb-6">
-              {/* КНОПКА МЬЮТА */}
+              const categoryOrder: Record<string, number> = { voice: 0, calls: 1, social: 2, hidden: 3 };
+
+              const filtered = ACHIEVEMENTS
+                .filter(a => {
+                  if (a.hidden && !unlocked.includes(a.id) && !isOwnProfile) return false;
+                  return true;
+                })
+                .sort((a, b) => {
+                  const aUnlocked = unlocked.includes(a.id) ? 1 : 0;
+                  const bUnlocked = unlocked.includes(b.id) ? 1 : 0;
+                  if (aUnlocked !== bUnlocked) return bUnlocked - aUnlocked;
+
+                  const aProgress = Math.min((stats[a.statKey] ?? 0) / a.maxValue, 1);
+                  const bProgress = Math.min((stats[b.statKey] ?? 0) / b.maxValue, 1);
+                  if (aProgress > 0 && bProgress === 0) return -1;
+                  if (aProgress === 0 && bProgress > 0) return 1;
+                  if (aProgress > 0 && bProgress > 0) return bProgress - aProgress;
+
+                  return (categoryOrder[a.category] ?? 99) - (categoryOrder[b.category] ?? 99);
+                });
+
+              if (filtered.length === 0) return <p className="text-textMuted text-center py-8 font-medium">Нет достижений</p>;
+
+              return filtered.map(a => {
+                const isUnlocked = unlocked.includes(a.id);
+                const statVal = stats[a.statKey] ?? 0;
+                const progress = Math.min(statVal / a.maxValue, 1);
+                const showHidden = a.hidden && !isUnlocked;
+                return (
+                  <div key={a.id} className={`p-4 rounded-xl border transition-colors ${isUnlocked ? 'bg-[#c70060]/10 border-[#c70060]/30' : 'bg-surface border-transparent'}`}>
+                    <div className="flex items-center gap-4">
+                      <span className={`text-3xl ${showHidden ? 'blur-sm' : ''}`}>{showHidden ? '❓' : a.icon}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="font-bold text-white truncate">{showHidden ? 'Скрытое достижение' : a.title}</span>
+                          {isUnlocked && <span className="text-[10px] font-bold bg-[#c70060]/20 text-[#c70060] px-2 py-0.5 rounded-md shrink-0">✓ Получено</span>}
+                        </div>
+                        <p className="text-textMuted text-sm truncate">{showHidden ? '???' : a.description}</p>
+                        {!showHidden && (
+                          <div className="mt-2 flex items-center gap-3">
+                            <div className="flex-1 h-1.5 bg-black/30 rounded-full overflow-hidden">
+                              <div className="h-full rounded-full transition-all duration-500" style={{ width: `${progress * 100}%`, backgroundColor: isUnlocked ? '#c70060' : '#555' }} />
+                            </div>
+                            <span className="text-xs text-textMuted font-mono shrink-0">{formatProgress(statVal, a.maxValue, a.unit)}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              });
+            })()}
+          </div>
+          <div className="p-4 pt-0 text-center">
+            <span className="text-xs text-textMuted">{store.achievementsData?.unlockedIds?.length ?? 0} / {ACHIEVEMENTS.length} получено</span>
+          </div>
+        </div>
+      )}
+
+      {offlineToast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[99999] animate-fade-in">
+          <div className="bg-panelBg border border-danger/30 rounded-2xl px-5 py-3 shadow-2xl">
+            <p className="text-danger font-semibold">{offlineToast}</p>
+          </div>
+        </div>
+      )}
+
+      {renderModal('adminConsole',
+        <div className="bg-panelBg rounded-3xl w-[760px] max-h-[82vh] flex flex-col overflow-hidden shadow-2xl">
+          <div className="flex items-center justify-between p-6 pb-4">
+            <h2 className="text-xl font-bold text-white flex items-center gap-3">
+              <Crown size={24} className="text-[#c70060]" />
+              Админ-консоль
+            </h2>
+
+            <div className="flex items-center gap-2">
               <button
-                onClick={async () => {
-                  const newState = !adminSelectedUser.isMuted;
-                  
-                  // Оптимистичный UI
-                  setAdminSelectedUser({ ...adminSelectedUser, isMuted: newState });
-                  
-                  const ok = await signalRService.adminSetGlobalVoiceState({
-                    userId: adminSelectedUser.id,
-                    isMuted: newState
-                  });
-                  
-                  if (ok) {
-                    loadAdminUsers();
-                  } else {
-                    loadAdminUserDetails(adminSelectedUser.id); // Откат
-                  }
-                }}
-                className={`py-3 rounded-xl font-semibold flex items-center justify-center gap-2 transition-colors ${
-                  adminSelectedUser.isMuted ? 'bg-danger text-white hover:bg-red-600' : 'bg-surfaceHover text-white hover:bg-white/10'
-                }`}
+                onClick={loadAdminUsers}
+                disabled={adminLoading}
+                className="bg-surface text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-surfaceHover transition-colors disabled:opacity-50"
               >
-                {adminSelectedUser.isMuted ? <MicOff size={18} /> : <Mic size={18} />}
-                {adminSelectedUser.isMuted ? 'Микрофон выключен' : 'Глобально замьютить'}
+                Обновить
               </button>
-
-              {/* КНОПКА ГЛУШЕНИЯ (DEAFEN) */}
               <button
-                onClick={async () => {
-                  const newState = !adminSelectedUser.isDeafened;
-                  
-                  // Оптимистичный UI (если глушим уши, микрофон тоже отключается)
-                  setAdminSelectedUser({ 
-                    ...adminSelectedUser, 
-                    isDeafened: newState,
-                    isMuted: newState ? true : adminSelectedUser.isMuted
-                  });
-                  
-                  const ok = await signalRService.adminSetGlobalVoiceState({
-                    userId: adminSelectedUser.id,
-                    isDeafened: newState
-                  });
-                  
-                  if (ok) {
-                    loadAdminUsers();
-                  } else {
-                    loadAdminUserDetails(adminSelectedUser.id); // Откат
-                  }
-                }}
-                className={`py-3 rounded-xl font-semibold flex items-center justify-center gap-2 transition-colors ${
-                  adminSelectedUser.isDeafened ? 'bg-danger text-white hover:bg-red-600' : 'bg-surfaceHover text-white hover:bg-white/10'
-                }`}
+                onClick={closeAndResetModals}
+                className="text-textMuted hover:text-white transition-colors"
               >
-                <div className="relative flex items-center justify-center">
-                  <Headphones size={18} className={adminSelectedUser.isDeafened ? 'opacity-60' : ''} />
-                  {adminSelectedUser.isDeafened && (
-                    <div className="absolute w-[22px] h-[2.5px] bg-white rotate-45 rounded-full" />
-                  )}
-                </div>
-                {adminSelectedUser.isDeafened ? 'Звук выключен' : 'Глобально заглушить'}
+                <X size={24} />
               </button>
             </div>
+          </div>
 
-            <label className="text-[10px] font-bold text-textMuted mb-2 block tracking-wider">ДОСТУПНЫЕ КАНАЛЫ</label>
-            <div className="space-y-2 max-h-[200px] overflow-y-auto pr-2 custom-scrollbar">
-              {adminSelectedUser.accessibleChannels?.length > 0 ? (
-                adminSelectedUser.accessibleChannels.map((ch: any) => (
-                  <div key={ch.id} className="bg-surfaceHover rounded-xl px-4 py-2 flex items-center justify-between min-h-[50px]">
-                    
-                    {adminRenameChannelId === ch.id ? (
-                      // РЕЖИМ РЕДАКТИРОВАНИЯ
-                      <div className="flex items-center gap-2 w-full">
-                        <input
-                          autoFocus
-                          type="text"
-                          value={adminRenameChannelName}
-                          onChange={e => setAdminRenameChannelName(e.target.value)}
-                          onKeyDown={async e => {
-                            if (e.key === 'Enter') {
-                              const newName = adminRenameChannelName.trim();
-                              if (!newName) return;
-                              const ok = await signalRService.adminRenameChannel(ch.id, newName);
-                              if (ok) {
-                                await loadAdminUserDetails(adminSelectedUser.id);
-                                setAdminRenameChannelId(null);
-                              }
-                            }
-                          }}
-                          className="flex-1 bg-panelBg text-white rounded-lg px-3 py-1.5 outline-none focus:ring-2 focus:ring-[#c70060] text-sm"
-                        />
-                        <button
-                          onClick={async () => {
-                            const newName = adminRenameChannelName.trim();
-                            if (!newName) return;
-                            const ok = await signalRService.adminRenameChannel(ch.id, newName);
-                            if (ok) {
-                              await loadAdminUserDetails(adminSelectedUser.id);
-                              setAdminRenameChannelId(null);
-                            }
-                          }}
-                          className="text-success hover:bg-success/20 p-1.5 rounded-lg transition-colors"
-                          title="Сохранить"
-                        >
-                          <Check size={18} />
-                        </button>
-                        <button
-                          onClick={() => setAdminRenameChannelId(null)}
-                          className="text-danger hover:bg-danger/20 p-1.5 rounded-lg transition-colors"
-                          title="Отмена"
-                        >
-                          <X size={18} />
-                        </button>
-                      </div>
-                    ) : (
-                      // РЕЖИМ ПРОСМОТРА
-                      <>
-                        <div className="min-w-0 pr-4">
-                          <p className="text-white text-sm font-semibold truncate">{ch.name}</p>
-                          <p className="text-textMuted text-[11px] truncate">{ch.id}</p>
-                        </div>
-                        <button
-                          onClick={() => {
-                            setAdminRenameChannelId(ch.id);
-                            setAdminRenameChannelName(ch.name);
-                          }}
-                          className="bg-panelBg hover:bg-[#333] text-textMuted hover:text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors shrink-0"
-                        >
-                          Изменить
-                        </button>
-                      </>
-                    )}
+          <div className="px-6 pb-4">
+            <input
+              type="text"
+              value={adminSearch}
+              onChange={e => setAdminSearch(e.target.value)}
+              placeholder="Поиск по логину / имени"
+              className="w-full bg-surface text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060]"
+            />
+          </div>
+
+          {adminError && (
+            <div className="px-6 pb-3">
+              <div className="bg-danger/10 border border-danger/30 rounded-xl px-4 py-3 text-danger text-sm font-medium">
+                {adminError}
+              </div>
+            </div>
+          )}
+
+          <div className="px-6 overflow-y-auto flex-1 space-y-2 pb-6 custom-scrollbar">
+            {adminLoading ? (
+              <div className="flex justify-center py-12">
+                <div className="w-8 h-8 border-2 border-[#c70060] border-t-transparent rounded-full animate-spin" />
+              </div>
+            ) : (
+              adminUsers
+                .filter(u =>
+                  u.username.toLowerCase().includes(adminSearch.toLowerCase()) ||
+                  u.displayName.toLowerCase().includes(adminSearch.toLowerCase())
+                )
+                .map(u => (
+                  <div key={u.id} className="bg-surface rounded-xl p-4 flex items-center gap-4">
+                    <div
+                      className="w-10 h-10 rounded-full overflow-hidden shrink-0"
+                      style={{ backgroundColor: u.avatarColor }}
+                    >
+                      <AvatarImg src={u.avatarBase64} size={40} />
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <p className="text-white font-semibold truncate">{u.displayName}</p>
+                      <p className="text-textMuted text-xs truncate">@{u.username}</p>
+                      <p className="text-textMuted text-[11px] mt-1 truncate">
+                        {u.currentChannelId
+                          ? `В канале: ${u.currentChannelId}`
+                          : u.currentCallUserId
+                            ? `В звонке: ${u.currentCallUserId}`
+                            : 'Не в голосе'}
+                      </p>
+                    </div>
+
+                    <div className="text-xs text-textMuted shrink-0 min-w-[70px] text-right">
+                      {u.isOnline ? 'Онлайн' : 'Оффлайн'}
+                    </div>
+
+                    <button
+                      disabled={adminActionUserId === u.id}
+                      onClick={async () => {
+                        setAdminSelectedUser(null);
+                        setAdminDetailsLoading(true);
+                        setAdminError('');
+                        store.setModal('adminUserSettings', true);
+
+                        try {
+                          const details = await signalRService.adminGetUserDetails(u.id);
+
+                          if (!details) {
+                            setAdminError('Не удалось загрузить профиль пользователя');
+                          } else {
+                            setAdminSelectedUser(details);
+                            setAdminEditDisplayName(details.displayName ?? '');
+                          }
+                        } catch (e) {
+                          setAdminError('Не удалось загрузить профиль пользователя');
+                        } finally {
+                          setAdminDetailsLoading(false);
+                        }
+                      }}
+                      className="bg-surfaceHover hover:bg-white/10 text-white px-3 py-2 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50"
+                    >
+                      Настройки
+                    </button>
                   </div>
                 ))
-              ) : (
-                <p className="text-textMuted text-sm">Нет доступных каналов</p>
+            )}
+
+            {!adminLoading && adminUsers.length > 0 && adminUsers.filter(u =>
+              u.username.toLowerCase().includes(adminSearch.toLowerCase()) ||
+              u.displayName.toLowerCase().includes(adminSearch.toLowerCase())
+            ).length === 0 && (
+                <p className="text-textMuted text-center py-8 font-medium">Пользователи не найдены</p>
               )}
-            </div>
-          </section>
+          </div>
+        </div>
+      )}
 
-          {/* Достижения (Инлайн и 100% прогресс) */}
-          <section className="bg-surface rounded-2xl p-5">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-white font-bold">Достижения</h3>
-              <span className="text-sm font-semibold text-[#c70060] bg-[#c70060]/10 px-3 py-1 rounded-full">
-                Разблокировано: {adminSelectedUser.achievements?.unlockedIds?.length ?? 0}
-              </span>
-            </div>
-
-            <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1 custom-scrollbar">
-              {ACHIEVEMENTS.map(achievement => {
-                const unlocked = (adminSelectedUser.achievements?.unlockedIds || []).includes(achievement.id);
-                return (
-                  <label 
-                    key={achievement.id} 
-                    className={`flex items-start gap-3 rounded-xl px-4 py-3 cursor-pointer transition-colors border ${
-                      unlocked ? 'bg-[#c70060]/10 border-[#c70060]/30' : 'bg-surfaceHover border-transparent hover:bg-white/5'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={unlocked}
-                      onChange={async (e) => {
-  const isGranted = e.target.checked;
-  
-  // ДОБАВЛЕН ЯВНЫЙ ТИП <string> ЗДЕСЬ:
-  const currentUnlocked = new Set<string>(adminSelectedUser.achievements?.unlockedIds || []);
-  const currentStats = { ...(adminSelectedUser.achievements?.stats || {}) };
-
-  // Выставляем 100% прогресса или сбрасываем в 0
-  if (isGranted) {
-    currentUnlocked.add(achievement.id);
-    currentStats[achievement.statKey] = achievement.maxValue;
-  } else {
-    currentUnlocked.delete(achievement.id);
-    currentStats[achievement.statKey] = 0;
-  }
-
-  const nextUnlocked = Array.from(currentUnlocked);
-  const nextAchievements = {
-    stats: currentStats,
-    unlockedIds: nextUnlocked,
-    visitedChannelIds: adminSelectedUser.achievements?.visitedChannelIds || []
-  };
-
-  // Оптимистичный UI
-  setAdminSelectedUser({
-    ...adminSelectedUser,
-    achievements: nextAchievements
-  });
-
-  // Отправляем на сервер
-  const ok = await signalRService.adminUpdateAchievements({
-    userId: adminSelectedUser.id,
-    unlockedIds: nextUnlocked,
-    stats: currentStats
-  });
-
-  if (!ok) {
-    setAdminError('Ошибка синхронизации достижений');
-    loadAdminUserDetails(adminSelectedUser.id); // Откат
-  }
-}}
-                      className="mt-1.5 w-4 h-4 accent-[#c70060] cursor-pointer"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-lg">{achievement.icon}</span>
-                        <span className={`font-semibold truncate ${unlocked ? 'text-white' : 'text-textMuted'}`}>
-                          {achievement.title}
-                        </span>
-                      </div>
-                      <p className="text-textMuted text-xs mt-1 leading-tight">{achievement.description}</p>
-                    </div>
-                  </label>
-                );
-              })}
-            </div>
-          </section>
-
-          {/* DANGER ZONE */}
-          <section className="pt-4 border-t border-white/5">
+      {renderModal('adminUserSettings',
+        <div className="bg-panelBg rounded-3xl w-[760px] max-h-[84vh] flex flex-col overflow-hidden shadow-2xl">
+          <div className="flex items-center justify-between p-6 pb-4 border-b border-white/5">
+            <h2 className="text-xl font-bold text-white flex items-center gap-3">
+              <Settings size={24} />
+              Профиль: {adminSelectedUser?.username}
+            </h2>
             <button
-              onClick={async () => {
-                const confirmed = confirm(`Удалить пользователя ${adminSelectedUser.displayName}? Это действие необратимо.`);
-                if (!confirmed) return;
-
-                const ok = await signalRService.adminDeleteUser(adminSelectedUser.id);
-                if (ok) {
-                  setAdminSelectedUser(null);
-                  store.setModal('adminUserSettings', false);
-                  await loadAdminUsers();
-                } else {
-                  setAdminError('Не удалось удалить пользователя');
-                }
+              onClick={() => {
+                setAdminSelectedUser(null);
+                setAdminEditDisplayName('');
+                setAdminRenameChannelId(null);
+                store.setModal('adminUserSettings', false);
               }}
-              className="w-full bg-danger/10 text-danger hover:bg-danger hover:text-white py-4 rounded-xl font-bold transition-colors"
+              className="text-textMuted hover:text-white transition-colors"
             >
-              УДАЛИТЬ ПОЛЬЗОВАТЕЛЯ НАВСЕГДА
+              <X size={24} />
             </button>
-          </section>
-        </div>
-      ) : null}
-    </div>
-  </div>
-)}
+          </div>
 
-{adminBlockToast && (() => {
-  const isHiding = adminBlockToast === '__hiding__';
-  return (
-    <div className={`fixed top-14 left-1/2 z-[99999] ${isHiding ? 'animate-admin-block-out' : 'animate-admin-block-in'}`}>
-      <div className="bg-panelBg border border-danger/40 rounded-2xl px-6 py-4 flex items-center gap-3 shadow-2xl shadow-danger/10">
-        <div className="w-8 h-8 rounded-full bg-danger/20 flex items-center justify-center shrink-0">
-          <MicOff size={16} className="text-danger" />
+          {adminError && (
+            <div className="px-6 pt-4">
+              <div className="bg-danger/10 border border-danger/30 rounded-xl px-4 py-3 text-danger text-sm font-medium">
+                {adminError}
+              </div>
+            </div>
+          )}
+
+          <div className="px-6 overflow-y-auto flex-1 py-6 custom-scrollbar">
+            {adminDetailsLoading ? (
+              <div className="flex justify-center py-12">
+                <div className="w-8 h-8 border-2 border-[#c70060] border-t-transparent rounded-full animate-spin" />
+              </div>
+            ) : adminSelectedUser ? (
+              <div className="space-y-6">
+                {/* ПРОФИЛЬ */}
+                <section className="bg-surface rounded-2xl p-5">
+                  <div className="flex items-center gap-4 mb-5">
+                    <div
+                      className="w-16 h-16 rounded-full overflow-hidden shrink-0"
+                      style={{ backgroundColor: adminSelectedUser.avatarColor }}
+                    >
+                      <AvatarImg src={adminSelectedUser.avatarBase64} size={64} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-white font-bold text-lg truncate">{adminSelectedUser.displayName}</p>
+                      <p className="text-textMuted text-sm truncate">@{adminSelectedUser.username}</p>
+                      <p className="text-textMuted text-xs mt-1">
+                        {adminSelectedUser.isOnline ? <span className="text-success">Онлайн</span> : 'Оффлайн'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <label className="text-[10px] font-bold text-textMuted tracking-wider block mb-2">
+                        ОТОБРАЖАЕМОЕ ИМЯ
+                      </label>
+                      <input
+                        type="text"
+                        value={adminEditDisplayName}
+                        onChange={e => setAdminEditDisplayName(e.target.value)}
+                        className="w-full bg-surfaceHover text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060]"
+                      />
+                    </div>
+
+                    <button
+                      onClick={async () => {
+                        if (!adminEditDisplayName.trim()) return;
+                        const ok = await signalRService.adminUpdateUser({
+                          userId: adminSelectedUser.id,
+                          displayName: adminEditDisplayName.trim()
+                        });
+
+                        if (ok) {
+                          await loadAdminUserDetails(adminSelectedUser.id);
+                          await loadAdminUsers();
+                        } else {
+                          setAdminError('Не удалось изменить имя');
+                        }
+                      }}
+                      className="w-full bg-surfaceHover hover:bg-white/10 text-white py-3 rounded-xl font-semibold transition-colors"
+                    >
+                      Сохранить имя
+                    </button>
+                  </div>
+                </section>
+
+                {/* ГОЛОС И КАНАЛЫ */}
+                <section className="bg-surface rounded-2xl p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-white font-bold">Голос и каналы</h3>
+                    {adminSelectedUser.currentChannelId && (
+                      <button
+                        onClick={async () => {
+                          const ok = await signalRService.adminKickFromCurrentChannel(adminSelectedUser.id);
+                          if (ok) {
+                            await loadAdminUserDetails(adminSelectedUser.id);
+                            await loadAdminUsers();
+                          }
+                        }}
+                        className="text-xs bg-danger/20 text-danger px-3 py-1.5 rounded-lg hover:bg-danger hover:text-white transition-colors font-semibold"
+                      >
+                        Исключить из канала
+                      </button>
+                    )}
+                  </div>
+
+                  <p className="text-textMuted text-sm mb-4 bg-surfaceHover p-3 rounded-xl">
+                    {adminSelectedUser.currentChannelId
+                      ? `Сейчас в канале: ${adminSelectedUser.currentChannelId}`
+                      : adminSelectedUser.currentCallUserId
+                        ? `Сейчас в звонке: ${adminSelectedUser.currentCallUserId}`
+                        : 'Сейчас не в голосе'}
+                  </p>
+
+                  <div className="grid grid-cols-2 gap-3 mb-6">
+                    {/* КНОПКА МЬЮТА */}
+                    <button
+                      onClick={async () => {
+                        const newState = !adminSelectedUser.isMuted;
+
+                        // Оптимистичный UI
+                        setAdminSelectedUser({ ...adminSelectedUser, isMuted: newState });
+
+                        const ok = await signalRService.adminSetGlobalVoiceState({
+                          userId: adminSelectedUser.id,
+                          isMuted: newState
+                        });
+
+                        if (ok) {
+                          loadAdminUsers();
+                        } else {
+                          loadAdminUserDetails(adminSelectedUser.id); // Откат
+                        }
+                      }}
+                      className={`py-3 rounded-xl font-semibold flex items-center justify-center gap-2 transition-colors ${adminSelectedUser.isMuted ? 'bg-danger text-white hover:bg-red-600' : 'bg-surfaceHover text-white hover:bg-white/10'
+                        }`}
+                    >
+                      {adminSelectedUser.isMuted ? <MicOff size={18} /> : <Mic size={18} />}
+                      {adminSelectedUser.isMuted ? 'Микрофон выключен' : 'Глобально замьютить'}
+                    </button>
+
+                    {/* КНОПКА ГЛУШЕНИЯ (DEAFEN) */}
+                    <button
+                      onClick={async () => {
+                        const newState = !adminSelectedUser.isDeafened;
+
+                        // Оптимистичный UI (если глушим уши, микрофон тоже отключается)
+                        setAdminSelectedUser({
+                          ...adminSelectedUser,
+                          isDeafened: newState,
+                          isMuted: newState ? true : adminSelectedUser.isMuted
+                        });
+
+                        const ok = await signalRService.adminSetGlobalVoiceState({
+                          userId: adminSelectedUser.id,
+                          isDeafened: newState
+                        });
+
+                        if (ok) {
+                          loadAdminUsers();
+                        } else {
+                          loadAdminUserDetails(adminSelectedUser.id); // Откат
+                        }
+                      }}
+                      className={`py-3 rounded-xl font-semibold flex items-center justify-center gap-2 transition-colors ${adminSelectedUser.isDeafened ? 'bg-danger text-white hover:bg-red-600' : 'bg-surfaceHover text-white hover:bg-white/10'
+                        }`}
+                    >
+                      <div className="relative flex items-center justify-center">
+                        <Headphones size={18} className={adminSelectedUser.isDeafened ? 'opacity-60' : ''} />
+                        {adminSelectedUser.isDeafened && (
+                          <div className="absolute w-[22px] h-[2.5px] bg-white rotate-45 rounded-full" />
+                        )}
+                      </div>
+                      {adminSelectedUser.isDeafened ? 'Звук выключен' : 'Глобально заглушить'}
+                    </button>
+                  </div>
+
+                  <label className="text-[10px] font-bold text-textMuted mb-2 block tracking-wider">ДОСТУПНЫЕ КАНАЛЫ</label>
+                  <div className="space-y-2 max-h-[200px] overflow-y-auto pr-2 custom-scrollbar">
+                    {adminSelectedUser.accessibleChannels?.length > 0 ? (
+                      adminSelectedUser.accessibleChannels.map((ch: any) => (
+                        <div key={ch.id} className="bg-surfaceHover rounded-xl px-4 py-2 flex items-center justify-between min-h-[50px]">
+
+                          {adminRenameChannelId === ch.id ? (
+                            // РЕЖИМ РЕДАКТИРОВАНИЯ
+                            <div className="flex items-center gap-2 w-full">
+                              <input
+                                autoFocus
+                                type="text"
+                                value={adminRenameChannelName}
+                                onChange={e => setAdminRenameChannelName(e.target.value)}
+                                onKeyDown={async e => {
+                                  if (e.key === 'Enter') {
+                                    const newName = adminRenameChannelName.trim();
+                                    if (!newName) return;
+                                    const ok = await signalRService.adminRenameChannel(ch.id, newName);
+                                    if (ok) {
+                                      await loadAdminUserDetails(adminSelectedUser.id);
+                                      setAdminRenameChannelId(null);
+                                    }
+                                  }
+                                }}
+                                className="flex-1 bg-panelBg text-white rounded-lg px-3 py-1.5 outline-none focus:ring-2 focus:ring-[#c70060] text-sm"
+                              />
+                              <button
+                                onClick={async () => {
+                                  const newName = adminRenameChannelName.trim();
+                                  if (!newName) return;
+                                  const ok = await signalRService.adminRenameChannel(ch.id, newName);
+                                  if (ok) {
+                                    await loadAdminUserDetails(adminSelectedUser.id);
+                                    setAdminRenameChannelId(null);
+                                  }
+                                }}
+                                className="text-success hover:bg-success/20 p-1.5 rounded-lg transition-colors"
+                                title="Сохранить"
+                              >
+                                <Check size={18} />
+                              </button>
+                              <button
+                                onClick={() => setAdminRenameChannelId(null)}
+                                className="text-danger hover:bg-danger/20 p-1.5 rounded-lg transition-colors"
+                                title="Отмена"
+                              >
+                                <X size={18} />
+                              </button>
+                            </div>
+                          ) : (
+                            // РЕЖИМ ПРОСМОТРА
+                            <>
+                              <div className="min-w-0 pr-4">
+                                <p className="text-white text-sm font-semibold truncate">{ch.name}</p>
+                                <p className="text-textMuted text-[11px] truncate">{ch.id}</p>
+                              </div>
+                              <button
+                                onClick={() => {
+                                  setAdminRenameChannelId(ch.id);
+                                  setAdminRenameChannelName(ch.name);
+                                }}
+                                className="bg-panelBg hover:bg-[#333] text-textMuted hover:text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors shrink-0"
+                              >
+                                Изменить
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-textMuted text-sm">Нет доступных каналов</p>
+                    )}
+                  </div>
+                </section>
+
+                {/* Достижения (Инлайн и 100% прогресс) */}
+                <section className="bg-surface rounded-2xl p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-white font-bold">Достижения</h3>
+                    <span className="text-sm font-semibold text-[#c70060] bg-[#c70060]/10 px-3 py-1 rounded-full">
+                      Разблокировано: {adminSelectedUser.achievements?.unlockedIds?.length ?? 0}
+                    </span>
+                  </div>
+
+                  <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1 custom-scrollbar">
+                    {ACHIEVEMENTS.map(achievement => {
+                      const unlocked = (adminSelectedUser.achievements?.unlockedIds || []).includes(achievement.id);
+                      return (
+                        <label
+                          key={achievement.id}
+                          className={`flex items-start gap-3 rounded-xl px-4 py-3 cursor-pointer transition-colors border ${unlocked ? 'bg-[#c70060]/10 border-[#c70060]/30' : 'bg-surfaceHover border-transparent hover:bg-white/5'
+                            }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={unlocked}
+                            onChange={async (e) => {
+                              const isGranted = e.target.checked;
+
+                              // ДОБАВЛЕН ЯВНЫЙ ТИП <string> ЗДЕСЬ:
+                              const currentUnlocked = new Set<string>(adminSelectedUser.achievements?.unlockedIds || []);
+                              const currentStats = { ...(adminSelectedUser.achievements?.stats || {}) };
+
+                              // Выставляем 100% прогресса или сбрасываем в 0
+                              if (isGranted) {
+                                currentUnlocked.add(achievement.id);
+                                currentStats[achievement.statKey] = achievement.maxValue;
+                              } else {
+                                currentUnlocked.delete(achievement.id);
+                                currentStats[achievement.statKey] = 0;
+                              }
+
+                              const nextUnlocked = Array.from(currentUnlocked);
+                              const nextAchievements = {
+                                stats: currentStats,
+                                unlockedIds: nextUnlocked,
+                                visitedChannelIds: adminSelectedUser.achievements?.visitedChannelIds || []
+                              };
+
+                              // Оптимистичный UI
+                              setAdminSelectedUser({
+                                ...adminSelectedUser,
+                                achievements: nextAchievements
+                              });
+
+                              // Отправляем на сервер
+                              const ok = await signalRService.adminUpdateAchievements({
+                                userId: adminSelectedUser.id,
+                                unlockedIds: nextUnlocked,
+                                stats: currentStats
+                              });
+
+                              if (!ok) {
+                                setAdminError('Ошибка синхронизации достижений');
+                                loadAdminUserDetails(adminSelectedUser.id); // Откат
+                              }
+                            }}
+                            className="mt-1.5 w-4 h-4 accent-[#c70060] cursor-pointer"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-lg">{achievement.icon}</span>
+                              <span className={`font-semibold truncate ${unlocked ? 'text-white' : 'text-textMuted'}`}>
+                                {achievement.title}
+                              </span>
+                            </div>
+                            <p className="text-textMuted text-xs mt-1 leading-tight">{achievement.description}</p>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                {/* DANGER ZONE */}
+                <section className="pt-4 border-t border-white/5">
+                  <button
+                    onClick={async () => {
+                      const confirmed = confirm(`Удалить пользователя ${adminSelectedUser.displayName}? Это действие необратимо.`);
+                      if (!confirmed) return;
+
+                      const ok = await signalRService.adminDeleteUser(adminSelectedUser.id);
+                      if (ok) {
+                        setAdminSelectedUser(null);
+                        store.setModal('adminUserSettings', false);
+                        await loadAdminUsers();
+                      } else {
+                        setAdminError('Не удалось удалить пользователя');
+                      }
+                    }}
+                    className="w-full bg-danger/10 text-danger hover:bg-danger hover:text-white py-4 rounded-xl font-bold transition-colors"
+                  >
+                    УДАЛИТЬ ПОЛЬЗОВАТЕЛЯ НАВСЕГДА
+                  </button>
+                </section>
+              </div>
+            ) : null}
+          </div>
         </div>
-        <p className="text-white font-semibold text-sm">{typeof adminBlockToast === 'string' && adminBlockToast !== '__hiding__' ? adminBlockToast : 'Администратор запретил это действие'}</p>
-      </div>
-    </div>
-  );
-})()}
+      )}
+
+      {adminBlockToast && (() => {
+        const isHiding = adminBlockToast === '__hiding__';
+        return (
+          <div className={`fixed top-14 left-1/2 z-[99999] ${isHiding ? 'animate-admin-block-out' : 'animate-admin-block-in'}`}>
+            <div className="bg-panelBg border border-danger/40 rounded-2xl px-6 py-4 flex items-center gap-3 shadow-2xl shadow-danger/10">
+              <div className="w-8 h-8 rounded-full bg-danger/20 flex items-center justify-center shrink-0">
+                <MicOff size={16} className="text-danger" />
+              </div>
+              <p className="text-white font-semibold text-sm">{typeof adminBlockToast === 'string' && adminBlockToast !== '__hiding__' ? adminBlockToast : 'Администратор запретил это действие'}</p>
+            </div>
+          </div>
+        );
+      })()}
 
       {renderCropper()}
     </>
