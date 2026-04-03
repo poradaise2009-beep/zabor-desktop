@@ -68,7 +68,8 @@ export class WebRTCManager {
       }
 
       if (line.startsWith(`a=fmtp:${opusPT}`)) {
-        l = `a=fmtp:${opusPT} minptime=10;useinbandfec=1;usedtx=1;maxaveragebitrate=64000;sprop-maxcapturerate=48000;stereo=0;cbr=0`
+        
+        l = `a=fmtp:${opusPT} minptime=10;useinbandfec=1;maxaveragebitrate=64000;stereo=0;cbr=1`
         fmtpDone = true
       }
 
@@ -79,7 +80,7 @@ export class WebRTCManager {
       const idx = out.findIndex(l => l.startsWith(`a=rtpmap:${opusPT}`))
       if (idx >= 0) {
         out.splice(idx + 1, 0,
-          `a=fmtp:${opusPT} minptime=10;useinbandfec=1;usedtx=1;maxaveragebitrate=64000;sprop-maxcapturerate=48000;stereo=0;cbr=0`
+          `a=fmtp:${opusPT} minptime=10;useinbandfec=1;maxaveragebitrate=64000;stereo=0;cbr=1`
         )
       }
     }
@@ -106,43 +107,17 @@ export class WebRTCManager {
     this.processedContext = ctx
     const destination = ctx.createMediaStreamDestination()
 
-    // Единственный GainNode для громкости микрофона
+    // Оставляем только GainNode для управления громкостью микрофона
     const inputGain = ctx.createGain()
     inputGain.gain.value = Math.max(0, Math.min(2, this.inputVolume / 100))
     this.inputGainNode = inputGain
 
-    // Мягкий high-pass: убирает только инфразвук и гул ниже 75Hz
-    const highPass = ctx.createBiquadFilter()
-    highPass.type = 'highpass'
-    highPass.frequency.value = 75
-    highPass.Q.value = 0.5
-
-    if (this.noiseSuppression) {
-      try {
-        const { createRNNoiseProcessor } = await import('./rnnoise-processor')
-        const result = await createRNNoiseProcessor(ctx, rawStream)
-        this.rnnoiseDestroy = result.destroy
-
-        const source = ctx.createMediaStreamSource(result.stream)
-        this.processedSource = source
-
-        // RNNoise → HighPass → Gain → Output
-        source.connect(highPass)
-        highPass.connect(inputGain)
-        inputGain.connect(destination)
-
-        return destination.stream
-      } catch (err) {
-        console.warn('[WebRTC] RNNoise failed, fallback', err)
-      }
-    }
-
-    // Без RNNoise: Raw → HighPass → Gain → Output
     const source = ctx.createMediaStreamSource(rawStream)
     this.processedSource = source
 
-    source.connect(highPass)
-    highPass.connect(inputGain)
+    // Напрямую пускаем звук через регулятор громкости на выход.
+    // Никаких HighPass фильтров и асинхронного RNNoise, чтобы голос оставался чистым и полным.
+    source.connect(inputGain)
     inputGain.connect(destination)
 
     return destination.stream
@@ -309,10 +284,13 @@ export class WebRTCManager {
           deviceId: this.currentDeviceId !== 'default' ? { exact: this.currentDeviceId } : undefined,
           sampleRate: 48000,
           channelCount: 1,
-          sampleSize: 16,
-          echoCancellation: true,
-          autoGainControl: true,
-          noiseSuppression: !this.noiseSuppression
+          echoCancellation: true, // Обязательно, чтобы не было эха
+          noiseSuppression: this.noiseSuppression, // Используем мощный нативный шумодав Chromium!
+          autoGainControl: true, // Выравнивает громкость
+          // @ts-expect-error - Скрытые настройки Chromium для глубокого "бархатного" голоса
+          googHighpassFilter: false, 
+          
+          googAudioMirroring: false
         },
         video: false
       })
