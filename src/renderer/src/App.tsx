@@ -90,7 +90,7 @@ export default function App() {
   const [isCopied, setIsCopied] = useState(false);
 
   const [isIdle, setIsIdle] = useState(false);
-  const { joke, setJoke, isAdmin, setIsAdmin } = useAppStore();
+  const [joke, setJoke] = useState<string>('');
   const idleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const settingsSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const settingsLoadedRef = useRef(false);
@@ -99,7 +99,7 @@ export default function App() {
   const loginInputRef = useRef<HTMLInputElement>(null);
   const passwordInputRef = useRef<HTMLInputElement>(null);
 
-
+  const [isAdmin, setIsAdmin] = useState(false);
   const [adminUsers, setAdminUsers] = useState<any[]>([]);
   const [adminSearch, setAdminSearch] = useState('');
   const [adminLoading, setAdminLoading] = useState(false);
@@ -299,37 +299,7 @@ export default function App() {
         setIsAuth(true);
       }
 
-      // 5. Ждем полную синхронизацию (SyncFullChannelState), замер размеров и шутку дня
-      if (useAppStore.getState().currentUser) {
-        let attempts = 0;
-        while (attempts < 150) { // Даем до 15 секунд на очень медленный VPN
-          const state = useAppStore.getState();
-          const isSyncDone = state.isInitialSyncDone;
-          const isDataReady = state.isDataReady;
-          const rect = containerRef.current?.getBoundingClientRect();
-          const isMeasured = rect && rect.width > 0;
-
-          const hasUserData = !!state.currentUser?.displayName;
-
-          // Ждем полной синхронизации, загрузки списков и замера контейнера
-          if (isSyncDone && isDataReady && isMeasured && hasUserData) break;
-
-          await new Promise(r => setTimeout(r, 100));
-          attempts++;
-        }
-
-        // Пауза, чтобы React успел отрендерить полученные списки
-        await new Promise(r => setTimeout(r, 1500));
-
-        // Ждем пару кадров отрисовки для уверенности
-        await new Promise<void>(resolve => {
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => resolve());
-          });
-        });
-      }
-
-      // 6. Показываем главный экран
+      // 5. Показываем главный экран
       initCompleteRef.current = true;
       setLoadingFadeOut(true);
       setTimeout(() => setAppLoading(false), 600);
@@ -694,10 +664,10 @@ export default function App() {
     store.setCallStatus('idle');
     store.setCurrentCallUser(null);
     store.setFullChannelState({});
-    store.setInitialSyncDone(false);
-    store.setJoke('');
-    store.setIsAdmin(false);
 
+    setJoke('');
+
+    setIsAdmin(false);
     setAdminUsers([]);
     setAdminSearch('');
 
@@ -1262,11 +1232,58 @@ export default function App() {
         </div>
       )}
 
-      <div className="flex flex-col h-screen w-screen bg-appBg text-textMain overflow-hidden relative select-none">
+      <div className="flex flex-col h-screen w-screen bg-appBg text-textMain overflow-hidden relative animate-fade-in select-none">
         <TitleBar />
         <div className="flex flex-1 overflow-hidden">
 
-
+          {contextMenu?.visible && (
+            <div
+              className="absolute z-[200] bg-surface border border-[#303035] rounded-xl shadow-xl py-2 w-48"
+              style={{ top: contextMenu.y, left: contextMenu.x }}
+              onClick={e => e.stopPropagation()}
+              onContextMenu={e => e.stopPropagation()}
+            >
+              {contextMenu.type === 'channel' ? (
+                <>
+                  {contextMenu.item.ownerId === store.currentUser?.id && (
+                    <button onClick={() => { setEditChannelId(contextMenu.item.id); setEditChannelName(contextMenu.item.name); store.setModal('channelEdit', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Edit2 size={16} /> Переименовать</button>
+                  )}
+                  <button onClick={() => { signalRService.quitAccessChannel(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><LeaveIcon size={16} /> Выйти из канала</button>
+                </>
+              ) : contextMenu.type === 'channelMember' ? (
+                <>
+                  <button onClick={() => { store.setSelectedProfileUser(contextMenu.item, 'channelMembers'); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
+                  {contextMenu.item.id !== store.currentUser?.id && (
+                    <button onClick={() => {
+                      if (!contextMenu.item.isOnline) {
+                        setOfflineToast('Пользователь не в сети');
+                        setTimeout(() => setOfflineToast(null), 3000);
+                      } else if (store.selectedChannelForMembers) {
+                        signalRService.sendChannelInvite(contextMenu.item.id, store.selectedChannelForMembers.id, store.selectedChannelForMembers.name);
+                        setSentInvites(prev => new Set(prev).add(contextMenu.item.id));
+                      }
+                      setContextMenu(null);
+                    }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1">
+                      <UserPlus size={16} /> Позвать в канал
+                    </button>
+                  )}
+                  {store.selectedChannelForMembers?.ownerId === store.currentUser?.id && contextMenu.item.id !== store.currentUser?.id && (
+                    <button onClick={() => { store.setUserToKick(contextMenu.item); store.setModal('kickConfirm', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserX size={16} /> Исключить</button>
+                  )}
+                </>
+              ) : contextMenu.type === 'voiceUser' ? (
+                <>
+                  <button onClick={() => { setVolumeUser(contextMenu.item); setVolumeUserValue(store.userVolumes[contextMenu.item.id] ?? 100); store.setModal('userVolume', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Volume2 size={16} /> Громкость</button>
+                  <button onClick={() => { store.setSelectedProfileUser(contextMenu.item, 'voiceUsers'); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><Settings size={16} /> Профиль</button>
+                </>
+              ) : (
+                <>
+                  <button onClick={() => { store.setSelectedProfileUser(contextMenu.item, 'friends'); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
+                  <button onClick={() => { signalRService.removeFriend(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserMinus size={16} /> Удалить</button>
+                </>
+              )}
+            </div>
+          )}
 
           <div className="w-80 bg-panelBg flex flex-col border-r border-[#303035] relative shrink-0">
 
@@ -1318,7 +1335,7 @@ export default function App() {
 
             <div className="flex-1 overflow-y-auto p-4 pb-20">
               {activeTab === 'channels' && (
-                <div>
+                <div className="animate-fade-in">
                   <div className="flex justify-between items-center mb-4 px-2">
                     <span className="text-xs font-bold text-textMuted tracking-wider">ГОЛОСОВЫЕ КАНАЛЫ</span>
                     <button onClick={() => store.setModal('createChannel', true)} className="text-textMuted hover:text-white text-xl transition-colors">+</button>
@@ -1353,7 +1370,7 @@ export default function App() {
                 </div>
               )}
               {activeTab === 'friends' && (
-                <div>
+                <div className="animate-fade-in">
                   <div className="flex justify-between items-center mb-4 px-2">
                     <span className="text-xs font-bold text-textMuted tracking-wider">ДРУЗЬЯ</span>
                     <button onClick={() => store.setModal('addFriend', true)} className="text-textMuted hover:text-white text-xl transition-colors">+</button>
@@ -1389,11 +1406,11 @@ export default function App() {
             </div>
 
             <div className="h-[75px] bg-[#09090B] rounded-2xl mx-4 mb-4 flex items-center px-4 shrink-0 shadow-lg">
-              <div onClick={() => { store.setSelectedProfileUser(store.currentUser, 'none'); setEditProfileDisplayName(store.currentUser!.displayName); setEditProfileAvatarBase64(null); store.setModal('profile', true); }}
+                <div onClick={() => { store.setSelectedProfileUser(store.currentUser, 'none'); setEditProfileDisplayName(store.currentUser!.displayName); setEditProfileAvatarBase64(null); store.setModal('profile', true); }}
                 className="relative w-[51px] h-[51px] mr-3 cursor-pointer shrink-0 hover:opacity-80 transition-opacity">
-                <AvatarImg src={store.currentUser?.avatarBase64} size={51} bgColor={store.currentUser?.avatarColor} />
-                <div className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-[3px] border-[#09090B] ${serverConnected ? 'bg-success' : 'bg-gray-500'}`} />
-              </div>
+                  <AvatarImg src={store.currentUser?.avatarBase64} size={51} bgColor={store.currentUser?.avatarColor} />
+                  <div className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-[3px] border-[#09090B] ${serverConnected ? 'bg-success' : 'bg-gray-500'}`} />
+                </div>
               <div className="flex-1 min-w-0 flex flex-col justify-center">
                 <div className="font-bold text-sm truncate text-white">{store.currentUser?.displayName}</div>
                 <div onClick={handleCopyUsername} className="text-xs font-semibold text-textMuted truncate cursor-pointer hover:text-white transition-colors mt-0.5" title="Нажмите, чтобы скопировать">
@@ -1504,14 +1521,14 @@ export default function App() {
               <div className="flex-1 flex flex-col items-center justify-center px-16">
                 <div className="max-w-lg text-center">
                   {joke ? (
-                    <div className="animate-fade-in">
+                    <>
                       <p className="text-xs text-white/20 mb-3 font-semibold tracking-wider">ШУТЕЙКА:</p>
                       <p className="text-lg text-white/50 font-medium leading-relaxed whitespace-pre-line">
                         {joke}
                       </p>
-                    </div>
+                    </>
                   ) : (
-                    <div className="h-6" /> // Пустое пространство вместо спиннера
+                    <div className="w-6 h-6 border-2 border-white/10 border-t-white/30 rounded-full animate-spin mx-auto" />
                   )}
                 </div>
               </div>
@@ -2667,55 +2684,6 @@ export default function App() {
           </div>
         );
       })()}
-
-      {contextMenu?.visible && (
-        <div
-          className="fixed z-[200001] bg-surface border border-[#303035] rounded-xl shadow-xl py-2 w-48"
-          style={{ top: contextMenu.y, left: contextMenu.x }}
-          onClick={e => e.stopPropagation()}
-          onContextMenu={e => e.stopPropagation()}
-        >
-          {contextMenu.type === 'channel' ? (
-            <>
-              {contextMenu.item.ownerId === store.currentUser?.id && (
-                <button onClick={() => { setEditChannelId(contextMenu.item.id); setEditChannelName(contextMenu.item.name); store.setModal('channelEdit', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Edit2 size={16} /> Переименовать</button>
-              )}
-              <button onClick={() => { signalRService.quitAccessChannel(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><LeaveIcon size={16} /> Выйти из канала</button>
-            </>
-          ) : contextMenu.type === 'channelMember' ? (
-            <>
-              <button onClick={() => { store.setSelectedProfileUser(contextMenu.item, 'channelMembers'); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
-              {contextMenu.item.id !== store.currentUser?.id && (
-                <button onClick={() => {
-                  if (!contextMenu.item.isOnline) {
-                    setOfflineToast('Пользователь не в сети');
-                    setTimeout(() => setOfflineToast(null), 3000);
-                  } else if (store.selectedChannelForMembers) {
-                    signalRService.sendChannelInvite(contextMenu.item.id, store.selectedChannelForMembers.id, store.selectedChannelForMembers.name);
-                    setSentInvites(prev => new Set(prev).add(contextMenu.item.id));
-                  }
-                  setContextMenu(null);
-                }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1">
-                  <UserPlus size={16} /> Позвать в канал
-                </button>
-              )}
-              {store.selectedChannelForMembers?.ownerId === store.currentUser?.id && contextMenu.item.id !== store.currentUser?.id && (
-                <button onClick={() => { store.setUserToKick(contextMenu.item); store.setModal('kickConfirm', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserX size={16} /> Исключить</button>
-              )}
-            </>
-          ) : contextMenu.type === 'voiceUser' ? (
-            <>
-              <button onClick={() => { setVolumeUser(contextMenu.item); setVolumeUserValue(store.userVolumes[contextMenu.item.id] ?? 100); store.setModal('userVolume', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Volume2 size={16} /> Громкость</button>
-              <button onClick={() => { store.setSelectedProfileUser(contextMenu.item, 'voiceUsers'); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><Settings size={16} /> Профиль</button>
-            </>
-          ) : (
-            <>
-              <button onClick={() => { store.setSelectedProfileUser(contextMenu.item, 'friends'); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
-              <button onClick={() => { signalRService.removeFriend(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserMinus size={16} /> Удалить</button>
-            </>
-          )}
-        </div>
-      )}
 
       {renderCropper()}
     </>

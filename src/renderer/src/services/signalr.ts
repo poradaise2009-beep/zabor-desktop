@@ -245,7 +245,6 @@ this.sfxElements.clear();
 
     this.connection.on("SyncFullChannelState", (stateMap: Record<string, User[]>) => {
       store().setFullChannelState(stateMap);
-      store().setInitialSyncDone(true);
     });
 
     this.connection.on("UserJoined", (user: User) => {
@@ -547,7 +546,6 @@ private stopRingtone() {
     useAppStore.getState().setChannels(channels || []);
     useAppStore.getState().setFriends(friends || []);
     useAppStore.getState().setFriendRequests(requests || []);
-    useAppStore.getState().setDataReady(true);
   }
 
   // ── Channels (optimistic) ─────────────────────────────────────
