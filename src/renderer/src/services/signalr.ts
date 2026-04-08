@@ -6,7 +6,7 @@ import channelJoinSound from '../assets/sounds/join.mp3';
 import channelLeaveSound from '../assets/sounds/leave.mp3';
 import achievementSound from '../assets/sounds/achievement.mp3';
 
-const SERVER_URL = "http://150.241.64.108:8080/zabor_v3";
+const SERVER_URL = "https://vnkboltik.ru:8080/zabor_v3";
 
 class SignalRService {
   private connection: signalR.HubConnection | null = null;
@@ -245,6 +245,7 @@ this.sfxElements.clear();
 
     this.connection.on("SyncFullChannelState", (stateMap: Record<string, User[]>) => {
       store().setFullChannelState(stateMap);
+      store().setInitialSyncDone(true);
     });
 
     this.connection.on("UserJoined", (user: User) => {
@@ -546,6 +547,7 @@ private stopRingtone() {
     useAppStore.getState().setChannels(channels || []);
     useAppStore.getState().setFriends(friends || []);
     useAppStore.getState().setFriendRequests(requests || []);
+    useAppStore.getState().setDataReady(true);
   }
 
   // ── Channels (optimistic) ─────────────────────────────────────

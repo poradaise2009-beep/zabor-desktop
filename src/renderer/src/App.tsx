@@ -90,7 +90,7 @@ export default function App() {
   const [isCopied, setIsCopied] = useState(false);
 
   const [isIdle, setIsIdle] = useState(false);
-  const [joke, setJoke] = useState<string>('');
+  const { joke, setJoke, isAdmin, setIsAdmin } = useAppStore();
   const idleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const settingsSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const settingsLoadedRef = useRef(false);
@@ -99,7 +99,7 @@ export default function App() {
   const loginInputRef = useRef<HTMLInputElement>(null);
   const passwordInputRef = useRef<HTMLInputElement>(null);
 
-  const [isAdmin, setIsAdmin] = useState(false);
+
   const [adminUsers, setAdminUsers] = useState<any[]>([]);
   const [adminSearch, setAdminSearch] = useState('');
   const [adminLoading, setAdminLoading] = useState(false);
@@ -181,7 +181,7 @@ export default function App() {
     }
     const finalW = Math.max(100, Math.min(bestW, 800));
     const finalH = finalW / ratio;
-    const avatarSize = Math.max(48, Math.min(120, finalH * 0.4));
+    const avatarSize = Math.max(48 + 7, Math.min(120 + 7, finalH * 0.4 + 7));
     return { w: Math.floor(finalW), h: Math.floor(finalH), avatarSize: Math.floor(avatarSize) };
   };
 
@@ -299,7 +299,37 @@ export default function App() {
         setIsAuth(true);
       }
 
-      // 5. Показываем главный экран
+      // 5. Ждем полную синхронизацию (SyncFullChannelState), замер размеров и шутку дня
+      if (useAppStore.getState().currentUser) {
+        let attempts = 0;
+        while (attempts < 150) { // Даем до 15 секунд на очень медленный VPN
+          const state = useAppStore.getState();
+          const isSyncDone = state.isInitialSyncDone;
+          const isDataReady = state.isDataReady;
+          const rect = containerRef.current?.getBoundingClientRect();
+          const isMeasured = rect && rect.width > 0;
+
+          const hasUserData = !!state.currentUser?.displayName;
+
+          // Ждем полной синхронизации, загрузки списков и замера контейнера
+          if (isSyncDone && isDataReady && isMeasured && hasUserData) break;
+
+          await new Promise(r => setTimeout(r, 100));
+          attempts++;
+        }
+
+        // Пауза, чтобы React успел отрендерить полученные списки
+        await new Promise(r => setTimeout(r, 1500));
+
+        // Ждем пару кадров отрисовки для уверенности
+        await new Promise<void>(resolve => {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => resolve());
+          });
+        });
+      }
+
+      // 6. Показываем главный экран
       initCompleteRef.current = true;
       setLoadingFadeOut(true);
       setTimeout(() => setAppLoading(false), 600);
@@ -664,10 +694,10 @@ export default function App() {
     store.setCallStatus('idle');
     store.setCurrentCallUser(null);
     store.setFullChannelState({});
+    store.setInitialSyncDone(false);
+    store.setJoke('');
+    store.setIsAdmin(false);
 
-    setJoke('');
-
-    setIsAdmin(false);
     setAdminUsers([]);
     setAdminSearch('');
 
@@ -1129,151 +1159,114 @@ export default function App() {
 
   // === Screens ===
 
-  if (!serverConnected && isAuth) {
-    return (
-      <div className="flex flex-col h-screen w-screen bg-appBg relative select-none">
-        <TitleBar />
-        <div className="flex-1 flex items-center justify-center">
-          <div className="flex flex-col items-center gap-6">
-            <h1 className="text-5xl font-black text-white tracking-widest animate-pulse">ZABOR</h1>
-            <div className="w-10 h-10 border-4 border-[#c70060] border-t-transparent rounded-full animate-spin" />
-            {showErrorText && <p className="text-danger font-bold mt-4 animate-fade-in">Нет соединения с сервером. Переподключение...</p>}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (appLoading) {
-    return (
-      <div className={`flex flex-col h-screen w-screen bg-appBg transition-opacity duration-[600ms] select-none`}>
-        <TitleBar />
-        <div className="flex-1 flex items-center justify-center">
-          <div className="flex flex-col items-center gap-6">
-            <h1 className="text-5xl font-black text-white tracking-widest animate-pulse">ZABOR</h1>
-            <div className="w-10 h-10 border-4 border-[#c70060] border-t-transparent rounded-full animate-spin" />
-            {showInitConnectionError && (
-              <p className="text-danger font-bold mt-2 animate-fade-in">
-                Нет соединения с сервером
-              </p>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (!isAuth) {
-    return (
-      <div className="flex flex-col h-screen w-screen bg-appBg text-textMain animate-fade-in select-none">
-        <TitleBar />
-        <div className="flex-1 flex items-center justify-center p-4">
-          {authStep === 'login' && (
-            <div className="bg-panelBg p-10 rounded-3xl w-[400px] shadow-2xl flex flex-col">
-              <h1 className="text-4xl font-black text-center mb-8 tracking-wider text-white">ZABOR</h1>
-              <label className="text-xs font-bold text-textMuted mb-2 tracking-wider">ЛОГИН</label>
-              <input
-                ref={loginInputRef}
-                type="text"
-                value={login}
-                onChange={e => setLogin(e.target.value)}
-                maxLength={25}
-                className="bg-surface text-white rounded-xl p-3 mb-4 outline-none focus:ring-2 focus:ring-[#c70060]"
-              />
-              <label className="text-xs font-bold text-textMuted mb-2 tracking-wider">ПАРОЛЬ</label>
-              <div className="relative mb-6">
-                <input
-                  ref={passwordInputRef}
-                  type={showPassword ? 'text' : 'password'}
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  maxLength={25}
-                  onKeyDown={e => e.key === 'Enter' && handleAuth()}
-                  className="w-full bg-surface text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060] pr-10"
-                />
-                <button
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-3 text-textMuted hover:text-white transition-colors"
-                >
-                  {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
-                </button>
-              </div>
-              {error && <p className="text-danger text-sm mb-4 text-center font-medium">{error}</p>}
-              <button onClick={handleAuth} disabled={isLoading} className="bg-[#c70060] text-white font-bold py-3 rounded-xl disabled:opacity-50 hover:opacity-90 transition-opacity">{isLoading ? 'ЗАГРУЗКА...' : 'ПРОДОЛЖИТЬ'}</button>
-            </div>
-          )}
-          {authStep === 'confirm' && (
-            <div className="bg-panelBg p-8 rounded-3xl w-[400px] text-center shadow-2xl">
-              <h2 className="text-2xl font-bold mb-4 text-white">Аккаунт не найден</h2>
-              <p className="text-textMuted mb-8">Создать новый профиль с таким логином?</p>
-              <div className="flex gap-4">
-                <button onClick={() => setAuthStep('login')} className="flex-1 bg-surface text-white py-3 rounded-xl font-bold hover:bg-surfaceHover transition-colors">Нет</button>
-                <button onClick={() => { setAuthStep('setup'); setDisplayName(login); }} className="flex-1 bg-[#c70060] text-white py-3 rounded-xl font-bold hover:opacity-90 transition-opacity">Да</button>
-              </div>
-            </div>
-          )}
-          {authStep === 'setup' && (
-            <div className="bg-panelBg p-10 rounded-3xl w-[400px] flex flex-col shadow-2xl">
-              <h1 className="text-2xl font-bold text-center mb-2 text-white">Создать профиль</h1>
-              <p className="text-sm text-textMuted text-center mb-8">Как вас будут видеть другие?</p>
-              <label className="w-24 h-24 rounded-full mx-auto mb-8 flex items-center justify-center cursor-pointer overflow-hidden relative shadow-lg hover:opacity-80 transition-opacity" style={{ backgroundColor: avatarColor }}>
-                {avatarBase64 ? <AvatarImg src={avatarBase64} size={96} /> : <Camera size={32} className="text-white" />}
-                <input type="file" accept="image/*" className="hidden" onChange={e => onFileChange(e, 'setup')} />
-              </label>
-              <label className="text-xs font-bold text-textMuted mb-2 tracking-wider">ОТОБРАЖАЕМОЕ ИМЯ</label>
-              <input type="text" value={displayName} onChange={e => setDisplayName(e.target.value)} maxLength={20} placeholder="Максимум 20 символов" className="bg-surface text-white rounded-xl p-3 mb-6 outline-none focus:ring-2 focus:ring-[#c70060]" />
-              {error && <p className="text-danger text-sm mb-4 text-center font-medium">{error}</p>}
-              <button onClick={handleAuth} disabled={isLoading} className="bg-[#c70060] text-white font-bold py-3 rounded-xl disabled:opacity-50 hover:opacity-90 transition-opacity">{isLoading ? 'СОЗДАНИЕ...' : 'СОЗДАТЬ'}</button>
-            </div>
-          )}
-          {renderCropper()}
-        </div>
-      </div>
-    );
-  }
-
   const hasInvites = store.channelInvites.length > 0 || store.friendRequests.length > 0;
 
   return (
     <>
-      <div className="flex flex-col h-screen w-screen bg-appBg text-textMain overflow-hidden relative animate-fade-in select-none">
+      {/* Auth screen — показывается поверх основного UI, когда пользователь не авторизован */}
+      {!isAuth && !appLoading && (
+        <div className="fixed inset-0 z-[100000] flex flex-col bg-appBg text-textMain animate-fade-in select-none">
+          <TitleBar />
+          <div className="flex-1 flex items-center justify-center p-4">
+            {authStep === 'login' && (
+              <div className="bg-panelBg p-10 rounded-3xl w-[400px] shadow-2xl flex flex-col">
+                <h1 className="text-4xl font-black text-center mb-8 tracking-wider text-white">ZABOR</h1>
+                <label className="text-xs font-bold text-textMuted mb-2 tracking-wider">ЛОГИН</label>
+                <input
+                  ref={loginInputRef}
+                  type="text"
+                  value={login}
+                  onChange={e => setLogin(e.target.value)}
+                  maxLength={25}
+                  className="bg-surface text-white rounded-xl p-3 mb-4 outline-none focus:ring-2 focus:ring-[#c70060]"
+                />
+                <label className="text-xs font-bold text-textMuted mb-2 tracking-wider">ПАРОЛЬ</label>
+                <div className="relative mb-6">
+                  <input
+                    ref={passwordInputRef}
+                    type={showPassword ? 'text' : 'password'}
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    maxLength={25}
+                    onKeyDown={e => e.key === 'Enter' && handleAuth()}
+                    className="w-full bg-surface text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-[#c70060] pr-10"
+                  />
+                  <button
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-3 text-textMuted hover:text-white transition-colors"
+                  >
+                    {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                  </button>
+                </div>
+                {error && <p className="text-danger text-sm mb-4 text-center font-medium">{error}</p>}
+                <button onClick={handleAuth} disabled={isLoading} className="bg-[#c70060] text-white font-bold py-3 rounded-xl disabled:opacity-50 hover:opacity-90 transition-opacity">{isLoading ? 'ЗАГРУЗКА...' : 'ПРОДОЛЖИТЬ'}</button>
+              </div>
+            )}
+            {authStep === 'confirm' && (
+              <div className="bg-panelBg p-8 rounded-3xl w-[400px] text-center shadow-2xl">
+                <h2 className="text-2xl font-bold mb-4 text-white">Аккаунт не найден</h2>
+                <p className="text-textMuted mb-8">Создать новый профиль с таким логином?</p>
+                <div className="flex gap-4">
+                  <button onClick={() => setAuthStep('login')} className="flex-1 bg-surface text-white py-3 rounded-xl font-bold hover:bg-surfaceHover transition-colors">Нет</button>
+                  <button onClick={() => { setAuthStep('setup'); setDisplayName(login); }} className="flex-1 bg-[#c70060] text-white py-3 rounded-xl font-bold hover:opacity-90 transition-opacity">Да</button>
+                </div>
+              </div>
+            )}
+            {authStep === 'setup' && (
+              <div className="bg-panelBg p-10 rounded-3xl w-[400px] flex flex-col shadow-2xl">
+                <h1 className="text-2xl font-bold text-center mb-2 text-white">Создать профиль</h1>
+                <p className="text-sm text-textMuted text-center mb-8">Как вас будут видеть другие?</p>
+                <label className="w-[103px] h-[103px] rounded-full mx-auto mb-8 flex items-center justify-center cursor-pointer relative shadow-lg hover:opacity-80 transition-opacity">
+                  {avatarBase64 ? <AvatarImg src={avatarBase64} size={103} bgColor={avatarColor} /> : <div className="w-full h-full rounded-full flex items-center justify-center" style={{ backgroundColor: avatarColor }}><Camera size={32} className="text-white" /></div>}
+                  <input type="file" accept="image/*" className="hidden" onChange={e => onFileChange(e, 'setup')} />
+                </label>
+                <label className="text-xs font-bold text-textMuted mb-2 tracking-wider">ОТОБРАЖАЕМОЕ ИМЯ</label>
+                <input type="text" value={displayName} onChange={e => setDisplayName(e.target.value)} maxLength={20} placeholder="Максимум 20 символов" className="bg-surface text-white rounded-xl p-3 mb-6 outline-none focus:ring-2 focus:ring-[#c70060]" />
+                {error && <p className="text-danger text-sm mb-4 text-center font-medium">{error}</p>}
+                <button onClick={handleAuth} disabled={isLoading} className="bg-[#c70060] text-white font-bold py-3 rounded-xl disabled:opacity-50 hover:opacity-90 transition-opacity">{isLoading ? 'СОЗДАНИЕ...' : 'СОЗДАТЬ'}</button>
+              </div>
+            )}
+            {renderCropper()}
+          </div>
+        </div>
+      )}
+
+      {/* Loading overlays — рендерятся поверх основного UI, чтобы интерфейс монтировался заранее */}
+      {appLoading && (
+        <div className={`fixed inset-0 z-[100000] flex flex-col bg-appBg transition-opacity duration-[600ms] select-none ${loadingFadeOut ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+          <TitleBar />
+          <div className="flex-1 flex items-center justify-center">
+            <div className="flex flex-col items-center gap-6">
+              <h1 className="text-5xl font-black text-white tracking-widest animate-pulse">ZABOR</h1>
+              <div className="w-10 h-10 border-4 border-[#c70060] border-t-transparent rounded-full animate-spin" />
+              {showInitConnectionError && (
+                <p className="text-danger font-bold mt-2 animate-fade-in">
+                  Нет соединения с сервером
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!appLoading && !serverConnected && isAuth && (
+        <div className="fixed inset-0 z-[100000] flex flex-col bg-appBg select-none">
+          <TitleBar />
+          <div className="flex-1 flex items-center justify-center">
+            <div className="flex flex-col items-center gap-6">
+              <h1 className="text-5xl font-black text-white tracking-widest animate-pulse">ZABOR</h1>
+              <div className="w-10 h-10 border-4 border-[#c70060] border-t-transparent rounded-full animate-spin" />
+              {showErrorText && <p className="text-danger font-bold mt-4 animate-fade-in">Нет соединения с сервером. Переподключение...</p>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="flex flex-col h-screen w-screen bg-appBg text-textMain overflow-hidden relative select-none">
         <TitleBar />
         <div className="flex flex-1 overflow-hidden">
 
-          {contextMenu?.visible && (
-            <div
-              className="absolute z-[200] bg-surface border border-[#303035] rounded-xl shadow-xl py-2 w-48"
-              style={{ top: contextMenu.y, left: contextMenu.x }}
-              onClick={e => e.stopPropagation()}
-              onContextMenu={e => e.stopPropagation()}
-            >
-              {contextMenu.type === 'channel' ? (
-                <>
-                  {contextMenu.item.ownerId === store.currentUser?.id && (
-                    <button onClick={() => { setEditChannelId(contextMenu.item.id); setEditChannelName(contextMenu.item.name); store.setModal('channelEdit', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Edit2 size={16} /> Переименовать</button>
-                  )}
-                  <button onClick={() => { signalRService.quitAccessChannel(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><LeaveIcon size={16} /> Выйти из канала</button>
-                </>
-              ) : contextMenu.type === 'channelMember' ? (
-                <>
-                  <button onClick={() => { store.setSelectedProfileUser(contextMenu.item); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
-                  {store.selectedChannelForMembers?.ownerId === store.currentUser?.id && contextMenu.item.id !== store.currentUser?.id && (
-                    <button onClick={() => { store.setUserToKick(contextMenu.item); store.setModal('kickConfirm', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserX size={16} /> Исключить</button>
-                  )}
-                </>
-              ) : contextMenu.type === 'voiceUser' ? (
-                <>
-                  <button onClick={() => { setVolumeUser(contextMenu.item); setVolumeUserValue(store.userVolumes[contextMenu.item.id] ?? 100); store.setModal('userVolume', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Volume2 size={16} /> Громкость</button>
-                  <button onClick={() => { store.setSelectedProfileUser(contextMenu.item); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><Settings size={16} /> Профиль</button>
-                </>
-              ) : (
-                <>
-                  <button onClick={() => { store.setSelectedProfileUser(contextMenu.item); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
-                  <button onClick={() => { signalRService.removeFriend(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserMinus size={16} /> Удалить</button>
-                </>
-              )}
-            </div>
-          )}
+
 
           <div className="w-80 bg-panelBg flex flex-col border-r border-[#303035] relative shrink-0">
 
@@ -1287,8 +1280,8 @@ export default function App() {
                   {store.friendRequests.map(req => (
                     <div key={req.id} className="bg-surface p-4 rounded-xl">
                       <div className="flex items-center gap-3 mb-3">
-                        <div className="w-10 h-10 rounded-full shrink-0 overflow-hidden relative" style={{ backgroundColor: req.avatarColor }}>
-                          <AvatarImg src={req.avatarBase64} size={40} />
+                        <div className="w-[47px] h-[47px] shrink-0 relative">
+                          <AvatarImg src={req.avatarBase64} size={47} bgColor={req.avatarColor} />
                         </div>
                         <div className="flex-1 min-w-0">
                           <p className="text-white font-semibold text-sm truncate">{req.displayName}</p>
@@ -1325,7 +1318,7 @@ export default function App() {
 
             <div className="flex-1 overflow-y-auto p-4 pb-20">
               {activeTab === 'channels' && (
-                <div className="animate-fade-in">
+                <div>
                   <div className="flex justify-between items-center mb-4 px-2">
                     <span className="text-xs font-bold text-textMuted tracking-wider">ГОЛОСОВЫЕ КАНАЛЫ</span>
                     <button onClick={() => store.setModal('createChannel', true)} className="text-textMuted hover:text-white text-xl transition-colors">+</button>
@@ -1348,8 +1341,8 @@ export default function App() {
                         {channelUsers.length > 0 && (
                           <div className="flex items-center -space-x-2 px-8 mt-1.5 pointer-events-none">
                             {channelUsers.map(u => (
-                              <div key={u.id} className="w-6 h-6 rounded-full border-2 border-panelBg bg-surface overflow-hidden relative" title={u.displayName} style={{ backgroundColor: u.avatarColor }}>
-                                <AvatarImg src={u.avatarBase64} size={24} animate={false} />
+                              <div key={u.id} className="w-[31px] h-[31px] rounded-full border-2 border-panelBg relative shrink-0" title={u.displayName}>
+                                <AvatarImg src={u.avatarBase64} size={31} bgColor={u.avatarColor} animate={false} />
                               </div>
                             ))}
                           </div>
@@ -1360,18 +1353,18 @@ export default function App() {
                 </div>
               )}
               {activeTab === 'friends' && (
-                <div className="animate-fade-in">
+                <div>
                   <div className="flex justify-between items-center mb-4 px-2">
                     <span className="text-xs font-bold text-textMuted tracking-wider">ДРУЗЬЯ</span>
                     <button onClick={() => store.setModal('addFriend', true)} className="text-textMuted hover:text-white text-xl transition-colors">+</button>
                   </div>
                   {store.friends.map(f => (
                     <div key={f.id} onContextMenu={e => handleContextMenu(e, 'friend', f)}
-                      onClick={() => { store.setSelectedProfileUser(f); setEditProfileDisplayName(f.displayName); store.setModal('profile', true); signalRService.viewProfile(f.id); }}
+                      onClick={() => { store.setSelectedProfileUser(f, 'friends'); setEditProfileDisplayName(f.displayName); store.setModal('profile', true); signalRService.viewProfile(f.id); }}
                       className="px-3 py-2 rounded-xl mb-1 cursor-pointer hover:bg-surfaceHover flex items-center gap-3 transition-colors">
-                      <div className="relative w-10 h-10 shrink-0">
-                        <div className="w-full h-full rounded-full overflow-hidden" style={{ backgroundColor: f.avatarColor }}>
-                          <AvatarImg src={f.avatarBase64} size={40} />
+                      <div className="relative w-[47px] h-[47px] shrink-0">
+                        <div className="w-full h-full relative">
+                          <AvatarImg src={f.avatarBase64} size={47} bgColor={f.avatarColor} />
                         </div>
                         <div className={`absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full border-[3px] border-panelBg ${f.isOnline ? 'bg-success' : 'bg-gray-500'}`} />
                       </div>
@@ -1396,11 +1389,9 @@ export default function App() {
             </div>
 
             <div className="h-[75px] bg-[#09090B] rounded-2xl mx-4 mb-4 flex items-center px-4 shrink-0 shadow-lg">
-              <div onClick={() => { store.setSelectedProfileUser(store.currentUser); setEditProfileDisplayName(store.currentUser!.displayName); setEditProfileAvatarBase64(null); store.setModal('profile', true); }}
-                className="relative w-11 h-11 rounded-full mr-3 cursor-pointer shrink-0 hover:opacity-80 transition-opacity" style={{ backgroundColor: store.currentUser?.avatarColor }}>
-                <div className="w-full h-full rounded-full overflow-hidden relative">
-                  <AvatarImg src={store.currentUser?.avatarBase64} size={44} />
-                </div>
+              <div onClick={() => { store.setSelectedProfileUser(store.currentUser, 'none'); setEditProfileDisplayName(store.currentUser!.displayName); setEditProfileAvatarBase64(null); store.setModal('profile', true); }}
+                className="relative w-[51px] h-[51px] mr-3 cursor-pointer shrink-0 hover:opacity-80 transition-opacity">
+                <AvatarImg src={store.currentUser?.avatarBase64} size={51} bgColor={store.currentUser?.avatarColor} />
                 <div className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-[3px] border-[#09090B] ${serverConnected ? 'bg-success' : 'bg-gray-500'}`} />
               </div>
               <div className="flex-1 min-w-0 flex flex-col justify-center">
@@ -1464,9 +1455,7 @@ export default function App() {
                         marginBottom: '16px'
                       }}
                     >
-                      <div className="w-full h-full rounded-full overflow-hidden relative transform-gpu">
-                        <AvatarImg src={store.currentCallUser.avatarBase64} size={cardSize.avatarSize} />
-                      </div>
+                      <AvatarImg src={store.currentCallUser.avatarBase64} size={cardSize.avatarSize} bgColor="transparent" />
                     </div>
 
                     {store.callStatus === 'calling' && (
@@ -1515,14 +1504,14 @@ export default function App() {
               <div className="flex-1 flex flex-col items-center justify-center px-16">
                 <div className="max-w-lg text-center">
                   {joke ? (
-                    <>
+                    <div className="animate-fade-in">
                       <p className="text-xs text-white/20 mb-3 font-semibold tracking-wider">ШУТЕЙКА:</p>
                       <p className="text-lg text-white/50 font-medium leading-relaxed whitespace-pre-line">
                         {joke}
                       </p>
-                    </>
+                    </div>
                   ) : (
-                    <div className="w-6 h-6 border-2 border-white/10 border-t-white/30 rounded-full animate-spin mx-auto" />
+                    <div className="h-6" /> // Пустое пространство вместо спиннера
                   )}
                 </div>
               </div>
@@ -1537,9 +1526,7 @@ export default function App() {
                         ${user.isSpeaking ? 'shadow-[inset_0_0_0_3px_#3BA55C,inset_0_0_0_5px_#181818,0_10px_15px_-3px_rgba(0,0,0,0.5)] z-10' : 'shadow-xl'}`}
                       style={{ backgroundColor: user.avatarColor, width: `${cardSize.w}px`, height: `${cardSize.h}px`, borderRadius: '24px' }}>
                       <div className="relative" style={{ width: `${cardSize.avatarSize}px`, height: `${cardSize.avatarSize}px`, marginBottom: '16px' }}>
-                        <div className="w-full h-full rounded-full overflow-hidden relative transform-gpu">
-                          <AvatarImg src={user.avatarBase64} size={cardSize.avatarSize} />
-                        </div>
+                        <AvatarImg src={user.avatarBase64} size={cardSize.avatarSize} bgColor="transparent" />
                       </div>
                       <div className={`absolute bottom-4 left-1/2 -translate-x-1/2 transition-all duration-300 ${isIdle ? 'translate-y-8 opacity-0 pointer-events-none' : 'translate-y-0 opacity-100'}`}>
                         <div className="bg-[#09090B]/80 backdrop-blur-md border border-[#303035]/50 px-4 py-1.5 rounded-full flex items-center gap-2 shadow-lg whitespace-nowrap" style={{ maxWidth: `${cardSize.w - 40}px` }}>
@@ -1808,7 +1795,7 @@ export default function App() {
           <div className="max-h-[300px] overflow-y-auto space-y-2">
             {store.friends.filter(f => f.displayName.toLowerCase().includes(inviteFriendSearch.toLowerCase())).map(f => (
               <div key={f.id} className="flex items-center gap-3 p-3 bg-surface rounded-xl hover:bg-surfaceHover transition-colors">
-                <div className="w-10 h-10 rounded-full shrink-0 overflow-hidden relative" style={{ backgroundColor: f.avatarColor }}><AvatarImg src={f.avatarBase64} size={40} /></div>
+                <div className="w-[47px] h-[47px] shrink-0 relative"><AvatarImg src={f.avatarBase64} size={47} bgColor={f.avatarColor} /></div>
                 <span className="flex-1 font-semibold text-white truncate">{f.displayName}</span>
                 <button
                   onClick={() => handleInviteToChannel(f.id)}
@@ -1845,10 +1832,8 @@ export default function App() {
             )}
             {store.channelMembers.map(m => (
               <div key={m.id} onContextMenu={e => handleContextMenu(e, 'channelMember', m)} className="flex items-center gap-3 p-3 bg-surface rounded-xl hover:bg-surfaceHover transition-colors cursor-pointer">
-                <div className="relative w-10 h-10 shrink-0">
-                  <div className="w-full h-full rounded-full overflow-hidden" style={{ backgroundColor: m.avatarColor }}>
-                    <AvatarImg src={m.avatarBase64} size={40} />
-                  </div>
+                <div className="relative w-[47px] h-[47px] shrink-0">
+                  <AvatarImg src={m.avatarBase64} size={47} bgColor={m.avatarColor} />
                   <div className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-[3px] border-surface ${m.isOnline ? 'bg-success' : 'bg-gray-500'}`} />
                 </div>
                 <div className="flex-1 min-w-0">
@@ -1904,11 +1889,8 @@ export default function App() {
 
       {renderModal('incomingCall',
         <div className="bg-panelBg p-8 rounded-3xl w-[350px] text-center shadow-2xl">
-          <div
-            className="w-20 h-20 rounded-full mx-auto mb-4 overflow-hidden"
-            style={{ backgroundColor: store.incomingCall?.callerAvatarColor }}
-          >
-            <AvatarImg src={store.incomingCall?.callerAvatarBase64 || null} size={80} />
+          <div className="w-[87px] h-[87px] mx-auto mb-4 relative">
+            <AvatarImg src={store.incomingCall?.callerAvatarBase64 || null} size={87} bgColor={store.incomingCall?.callerAvatarColor} />
           </div>
           <h2 className="text-xl font-bold mb-2 text-white">{store.incomingCall?.callerName}</h2>
           <p className="text-textMuted mb-8 font-medium">Входящий звонок...</p>
@@ -1956,13 +1938,14 @@ export default function App() {
               </button>
             </div>
 
-            <div className="px-6 pb-8 relative bg-panelBg">
-              <div className="absolute -top-12 left-6 w-24 h-24">
-                <div
-                  className="w-full h-full rounded-full border-[6px] border-panelBg overflow-hidden"
-                  style={{ backgroundColor: editProfileAvatarBase64 ? editProfileAvatarColor : store.selectedProfileUser?.avatarColor }}
-                >
-                  <AvatarImg src={editProfileAvatarBase64 || store.selectedProfileUser?.avatarBase64} size={84} />
+            <div className="px-6 pb-8 relative">
+              <div className="absolute -top-12 left-6 w-[103px] h-[103px]">
+                <div className="w-full h-full rounded-full border-[6px] border-panelBg bg-panelBg relative">
+                  <AvatarImg
+                    src={editProfileAvatarBase64 || store.selectedProfileUser?.avatarBase64}
+                    size={91}
+                    bgColor={editProfileAvatarBase64 ? editProfileAvatarColor : store.selectedProfileUser?.avatarColor}
+                  />
                 </div>
                 <div className={`absolute bottom-0.5 right-0.5 w-6 h-6 rounded-full border-[4px] border-panelBg ${store.selectedProfileUser?.id === store.currentUser?.id
                   ? (serverConnected ? 'bg-success' : 'bg-gray-500')
@@ -2019,30 +2002,72 @@ export default function App() {
                 </div>
               ) : (
                 <div className="flex flex-col gap-3">
-                  <button
-                    onClick={async () => {
-                      if (store.selectedProfileUser) {
-                        const ok = await signalRService.startCall(store.selectedProfileUser.id);
-                        if (!ok) {
-                          setOfflineToast('Пользователь не в сети');
-                          setTimeout(() => setOfflineToast(null), 3000);
-                        }
-                      }
-                      store.closeProfileOnly();
-                    }}
-                    className="w-full bg-success text-white py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-green-600 transition-colors"
-                  >
-                    <Phone size={18} /> Позвонить
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (store.selectedProfileUser) signalRService.removeFriend(store.selectedProfileUser.id);
-                      store.closeProfileOnly();
-                    }}
-                    className="w-full bg-surface text-danger py-3.5 rounded-xl font-bold hover:bg-[#2B2D31] transition-colors"
-                  >
-                    Удалить из друзей
-                  </button>
+                  {store.profileSource === 'channelMembers' ? (
+                    <>
+                      <button
+                        onClick={() => {
+                          if (store.selectedProfileUser) {
+                            if (!store.selectedProfileUser.isOnline) {
+                              setOfflineToast('Пользователь не в сети');
+                              setTimeout(() => setOfflineToast(null), 3000);
+                            } else if (store.selectedChannelForMembers) {
+                              signalRService.sendChannelInvite(
+                                store.selectedProfileUser.id,
+                                store.selectedChannelForMembers.id,
+                                store.selectedChannelForMembers.name
+                              );
+                              setSentInvites(prev => new Set(prev).add(store.selectedProfileUser!.id));
+                            }
+                          }
+                          store.closeProfileOnly();
+                        }}
+                        className="w-full bg-[#c70060] text-white py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 hover:opacity-90 transition-opacity"
+                      >
+                        <UserPlus size={18} /> Позвать
+                      </button>
+                      {store.selectedChannelForMembers?.ownerId === store.currentUser?.id && (
+                        <button
+                          onClick={() => {
+                            if (store.selectedProfileUser) {
+                              store.setUserToKick(store.selectedProfileUser);
+                              store.setModal('kickConfirm', true);
+                            }
+                            store.closeProfileOnly();
+                          }}
+                          className="w-full bg-surface text-danger py-3.5 rounded-xl font-bold hover:bg-[#2B2D31] transition-colors"
+                        >
+                          Исключить из канала
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        onClick={async () => {
+                          if (store.selectedProfileUser) {
+                            const ok = await signalRService.startCall(store.selectedProfileUser.id);
+                            if (!ok) {
+                              setOfflineToast('Пользователь не в сети');
+                              setTimeout(() => setOfflineToast(null), 3000);
+                            }
+                          }
+                          store.closeProfileOnly();
+                        }}
+                        className="w-full bg-success text-white py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-green-600 transition-colors"
+                      >
+                        <Phone size={18} /> Позвонить
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (store.selectedProfileUser) signalRService.removeFriend(store.selectedProfileUser.id);
+                          store.closeProfileOnly();
+                        }}
+                        className="w-full bg-surface text-danger py-3.5 rounded-xl font-bold hover:bg-[#2B2D31] transition-colors"
+                      >
+                        Удалить из друзей
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -2210,11 +2235,8 @@ export default function App() {
                 )
                 .map(u => (
                   <div key={u.id} className="bg-surface rounded-xl p-4 flex items-center gap-4">
-                    <div
-                      className="w-10 h-10 rounded-full overflow-hidden shrink-0"
-                      style={{ backgroundColor: u.avatarColor }}
-                    >
-                      <AvatarImg src={u.avatarBase64} size={40} />
+                    <div className="w-[47px] h-[47px] shrink-0 relative">
+                      <AvatarImg src={u.avatarBase64} size={47} bgColor={u.avatarColor} />
                     </div>
 
                     <div className="flex-1 min-w-0">
@@ -2312,11 +2334,8 @@ export default function App() {
                 {/* ПРОФИЛЬ */}
                 <section className="bg-surface rounded-2xl p-5">
                   <div className="flex items-center gap-4 mb-5">
-                    <div
-                      className="w-16 h-16 rounded-full overflow-hidden shrink-0"
-                      style={{ backgroundColor: adminSelectedUser.avatarColor }}
-                    >
-                      <AvatarImg src={adminSelectedUser.avatarBase64} size={64} />
+                    <div className="w-[71px] h-[71px] shrink-0 relative">
+                      <AvatarImg src={adminSelectedUser.avatarBase64} size={71} bgColor={adminSelectedUser.avatarColor} />
                     </div>
                     <div className="min-w-0">
                       <p className="text-white font-bold text-lg truncate">{adminSelectedUser.displayName}</p>
@@ -2648,6 +2667,55 @@ export default function App() {
           </div>
         );
       })()}
+
+      {contextMenu?.visible && (
+        <div
+          className="fixed z-[200001] bg-surface border border-[#303035] rounded-xl shadow-xl py-2 w-48"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          onClick={e => e.stopPropagation()}
+          onContextMenu={e => e.stopPropagation()}
+        >
+          {contextMenu.type === 'channel' ? (
+            <>
+              {contextMenu.item.ownerId === store.currentUser?.id && (
+                <button onClick={() => { setEditChannelId(contextMenu.item.id); setEditChannelName(contextMenu.item.name); store.setModal('channelEdit', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Edit2 size={16} /> Переименовать</button>
+              )}
+              <button onClick={() => { signalRService.quitAccessChannel(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><LeaveIcon size={16} /> Выйти из канала</button>
+            </>
+          ) : contextMenu.type === 'channelMember' ? (
+            <>
+              <button onClick={() => { store.setSelectedProfileUser(contextMenu.item, 'channelMembers'); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
+              {contextMenu.item.id !== store.currentUser?.id && (
+                <button onClick={() => {
+                  if (!contextMenu.item.isOnline) {
+                    setOfflineToast('Пользователь не в сети');
+                    setTimeout(() => setOfflineToast(null), 3000);
+                  } else if (store.selectedChannelForMembers) {
+                    signalRService.sendChannelInvite(contextMenu.item.id, store.selectedChannelForMembers.id, store.selectedChannelForMembers.name);
+                    setSentInvites(prev => new Set(prev).add(contextMenu.item.id));
+                  }
+                  setContextMenu(null);
+                }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1">
+                  <UserPlus size={16} /> Позвать в канал
+                </button>
+              )}
+              {store.selectedChannelForMembers?.ownerId === store.currentUser?.id && contextMenu.item.id !== store.currentUser?.id && (
+                <button onClick={() => { store.setUserToKick(contextMenu.item); store.setModal('kickConfirm', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserX size={16} /> Исключить</button>
+              )}
+            </>
+          ) : contextMenu.type === 'voiceUser' ? (
+            <>
+              <button onClick={() => { setVolumeUser(contextMenu.item); setVolumeUserValue(store.userVolumes[contextMenu.item.id] ?? 100); store.setModal('userVolume', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Volume2 size={16} /> Громкость</button>
+              <button onClick={() => { store.setSelectedProfileUser(contextMenu.item, 'voiceUsers'); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><Settings size={16} /> Профиль</button>
+            </>
+          ) : (
+            <>
+              <button onClick={() => { store.setSelectedProfileUser(contextMenu.item, 'friends'); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
+              <button onClick={() => { signalRService.removeFriend(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserMinus size={16} /> Удалить</button>
+            </>
+          )}
+        </div>
+      )}
 
       {renderCropper()}
     </>
