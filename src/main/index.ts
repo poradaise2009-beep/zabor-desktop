@@ -3,9 +3,12 @@ import { join } from 'path';
 import { existsSync, rmSync, readFileSync, writeFileSync, promises as fsPromises } from 'fs';
 
 // ── GPU stability fixes ─────────────────────────────────────────
-app.commandLine.appendSwitch('disable-gpu-compositing');
-app.commandLine.appendSwitch('force-color-profile', 'srgb');
-app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+if (app) {
+  app.commandLine.appendSwitch('disable-gpu-compositing');
+  app.commandLine.appendSwitch('force-color-profile', 'srgb');
+  app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+  app.commandLine.appendSwitch('ignore-certificate-errors');
+}
 
 const isDev = !app.isPackaged;
 

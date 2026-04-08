@@ -1,37 +1,68 @@
 import { unpackGif, getStaticFrameSync } from '../../utils/avatar';
 
-export function AvatarImg({ src, size, animate = true, className = '' }: {
+/**
+ * AvatarImg component that uses physical oversizing to solve edge artifacts.
+ * When an image is present, it is rendered slightly larger than the container
+ * to ensure its pixels cover the anti-aliased circular clip boundary.
+ */
+export function AvatarImg({ src, size, bgColor, animate = true, className = '' }: {
   src: string | null | undefined;
   size: number;
+  bgColor?: string;
   animate?: boolean;
   className?: string;
 }) {
-  if (!src) return null;
+  const containerStyle: React.CSSProperties = {
+    WebkitMaskImage: 'radial-gradient(circle, white calc(100% - 0.5px), transparent 100%)',
+    maskImage: 'radial-gradient(circle, white calc(100% - 0.5px), transparent 100%)',
+    backgroundColor: !src ? bgColor : 'transparent',
+    WebkitBackfaceVisibility: 'hidden',
+    WebkitTransform: 'translate3d(0, 0, 0)',
+  };
 
-  const packed = unpackGif(src);
+  const renderContent = () => {
+    if (!src) return null;
 
-  if (packed && animate) {
+    const packed = unpackGif(src);
+
+    // Animated GIF
+    if (packed && animate) {
+      return (
+        <div className="absolute inset-0 pointer-events-none">
+          <img
+            src={packed.g}
+            draggable={false}
+            className="absolute left-1/2 top-1/2"
+            style={{
+              transform: `translate(calc(-50% + ${packed.x * (size / 200)}px), calc(-50% + ${packed.y * (size / 200)}px)) scale(${packed.s})`,
+              maxWidth: '100%',
+              maxHeight: '100%',
+              objectFit: 'contain',
+            }}
+          />
+        </div>
+      );
+    }
+
+    // Static packed GIF or regular image
+    const staticSrc = (packed && !animate) ? getStaticFrameSync(src) : src;
+    if (!staticSrc) return null;
+
     return (
-      <div className={`w-full h-full overflow-hidden relative ${className}`}>
-        <img
-          src={packed.g}
-          draggable={false}
-          className="absolute left-1/2 top-1/2 pointer-events-none"
-          style={{
-            transform: `translate(calc(-50% + ${packed.x * (size / 200)}px), calc(-50% + ${packed.y * (size / 200)}px)) scale(${packed.s})`,
-            maxWidth: '100%',
-            maxHeight: '100%',
-            objectFit: 'contain',
-          }}
-        />
-      </div>
+      <img
+        src={staticSrc}
+        className="absolute inset-0 w-full h-full object-cover"
+        draggable={false}
+      />
     );
-  }
+  };
 
-  if (packed && !animate) {
-    const staticSrc = getStaticFrameSync(src);
-    return staticSrc ? <img src={staticSrc} className={`w-full h-full object-cover ${className}`} /> : null;
-  }
-
-  return <img src={src} className={`w-full h-full object-cover ${className}`} />;
+  return (
+    <div 
+      className={`w-full h-full rounded-full overflow-hidden relative shrink-0 ${className}`}
+      style={containerStyle}
+    >
+      {renderContent()}
+    </div>
+  );
 }
