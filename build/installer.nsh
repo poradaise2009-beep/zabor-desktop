@@ -35,7 +35,22 @@
   Goto _zabor_run_uninstall
 
   _zabor_run_uninstall:
-  ; Тихое удаление без диалогов
+  ; Спрашиваем пользователя: хочет ли он сохранить свои данные при обновлении
+  Var /GLOBAL KeepAppDataOnUpdate
+  MessageBox MB_YESNO|MB_ICONQUESTION "Обнаружена предыдущая версия.$\nСохранить ваши локальные данные?$\n$\nНажмите 'Да', чтобы оставить.$\nНажмите 'Нет', чтобы полностью удалить конфигурацию." IDYES _keep_data IDNO _delete_data
+  
+  _keep_data:
+  StrCpy $KeepAppDataOnUpdate "1"
+  StrCpy $R0 "$R0 /S --keep-app-data"
+  Goto _run_now
+  
+  _delete_data:
+  StrCpy $KeepAppDataOnUpdate "0"
+  StrCpy $R0 "$R0 /S --delete-app-data"
+  Goto _run_now
+
+  _run_now:
+  ; Тихое удаление
   ExecWait $R0 $R1
   StrCmp $R1 "" 0 _zabor_wait
   nsExec::ExecToLog 'cmd /c $R0'
@@ -49,16 +64,47 @@
 !macroend
 
 !macro customUnInstall
-  RMDir /r "$APPDATA\zabor-desktop"
-  RMDir /r "$LOCALAPPDATA\zabor-desktop"
-  RMDir /r "$APPDATA\zabor"
-  RMDir /r "$APPDATA\ZABOR"
-  RMDir /r "$APPDATA\${PRODUCT_NAME}"
-  RMDir /r "$LOCALAPPDATA\zabor"
-  RMDir /r "$LOCALAPPDATA\ZABOR"
-  RMDir /r "$LOCALAPPDATA\${PRODUCT_NAME}"
-  RMDir /r "$LOCALAPPDATA\Temp\zabor*"
-  RMDir /r "$LOCALAPPDATA\Temp\${PRODUCT_NAME}*"
+  Var /GLOBAL shouldDeleteAppData
+  StrCpy $shouldDeleteAppData "0"
+
+  ; Проверяем консольные флаги, переданные инсталлятором (во время установки новой версии)
+  ${GetParameters} $R0
+  ${GetOptions} $R0 "--delete-app-data" $R1
+  ${IfNot} ${Errors}
+    StrCpy $shouldDeleteAppData "1"
+  ${Else}
+    ${GetOptions} $R0 "--keep-app-data" $R1
+    ${IfNot} ${Errors}
+      StrCpy $shouldDeleteAppData "0"
+    ${Else}
+      ; Запущено стандартное удаление пользователем
+      ${IfNot} ${Silent}
+        MessageBox MB_YESNO|MB_ICONQUESTION "Удалить локальные данные пользователя?" IDYES _delete_un IDNO _keep_un
+        _delete_un:
+          StrCpy $shouldDeleteAppData "1"
+          Goto _continue_un
+        _keep_un:
+          StrCpy $shouldDeleteAppData "0"
+          Goto _continue_un
+        _continue_un:
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+
+  ${If} $shouldDeleteAppData == "1"
+    SetShellVarContext current
+    RMDir /r "$APPDATA\zabor-desktop"
+    RMDir /r "$LOCALAPPDATA\zabor-desktop"
+    RMDir /r "$APPDATA\zabor"
+    RMDir /r "$APPDATA\ZABOR"
+    RMDir /r "$APPDATA\${PRODUCT_NAME}"
+    RMDir /r "$LOCALAPPDATA\zabor"
+    RMDir /r "$LOCALAPPDATA\ZABOR"
+    RMDir /r "$LOCALAPPDATA\${PRODUCT_NAME}"
+    RMDir /r "$LOCALAPPDATA\Temp\zabor*"
+    RMDir /r "$LOCALAPPDATA\Temp\${PRODUCT_NAME}*"
+    SetShellVarContext all
+  ${EndIf}
 
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ZABOR"

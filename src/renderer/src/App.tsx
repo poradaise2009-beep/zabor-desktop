@@ -245,64 +245,68 @@ export default function App() {
       // 3. Подключаемся к серверу (с таймером на текст ошибки)
       setShowInitConnectionError(false);
       const errorTimer = setTimeout(() => setShowInitConnectionError(true), 10000);
-      const connected = await signalRService.connect();
+      
+      let connected = await signalRService.connect();
+      while (!connected) {
+         await new Promise(r => setTimeout(r, 2000));
+         connected = await signalRService.connect();
+      }
       clearTimeout(errorTimer);
 
-      if (connected) {
-        setShowErrorText(false);
-        setShowInitConnectionError(false);
+      setShowErrorText(false);
+      setShowInitConnectionError(false);
 
-        // 4. Автологин
-        const loginSuccess = await signalRService.login(
-          cachedCredentials.login,
-          cachedCredentials.password
-        );
+      // 4. Автологин
+      const loginSuccess = await signalRService.login(
+        cachedCredentials.login,
+        cachedCredentials.password
+      );
 
-        if (loginSuccess) {
-          const serverUser = useAppStore.getState().currentUser;
-          if (cachedCredentials.userId && serverUser && cachedCredentials.userId !== serverUser.id) {
-            resetToDefaults();
-          }
-
-          setIsAuth(true);
-          signalRService.isCurrentUserAdmin().then(setIsAdmin).catch(() => setIsAdmin(false));
-
-          const serverSettings = await signalRService.loadAudioSettings();
-          if (serverSettings) applySettings(serverSettings);
-
-          try {
-            const jokeText = await signalRService.getJokeOfTheDay();
-            setJoke(jokeText || 'Сегодня сервер шутит молча.');
-          } catch {
-            setJoke('Сегодня сервер шутит молча.');
-          }
-
-          saveLocalCache();
-          setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
-
-        } else {
-          // Пароль изменён или аккаунт удалён
-          await window.windowControls.clearSession();
+      if (loginSuccess) {
+        const serverUser = useAppStore.getState().currentUser;
+        if (cachedCredentials.userId && serverUser && cachedCredentials.userId !== serverUser.id) {
           resetToDefaults();
-          store.setCurrentUser(null);
-          store.setChannels([]);
-          store.setFriends([]);
-          store.setFriendRequests([]);
-          store.setChannelInvites([]);
-          credentialsRef.current = { login: '', password: '' };
-          setLogin('');
-          setPassword('');
-          setIsAuth(false);
         }
-      } else {
-        // Офлайн, но есть кэш — даём таймеру showInitConnectionError самому показать ошибку
-        setIsAuth(true);
-      }
 
-      // 5. Показываем главный экран
-      initCompleteRef.current = true;
-      setLoadingFadeOut(true);
-      setTimeout(() => setAppLoading(false), 600);
+        const [isAdminChecked, serverSettings, jokeText] = await Promise.all([
+          signalRService.isCurrentUserAdmin().catch(() => false),
+          signalRService.loadAudioSettings(),
+          signalRService.getJokeOfTheDay().catch(() => 'Сегодня сервер шутит молча.')
+        ]);
+
+        if (serverSettings) applySettings(serverSettings);
+        setIsAdmin(isAdminChecked);
+        setJoke(jokeText || 'Сегодня сервер шутит молча.');
+        setIsAuth(true);
+
+        saveLocalCache();
+        setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
+
+        initCompleteRef.current = true;
+        setTimeout(() => {
+          setLoadingFadeOut(true);
+          setTimeout(() => setAppLoading(false), 600);
+        }, 700);
+      } else {
+        // Пароль изменён или аккаунт удалён
+        await window.windowControls.clearSession();
+        resetToDefaults();
+        store.setCurrentUser(null);
+        store.setChannels([]);
+        store.setFriends([]);
+        store.setFriendRequests([]);
+        store.setChannelInvites([]);
+        credentialsRef.current = { login: '', password: '' };
+        setLogin('');
+        setPassword('');
+        setIsAuth(false);
+        
+        initCompleteRef.current = true;
+        setTimeout(() => {
+          setLoadingFadeOut(true);
+          setTimeout(() => setAppLoading(false), 600);
+        }, 700);
+      }
     };
 
     init();
@@ -575,19 +579,17 @@ export default function App() {
 
           const success = await signalRService.login(login, password);
           if (success) {
-            setIsAuth(true);
-            signalRService.isCurrentUserAdmin().then(setIsAdmin).catch(() => setIsAdmin(false));
-            credentialsRef.current = { login, password };
+            const [isAdminChecked, serverSettings, jokeText] = await Promise.all([
+              signalRService.isCurrentUserAdmin().catch(() => false),
+              signalRService.loadAudioSettings(),
+              signalRService.getJokeOfTheDay().catch(() => 'Сегодня сервер шутит молча.')
+            ]);
 
-            const serverSettings = await signalRService.loadAudioSettings();
             if (serverSettings) applySettings(serverSettings);
-
-            try {
-              const jokeText = await signalRService.getJokeOfTheDay();
-              setJoke(jokeText || 'Сегодня сервер шутит молча.');
-            } catch {
-              setJoke('Сегодня сервер шутит молча.');
-            }
+            setIsAdmin(isAdminChecked);
+            setJoke(jokeText || 'Сегодня сервер шутит молча.');
+            setIsAuth(true);
+            credentialsRef.current = { login, password };
 
             saveLocalCache();
             setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
@@ -606,16 +608,15 @@ export default function App() {
           login, password, displayName.trim(), avatarBase64, avatarColor
         );
         if (success) {
-          setIsAuth(true);
-          signalRService.isCurrentUserAdmin().then(setIsAdmin).catch(() => setIsAdmin(false));
-          credentialsRef.current = { login, password };
+          const [isAdminChecked, jokeText] = await Promise.all([
+            signalRService.isCurrentUserAdmin().catch(() => false),
+            signalRService.getJokeOfTheDay().catch(() => 'Сегодня сервер шутит молча.')
+          ]);
 
-          try {
-            const jokeText = await signalRService.getJokeOfTheDay();
-            setJoke(jokeText || 'Сегодня сервер шутит молча.');
-          } catch {
-            setJoke('Сегодня сервер шутит молча.');
-          }
+          setIsAdmin(isAdminChecked);
+          setJoke(jokeText || 'Сегодня сервер шутит молча.');
+          setIsAuth(true);
+          credentialsRef.current = { login, password };
 
           saveLocalCache();
           setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
@@ -760,8 +761,8 @@ export default function App() {
     if (store.currentChannelId || store.currentCallUser) {
       store.setPendingChannelSwitch(channelId); store.setModal('channelSwitch', true); return;
     }
-    const success = await signalRService.joinChannel(channelId);
-    if (!success) store.setModal('channelFull', true);
+    const status = await signalRService.joinChannel(channelId);
+    if (status === 'full') store.setModal('channelFull', true);
   }, [store.currentChannelId, store.currentCallUser]);
 
   const confirmChannelSwitch = useCallback(async () => {
@@ -770,8 +771,8 @@ export default function App() {
     store.setModal('channelSwitch', false); store.setPendingChannelSwitch(null);
     if (store.currentCallUser) { await signalRService.endCall(); }
     else { webrtc.stopLocalStream(); store.setCurrentChannelId(null); store.setVoiceUsers([]); await signalRService.leaveChannel(); }
-    const success = await signalRService.joinChannel(targetId);
-    if (!success) store.setModal('channelFull', true);
+    const status = await signalRService.joinChannel(targetId);
+    if (status === 'full') store.setModal('channelFull', true);
   }, [store.pendingChannelSwitch, store.currentCallUser]);
 
   const handleAddFriend = useCallback(async () => {
@@ -790,8 +791,8 @@ export default function App() {
     if (store.currentChannelId || store.currentCallUser) {
       store.setPendingChannelSwitch(channelId); store.setModal('channelSwitch', true); return;
     }
-    const success = await signalRService.joinChannel(channelId);
-    if (!success) store.setModal('channelFull', true);
+    const status = await signalRService.joinChannel(channelId);
+    if (status === 'full') store.setModal('channelFull', true);
   }, [store.channelInvites, store.currentChannelId, store.currentCallUser]);
 
   const handleDeclineChannelInvite = useCallback((channelId: string) => {
@@ -806,11 +807,24 @@ export default function App() {
   }, [store.selectedChannelForInvite]);
 
   const openChannelMembers = useCallback(async (ch: VoiceChannel) => {
-    store.setSelectedChannelForMembers(ch);
-    store.setChannelMembers([]);
-    store.setModal('channelMembers', true);
-    const members = await signalRService.getChannelMembersList(ch.id);
-    store.setChannelMembers(members);
+    const currentStore = useAppStore.getState();
+    currentStore.setSelectedChannelForMembers(ch);
+    
+    // Instant cache-hit (fallback to empty array)
+    const cached = currentStore.channelMembersCache?.[ch.id] || [];
+    currentStore.setChannelMembers(cached);
+    currentStore.setModal('channelMembers', true);
+
+    try {
+        // Silent background sync
+        const members = await signalRService.getChannelMembersList(ch.id);
+        if (members && Array.isArray(members)) {
+            useAppStore.getState().setChannelMembers(members);
+            useAppStore.getState().setChannelMembersCache(ch.id, members);
+        }
+    } catch (e) {
+        console.error("Failed to sync channel members", e);
+    }
   }, []);
 
   const handleKickConfirm = useCallback(async () => {
@@ -1039,7 +1053,7 @@ export default function App() {
     if (!store.modals[key]) return null;
 
     return (
-      <div className="absolute inset-0 z-[150] bg-black/80 flex items-center justify-center p-4">
+      <div className="fixed inset-0 z-[150] bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
         {content}
       </div>
     );
@@ -1768,7 +1782,7 @@ export default function App() {
       )}
 
       {store.pendingChannelSwitch && (
-        <div className="fixed inset-0 z-[999] bg-black/80 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[999] bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-panelBg p-8 rounded-3xl w-[400px] text-center shadow-2xl">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-bold text-white">Сменить канал?</h2>
@@ -1919,7 +1933,7 @@ export default function App() {
       )}
 
       {store.modals.profile && store.selectedProfileUser && (
-        <div className="fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[9999] bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-panelBg w-[350px] rounded-3xl overflow-hidden shadow-2xl relative">
             <div
               className="h-28 w-full relative"

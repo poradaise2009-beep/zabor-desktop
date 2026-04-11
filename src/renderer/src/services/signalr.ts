@@ -171,7 +171,7 @@ private stopSfx(src: string) {
       this.isReconnecting = false;
       if (this.reconnectGraceTimer) { clearTimeout(this.reconnectGraceTimer); this.reconnectGraceTimer = null; }
       this.startPingMeasurement();
-      this.notifyConnectionUpdate(true);
+
       const store = useAppStore.getState();
       if (store.currentUser) {
         try {
@@ -188,6 +188,8 @@ private stopSfx(src: string) {
       const channelToRejoin = this.wasInChannel || store.currentChannelId;
       this.wasInChannel = null;
       if (channelToRejoin) await this.rejoinChannel(channelToRejoin);
+
+      this.notifyConnectionUpdate(true);
     });
     this.connection.onclose(() => {
       this.isReconnecting = false;
@@ -264,6 +266,7 @@ this.sfxElements.clear();
 
     this.connection.on("UserJoinedChannel", (user: User, channelId?: string) => {
       if (!channelId) return;
+      store().removeUserFromChannelMap('', user.id);
       store().updateUserStatus(user.id, { ...user, currentChannelId: channelId, currentCallUserId: null, isOnline: true });
       store().addUserToChannelMap(channelId, { ...user, currentChannelId: channelId, currentCallUserId: null });
       if (store().currentChannelId === channelId && user.id !== store().currentUser?.id) {
@@ -274,7 +277,7 @@ this.sfxElements.clear();
 
     this.connection.on("UserLeftChannel", (userId: string, channelId?: string) => {
       store().updateUserStatus(userId, { currentChannelId: null, isSpeaking: false });
-      store().removeUserFromChannelMap(channelId || '', userId);
+      store().removeUserFromChannelMap('', userId);
       webrtc.disconnectFromPeer(userId);
       if (store().currentChannelId === channelId && userId !== store().currentUser?.id) {
         this.playSfx(channelLeaveSound, 0.3);
@@ -621,21 +624,23 @@ private stopRingtone() {
 
   // ── Join / Leave (optimistic) ─────────────────────────────────
 
-  public async joinChannel(channelId: string): Promise<boolean> {
-    if (!await this.ensureConnected()) return false;
+  public async joinChannel(channelId: string): Promise<'ok' | 'network' | 'mic_failed' | 'full'> {
+    if (!await this.ensureConnected()) return 'network';
     const store = useAppStore.getState();
     const currentUser = store.currentUser;
-    if (!currentUser) return false;
+    if (!currentUser) return 'network';
 
     const prevChannelId = store.currentChannelId;
     const prevVoiceUsers = store.voiceUsers;
     const prevChannelUsersMap = { ...store.channelUsersMap };
 
     const optimisticUser: User = { ...currentUser, currentChannelId: channelId, currentCallUserId: null, isSpeaking: false };
+    
+    store.removeUserFromChannelMap('', currentUser.id);
+
     const existingUsers = store.channelUsersMap[channelId] || [];
     const allUsers = existingUsers.find(u => u.id === currentUser.id) ? existingUsers : [...existingUsers, optimisticUser];
 
-    // Optimistic
     store.setCurrentChannelId(channelId);
     store.setVoiceUsers(allUsers);
     store.setChannelUsers(channelId, allUsers);
@@ -648,21 +653,21 @@ private stopRingtone() {
       const micStarted = await webrtc.startLocalStream();
       if (!micStarted) {
         this.rollbackChannelJoin(prevChannelId, prevVoiceUsers, prevChannelUsersMap);
-        return false;
+        return 'mic_failed';
       }
-      const update = await this.safeInvoke<ChannelUpdate>("JoinChannel", { channelId });
+      const update = await this.connection!.invoke<ChannelUpdate | null>("JoinChannel", { channelId });
       if (update?.users) {
         store.setVoiceUsers(update.users);
         store.setChannelUsers(channelId, update.users);
-        return true;
+        return 'ok';
       }
       this.rollbackChannelJoin(prevChannelId, prevVoiceUsers, prevChannelUsersMap);
       webrtc.stopLocalStream();
-      return false;
+      return 'full';
     } catch {
       this.rollbackChannelJoin(prevChannelId, prevVoiceUsers, prevChannelUsersMap);
       webrtc.stopLocalStream();
-      return false;
+      return 'network';
     }
   }
 
@@ -675,11 +680,16 @@ private stopRingtone() {
 
   public async leaveChannel(): Promise<void> {
     const prevChannelId = useAppStore.getState().currentChannelId;
+    const currentUser = useAppStore.getState().currentUser;
+    
     if (prevChannelId) {
       this.playSfx(channelLeaveSound, 0.3);
     }
 
     // Optimistic: clear state immediately
+    if (currentUser) {
+       useAppStore.getState().removeUserFromChannelMap('', currentUser.id);
+    }
     webrtc.leaveAll();
     webrtc.stopLocalStream();
     useAppStore.getState().setCurrentChannelId(null);
