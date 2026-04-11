@@ -70,6 +70,7 @@ interface AppState {
   channelUsersMap: Record<string, User[]>;
 
   channelMembers: User[];
+  channelMembersCache: Record<string, User[]>;
   selectedChannelForMembers: VoiceChannel | null;
   userToKick: User | null;
 
@@ -104,6 +105,7 @@ interface AppState {
   removeUserFromChannelMap: (channelId: string, userId: string) => void;
 
   setChannelMembers: (users: User[]) => void;
+  setChannelMembersCache: (channelId: string, users: User[]) => void;
   setSelectedChannelForMembers: (ch: VoiceChannel | null) => void;
   setUserToKick: (u: User | null) => void;
 
@@ -168,6 +170,7 @@ export const useAppStore = create<AppState>((set) => ({
   channelUsersMap: {},
 
   channelMembers: [],
+  channelMembersCache: {},
   selectedChannelForMembers: null,
   userToKick: null,
 
@@ -264,6 +267,9 @@ export const useAppStore = create<AppState>((set) => ({
   }),
 
   setChannelMembers: (users) => set({ channelMembers: users }),
+  setChannelMembersCache: (channelId, users) => set((state) => ({
+    channelMembersCache: { ...state.channelMembersCache, [channelId]: users }
+  })),
   setSelectedChannelForMembers: (ch) => set({ selectedChannelForMembers: ch }),
   setUserToKick: (u) => set({ userToKick: u }),
 
@@ -322,6 +328,13 @@ export const useAppStore = create<AppState>((set) => ({
       ])
     );
 
+    const channelMembersCache = Object.fromEntries(
+      Object.entries(state.channelMembersCache).map(([channelId, users]) => [
+        channelId,
+        updateUserInList(users, userId, updates)
+      ])
+    );
+
     const currentUser = state.currentUser?.id === userId
       ? { ...state.currentUser, ...updates }
       : state.currentUser;
@@ -339,6 +352,7 @@ export const useAppStore = create<AppState>((set) => ({
       friends,
       friendRequests,
       channelMembers,
+      channelMembersCache,
       channelUsersMap,
       currentUser,
       currentCallUser,
