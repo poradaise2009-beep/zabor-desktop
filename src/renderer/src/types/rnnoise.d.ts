@@ -1,1 +1,0 @@
-declare module '@jitsi/rnnoise-wasm';
