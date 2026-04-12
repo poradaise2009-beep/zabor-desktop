@@ -80,6 +80,7 @@ interface AppState {
 
   isJoiningChannel: boolean;
   userVolumes: Record<string, number>;
+  webrtcConnections: Record<string, boolean>;
   pendingChannelSwitch: string | null;
   setPendingChannelSwitch: (channelId: string | null) => void;
 
@@ -89,6 +90,8 @@ interface AppState {
   setAchievementToast: (id: string | null) => void;
   setAchievementsData: (data: { stats: Record<string, number>; unlockedIds: string[] } | null) => void;
   setAchievementsViewUserId: (id: string | null) => void;
+
+  setWebRTCConnectionStatus: (userId: string, isConnected: boolean) => void;
 
   setCurrentUser: (user: User | null) => void;
   setChannels: (channels: VoiceChannel[]) => void;
@@ -180,6 +183,7 @@ export const useAppStore = create<AppState>((set) => ({
 
   isJoiningChannel: false,
   userVolumes: {},
+  webrtcConnections: {},
 
   pendingChannelSwitch: null,
   setPendingChannelSwitch: (channelId) => set({ pendingChannelSwitch: channelId }),
@@ -279,6 +283,10 @@ export const useAppStore = create<AppState>((set) => ({
 
   setUserVolume: (userId, volume) => set((state) => ({
     userVolumes: { ...state.userVolumes, [userId]: volume }
+  })),
+
+  setWebRTCConnectionStatus: (userId, isConnected) => set((state) => ({
+    webrtcConnections: { ...state.webrtcConnections, [userId]: isConnected }
   })),
 
   setSpeakingStatus: (userId, isSpeaking) => set((state) => {

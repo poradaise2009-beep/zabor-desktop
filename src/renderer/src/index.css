@@ -33,22 +33,40 @@ body {
   from { opacity: 0; transform: translate(-50%, -20px); }
   to { opacity: 1; transform: translate(-50%, 0); }
 }
-@keyframes toast-slide-in {
+@keyframes toast-slide-in-bottom {
+  from { transform: translate(-50%, 100%); opacity: 0; }
+  to { transform: translate(-50%, 0); opacity: 1; }
+}
+
+@keyframes toast-slide-out-bottom {
+  from { transform: translate(-50%, 0); opacity: 1; }
+  to { transform: translate(-50%, 100%); opacity: 0; }
+}
+
+@keyframes toast-slide-in-top {
   from { transform: translate(-50%, -100%); opacity: 0; }
   to { transform: translate(-50%, 0); opacity: 1; }
 }
 
-@keyframes toast-slide-out {
+@keyframes toast-slide-out-top {
   from { transform: translate(-50%, 0); opacity: 1; }
   to { transform: translate(-50%, -100%); opacity: 0; }
 }
 
 .animate-toast-in {
-  animation: toast-slide-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: toast-slide-in-bottom 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 .animate-toast-out {
-  animation: toast-slide-out 0.4s cubic-bezier(0.7, 0, 0.84, 0) forwards;
+  animation: toast-slide-out-bottom 0.4s cubic-bezier(0.7, 0, 0.84, 0) forwards;
+}
+
+.animate-toast-top-in {
+  animation: toast-slide-in-top 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-toast-top-out {
+  animation: toast-slide-out-top 0.4s cubic-bezier(0.7, 0, 0.84, 0) forwards;
 }
 
 body {

@@ -115,8 +115,7 @@ export class WebRTCManager {
     const source = ctx.createMediaStreamSource(rawStream)
     this.processedSource = source
 
-    // Напрямую пускаем звук через регулятор громкости на выход.
-    // Никаких HighPass фильтров и асинхронного RNNoise, чтобы голос оставался чистым и полным.
+    
     source.connect(inputGain)
     inputGain.connect(destination)
 
@@ -377,6 +376,12 @@ export class WebRTCManager {
     let dcTimer: NodeJS.Timeout | null = null
     pc.onconnectionstatechange = () => {
       const st = pc.connectionState
+      if (st === 'connected') {
+        useAppStore.getState().setWebRTCConnectionStatus(userId, true)
+      } else {
+        useAppStore.getState().setWebRTCConnectionStatus(userId, false)
+      }
+
       if (dcTimer && st !== 'disconnected') { clearTimeout(dcTimer); dcTimer = null }
       if (st === 'failed' || st === 'closed') this.disconnectFromPeer(userId)
       else if (st === 'disconnected') {
@@ -445,6 +450,7 @@ export class WebRTCManager {
   }
 
   public disconnectFromPeer(userId: string) {
+    useAppStore.getState().setWebRTCConnectionStatus(userId, false)
     const pc = this.peerConnections.get(userId)
     if (pc) { pc.ontrack = null; pc.onicecandidate = null; pc.onconnectionstatechange = null; pc.close(); this.peerConnections.delete(userId) }
     const audio = this.audioElements.get(userId)

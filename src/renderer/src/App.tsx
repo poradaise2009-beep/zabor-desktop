@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Settings, Mic, MicOff, Headphones, Phone, Eye, EyeOff, UserMinus, Camera,
   Check, X, LogOut, UserPlus, Mail, Edit2, Volume2,
@@ -910,7 +911,7 @@ export default function App() {
   const handleContextMenu = useCallback((e: React.MouseEvent, type: 'channel' | 'friend' | 'voiceUser' | 'channelMember', item: any) => {
     e.preventDefault();
     if ((type === 'voiceUser' || type === 'channelMember') && item.id === store.currentUser?.id) return;
-    setContextMenu({ visible: true, x: e.pageX, y: e.pageY, type, item });
+    setContextMenu({ visible: true, x: e.clientX, y: e.clientY, type, item });
   }, [store.currentUser?.id]);
 
   const loadDevices = useCallback(async () => { setAudioDevices(await webrtc.getAudioDevices()); }, []);
@@ -1250,54 +1251,7 @@ export default function App() {
         <TitleBar />
         <div className="flex flex-1 overflow-hidden">
 
-          {contextMenu?.visible && (
-            <div
-              className="absolute z-[200] bg-surface border border-[#303035] rounded-xl shadow-xl py-2 w-48"
-              style={{ top: contextMenu.y, left: contextMenu.x }}
-              onClick={e => e.stopPropagation()}
-              onContextMenu={e => e.stopPropagation()}
-            >
-              {contextMenu.type === 'channel' ? (
-                <>
-                  {contextMenu.item.ownerId === store.currentUser?.id && (
-                    <button onClick={() => { setEditChannelId(contextMenu.item.id); setEditChannelName(contextMenu.item.name); store.setModal('channelEdit', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Edit2 size={16} /> Переименовать</button>
-                  )}
-                  <button onClick={() => { signalRService.quitAccessChannel(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><LeaveIcon size={16} /> Выйти из канала</button>
-                </>
-              ) : contextMenu.type === 'channelMember' ? (
-                <>
-                  <button onClick={() => { store.setSelectedProfileUser(contextMenu.item, 'channelMembers'); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
-                  {contextMenu.item.id !== store.currentUser?.id && (
-                    <button onClick={() => {
-                      if (!contextMenu.item.isOnline) {
-                        setOfflineToast('Пользователь не в сети');
-                        setTimeout(() => setOfflineToast(null), 3000);
-                      } else if (store.selectedChannelForMembers) {
-                        signalRService.sendChannelInvite(contextMenu.item.id, store.selectedChannelForMembers.id, store.selectedChannelForMembers.name);
-                        setSentInvites(prev => new Set(prev).add(contextMenu.item.id));
-                      }
-                      setContextMenu(null);
-                    }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1">
-                      <UserPlus size={16} /> Позвать в канал
-                    </button>
-                  )}
-                  {store.selectedChannelForMembers?.ownerId === store.currentUser?.id && contextMenu.item.id !== store.currentUser?.id && (
-                    <button onClick={() => { store.setUserToKick(contextMenu.item); store.setModal('kickConfirm', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserX size={16} /> Исключить</button>
-                  )}
-                </>
-              ) : contextMenu.type === 'voiceUser' ? (
-                <>
-                  <button onClick={() => { setVolumeUser(contextMenu.item); setVolumeUserValue(store.userVolumes[contextMenu.item.id] ?? 100); store.setModal('userVolume', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Volume2 size={16} /> Громкость</button>
-                  <button onClick={() => { store.setSelectedProfileUser(contextMenu.item, 'voiceUsers'); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><Settings size={16} /> Профиль</button>
-                </>
-              ) : (
-                <>
-                  <button onClick={() => { store.setSelectedProfileUser(contextMenu.item, 'friends'); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
-                  <button onClick={() => { signalRService.removeFriend(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserMinus size={16} /> Удалить</button>
-                </>
-              )}
-            </div>
-          )}
+
 
           <div className="w-80 bg-panelBg flex flex-col border-r border-[#303035] relative shrink-0">
 
@@ -1372,7 +1326,7 @@ export default function App() {
                         {channelUsers.length > 0 && (
                           <div className="flex items-center -space-x-2 px-8 mt-1.5 pointer-events-none">
                             {channelUsers.map(u => (
-                              <div key={u.id} className="w-[31px] h-[31px] rounded-full border-2 border-panelBg relative shrink-0" title={u.displayName}>
+                              <div key={u.id} className="w-[31px] h-[31px] rounded-full border-2 border-panelBg relative shrink-0 overflow-hidden" title={u.displayName}>
                                 <AvatarImg src={u.avatarBase64} size={31} bgColor={u.avatarColor} animate={false} />
                               </div>
                             ))}
@@ -1465,6 +1419,7 @@ export default function App() {
               <div className="absolute top-0 left-0 right-0 bottom-[120px] p-6 flex items-center justify-center overflow-hidden">
                 <div ref={containerRef} className="w-full h-full flex items-center justify-center">
                   <div
+                    onContextMenu={e => handleContextMenu(e, 'voiceUser', store.currentCallUser)}
                     className={`relative flex flex-col items-center justify-center overflow-hidden shrink-0 transition-all duration-200
           ${store.callStatus === 'calling' ? 'animate-call-pulse' : ''}
           ${store.currentCallUser.isSpeaking && store.callStatus === 'connected'
@@ -1488,6 +1443,17 @@ export default function App() {
                     >
                       <AvatarImg src={store.currentCallUser.avatarBase64} size={cardSize.avatarSize} bgColor="transparent" />
                     </div>
+
+                    {(!store.webrtcConnections[store.currentCallUser.id] && store.callStatus !== 'calling') && (
+                      <div className="absolute inset-0 bg-black/40 flex flex-col items-center justify-center z-20 backdrop-blur-[2px]" style={{ borderRadius: '24px' }}>
+                        <div className="flex gap-2.5 mb-2">
+                          <div className="w-3 h-3 bg-[#c70060] rounded-full animate-pulse" />
+                          <div className="w-3 h-3 bg-[#c70060] rounded-full animate-pulse" style={{ animationDelay: '0.15s' }} />
+                          <div className="w-3 h-3 bg-[#c70060] rounded-full animate-pulse" style={{ animationDelay: '0.3s' }} />
+                        </div>
+                        <span className="text-white text-xs font-bold tracking-wider">ПОДКЛЮЧЕНИЕ</span>
+                      </div>
+                    )}
 
                     {store.callStatus === 'calling' && (
                       <div
@@ -1551,7 +1517,7 @@ export default function App() {
             {!store.currentCallUser && store.currentChannelId && (
               <div className="absolute top-0 left-0 right-0 bottom-[120px] p-6 flex items-center justify-center overflow-hidden">
                 <div ref={containerRef} className="w-full h-full flex flex-wrap items-center justify-center gap-6" style={{ alignContent: 'center' }}>
-                  {store.voiceUsers.map(user => (
+                  {[...store.voiceUsers].sort((a, b) => a.displayName.localeCompare(b.displayName)).map(user => (
                     <div key={user.id} onContextMenu={e => handleContextMenu(e, 'voiceUser', user)}
                       className={`relative flex flex-col items-center justify-center cursor-pointer transition-all duration-200 overflow-hidden shrink-0 hover:-translate-y-1
                         ${user.isSpeaking ? 'shadow-[inset_0_0_0_3px_#3BA55C,inset_0_0_0_5px_#181818,0_10px_15px_-3px_rgba(0,0,0,0.5)] z-10' : 'shadow-xl'}`}
@@ -1559,6 +1525,16 @@ export default function App() {
                       <div className="relative" style={{ width: `${cardSize.avatarSize}px`, height: `${cardSize.avatarSize}px`, marginBottom: '16px' }}>
                         <AvatarImg src={user.avatarBase64} size={cardSize.avatarSize} bgColor="transparent" />
                       </div>
+                      {(!store.webrtcConnections[user.id] && user.id !== store.currentUser?.id) && (
+                        <div className="absolute inset-0 bg-black/40 flex flex-col items-center justify-center z-20 backdrop-blur-[2px]" style={{ borderRadius: '24px' }}>
+                          <div className="flex gap-2.5 mb-2">
+                            <div className="w-3 h-3 bg-[#c70060] rounded-full animate-pulse" />
+                            <div className="w-3 h-3 bg-[#c70060] rounded-full animate-pulse" style={{ animationDelay: '0.15s' }} />
+                            <div className="w-3 h-3 bg-[#c70060] rounded-full animate-pulse" style={{ animationDelay: '0.3s' }} />
+                          </div>
+                          <span className="text-white text-xs font-bold tracking-wider">ПОДКЛЮЧЕНИЕ</span>
+                        </div>
+                      )}
                       <div className={`absolute bottom-4 left-1/2 -translate-x-1/2 transition-all duration-300 ${isIdle ? 'translate-y-8 opacity-0 pointer-events-none' : 'translate-y-0 opacity-100'}`}>
                         <div className="bg-[#09090B]/80 backdrop-blur-md border border-[#303035]/50 px-4 py-1.5 rounded-full flex items-center gap-2 shadow-lg whitespace-nowrap" style={{ maxWidth: `${cardSize.w - 40}px` }}>
                           <span className="text-white font-bold text-sm truncate">{user.displayName}</span>
@@ -2106,24 +2082,27 @@ export default function App() {
         </div>
       )}
       {/* Achievement Toast */}
-      {/* Achievement Toast */}
-      {store.achievementToast && (() => {
+      {store.achievementToast && createPortal((() => {
         const isHiding = store.achievementToast.startsWith('__hiding__');
         const achId = isHiding ? store.achievementToast.replace('__hiding__', '') : store.achievementToast;
         const def = getAchievementDef(achId);
         if (!def) return null;
         return (
-          <div className={`fixed top-14 left-1/2 z-[99999] ${isHiding ? 'animate-toast-out' : 'animate-toast-in'}`}>
-            <div className="bg-panelBg border border-[#c70060]/30 rounded-2xl px-6 py-4 flex items-center gap-4 shadow-2xl shadow-[#c70060]/10">
-              <span className="text-3xl">{def.icon}</span>
-              <div>
-                <p className="text-xs font-bold text-[#c70060] tracking-wider">ДОСТИЖЕНИЕ ПОЛУЧЕНО</p>
-                <p className="text-white font-bold text-lg">{def.title}</p>
+          <div className={`fixed top-14 left-1/2 z-[1000000] ${isHiding ? 'animate-toast-top-out' : 'animate-toast-top-in'}`}>
+            <div className="bg-[#09090B]/90 backdrop-blur-xl border border-[#c70060]/50 rounded-3xl px-8 py-6 flex items-center gap-6 shadow-[0_0_60px_rgba(199,0,96,0.3)] ring-1 ring-white/10">
+              <div className="w-14 h-14 rounded-2xl bg-[#c70060]/20 flex items-center justify-center shrink-0 shadow-inner border border-[#c70060]/30 overflow-hidden relative group">
+                <div className="absolute inset-0 bg-gradient-to-br from-[#c70060]/20 to-transparent animate-pulse" />
+                <span className="text-4xl relative z-10">{def.icon}</span>
+              </div>
+              <div className="min-w-0">
+                <p className="text-[#c70060] font-black text-xs tracking-[0.2em] uppercase mb-1.5 opacity-90">Достижение получено</p>
+                <p className="text-white font-black text-xl tracking-tight leading-none">{def.title}</p>
+                <p className="text-textMuted font-bold text-sm mt-2 line-clamp-1 opacity-80">{def.description}</p>
               </div>
             </div>
           </div>
         );
-      })()}
+      })(), document.body)}
 
       {/* Achievements Modal */}
       {renderModal('achievements',
@@ -2202,12 +2181,19 @@ export default function App() {
         </div>
       )}
 
-      {offlineToast && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[99999] animate-fade-in">
-          <div className="bg-panelBg border border-danger/30 rounded-2xl px-5 py-3 shadow-2xl">
-            <p className="text-danger font-semibold">{offlineToast}</p>
+      {offlineToast && createPortal(
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[1000000] animate-toast-in">
+          <div className="bg-[#09090B]/90 backdrop-blur-xl border border-danger/40 rounded-3xl px-8 py-5 shadow-[0_0_50px_rgba(239,68,68,0.25)] flex items-center gap-4">
+            <div className="w-10 h-10 rounded-full bg-danger/20 flex items-center justify-center shrink-0">
+               <WifiOff size={20} className="text-danger" />
+            </div>
+            <div>
+              <p className="text-white font-bold text-base leading-tight">Уведомление</p>
+              <p className="text-danger/90 font-medium text-sm mt-0.5">{offlineToast}</p>
+            </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {renderModal('adminConsole',
@@ -2685,21 +2671,73 @@ export default function App() {
         </div>
       )}
 
-      {adminBlockToast && (() => {
+      {adminBlockToast && createPortal((() => {
         const isHiding = adminBlockToast === '__hiding__';
         return (
-          <div className={`fixed top-14 left-1/2 z-[99999] ${isHiding ? 'animate-admin-block-out' : 'animate-admin-block-in'}`}>
-            <div className="bg-panelBg border border-danger/40 rounded-2xl px-6 py-4 flex items-center gap-3 shadow-2xl shadow-danger/10">
-              <div className="w-8 h-8 rounded-full bg-danger/20 flex items-center justify-center shrink-0">
-                <MicOff size={16} className="text-danger" />
+          <div className={`fixed top-14 left-1/2 z-[1000000] ${isHiding ? 'animate-admin-block-out' : 'animate-admin-block-in'}`}>
+            <div className="bg-[#09090B]/90 backdrop-blur-xl border border-danger/50 rounded-3xl px-8 py-6 flex items-center gap-5 shadow-[0_0_60px_rgba(239,68,68,0.3)] ring-1 ring-white/5">
+              <div className="w-12 h-12 rounded-2xl bg-danger/20 flex items-center justify-center shrink-0 shadow-inner">
+                <MicOff size={24} className="text-danger" />
               </div>
-              <p className="text-white font-semibold text-sm">{typeof adminBlockToast === 'string' && adminBlockToast !== '__hiding__' ? adminBlockToast : 'Администратор запретил это действие'}</p>
+              <div className="min-w-0">
+                <p className="text-white font-black text-lg tracking-tight leading-none mb-1">Доступ ограничен</p>
+                <p className="text-textMuted font-bold text-sm truncate opacity-90">{typeof adminBlockToast === 'string' && adminBlockToast !== '__hiding__' ? adminBlockToast : 'Администратор запретил это действие'}</p>
+              </div>
             </div>
           </div>
         );
-      })()}
+      })(), document.body)}
 
       {renderCropper()}
+
+      {contextMenu?.visible && (
+        <div
+          className="fixed z-[999999] bg-surface border border-[#303035] rounded-xl shadow-xl py-2 w-48"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          onClick={e => e.stopPropagation()}
+          onContextMenu={e => e.stopPropagation()}
+        >
+          {contextMenu.type === 'channel' ? (
+            <>
+              {contextMenu.item.ownerId === store.currentUser?.id && (
+                <button onClick={() => { setEditChannelId(contextMenu.item.id); setEditChannelName(contextMenu.item.name); store.setModal('channelEdit', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Edit2 size={16} /> Переименовать</button>
+              )}
+              <button onClick={() => { signalRService.quitAccessChannel(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><LeaveIcon size={16} /> Выйти из канала</button>
+            </>
+          ) : contextMenu.type === 'channelMember' ? (
+            <>
+              <button onClick={() => { store.setSelectedProfileUser(contextMenu.item, 'channelMembers'); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
+              {contextMenu.item.id !== store.currentUser?.id && (
+                <button onClick={() => {
+                  if (!contextMenu.item.isOnline) {
+                    setOfflineToast('Пользователь не в сети');
+                    setTimeout(() => setOfflineToast(null), 3000);
+                  } else if (store.selectedChannelForMembers) {
+                    signalRService.sendChannelInvite(contextMenu.item.id, store.selectedChannelForMembers.id, store.selectedChannelForMembers.name);
+                    setSentInvites(prev => new Set(prev).add(contextMenu.item.id));
+                  }
+                  setContextMenu(null);
+                }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1">
+                  <UserPlus size={16} /> Позвать в канал
+                </button>
+              )}
+              {store.selectedChannelForMembers?.ownerId === store.currentUser?.id && contextMenu.item.id !== store.currentUser?.id && (
+                <button onClick={() => { store.setUserToKick(contextMenu.item); store.setModal('kickConfirm', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserX size={16} /> Исключить</button>
+              )}
+            </>
+          ) : contextMenu.type === 'voiceUser' ? (
+            <>
+              <button onClick={() => { setVolumeUser(contextMenu.item); setVolumeUserValue(store.userVolumes[contextMenu.item.id] ?? 100); store.setModal('userVolume', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Volume2 size={16} /> Громкость</button>
+              <button onClick={() => { store.setSelectedProfileUser(contextMenu.item, 'voiceUsers'); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><Settings size={16} /> Профиль</button>
+            </>
+          ) : (
+            <>
+              <button onClick={() => { store.setSelectedProfileUser(contextMenu.item, 'friends'); store.setModal('profile', true); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-white hover:bg-surfaceHover flex items-center gap-3 font-medium"><Settings size={16} /> Профиль</button>
+              <button onClick={() => { signalRService.removeFriend(contextMenu.item.id); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-danger hover:bg-surfaceHover flex items-center gap-3 font-medium mt-1"><UserMinus size={16} /> Удалить</button>
+            </>
+          )}
+        </div>
+      )}
     </>
   );
 }
