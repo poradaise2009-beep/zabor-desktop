@@ -18,7 +18,7 @@ export interface AchievementsPayload {
 
 export const ACHIEVEMENTS: AchievementDef[] = [
   // не не, читерить запрещено, иди отдыхай
-  // Голосовые каналы
+
   {
     id: 'first_channel',
     title: 'Первооткрыватель',
@@ -105,7 +105,7 @@ export const ACHIEVEMENTS: AchievementDef[] = [
     category: 'voice'
   },
 
-  // Звонки
+
   {
     id: 'first_call',
     title: 'Первый звонок',
@@ -144,7 +144,7 @@ export const ACHIEVEMENTS: AchievementDef[] = [
     category: 'calls'
   },
 
-  // Социальные
+
   {
     id: 'first_friend',
     title: 'Первый друг',
@@ -172,8 +172,6 @@ export const ACHIEVEMENTS: AchievementDef[] = [
     statKey: 'profileViews',
     category: 'social'
   },
-
-  // Скрытые
 ];
 
 export const getAchievementDef = (id: string) => ACHIEVEMENTS.find(a => a.id === id);
