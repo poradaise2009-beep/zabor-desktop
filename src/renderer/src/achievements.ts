@@ -78,16 +78,7 @@ export const ACHIEVEMENTS: AchievementDef[] = [
     statKey: 'uniqueChannels',
     category: 'voice'
   },
-  {
-    id: 'marathon',
-    title: 'Тюлень',
-    description: 'Сидеть в канале 5 часов',
-    icon: '🦭',
-    maxValue: 300,
-    statKey: 'longestSessionMinutes',
-    category: 'voice',
-    unit: 'min'
-  },
+
   {
     id: 'modnik',
     title: 'Модник',
@@ -120,9 +111,9 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   {
     id: 'same_wave',
     title: 'Переговорщики',
-    description: 'Звонок длительностью 2+ часа',
+    description: 'Звонок длительностью 5+ часов',
     icon: '🫂',
-    maxValue: 120,
+    maxValue: 300,
     statKey: 'longestCallMinutes',
     category: 'calls',
     unit: 'min'
