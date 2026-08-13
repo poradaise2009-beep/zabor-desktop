@@ -101,7 +101,7 @@ export const StreamPicker = ({ onClose, onSelect }: StreamPickerProps) => {
         <h2 className="text-white text-xl font-bold">{t('stream.pickerTitle', 'Выбор источника')}</h2>
         <button
           onClick={onClose}
-          className="text-textMuted hover:text-white transition-all duration-200 hover:rotate-90 hover:scale-110 p-1.5 rounded-lg hover:bg-surface"
+          className="text-textMuted hover:text-white transition-colors duration-200 p-1.5 rounded-lg hover:bg-surface"
         >
           <X weight="bold" size={20} />
         </button>

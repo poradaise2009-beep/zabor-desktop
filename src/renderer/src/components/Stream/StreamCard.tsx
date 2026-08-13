@@ -149,16 +149,9 @@ export const StreamCard = ({
               className="w-full h-full object-cover filter blur-[4px] scale-[1.05] transition-all duration-500"
             />
           ) : (
-            <div className="absolute inset-0 bg-[#0B0B0F] flex items-center justify-center text-textMuted text-xs font-bold">
-              {t('stream.loadingFrame', 'Подключение...')}
-            </div>
+            <div className="absolute inset-0 bg-[#0B0B0F]" />
           )}
-
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40">
-            <span className="text-white text-sm font-black tracking-wide text-center drop-shadow-md">
-              Трансляция {user.displayName}
-            </span>
-          </div>
+          <div className="absolute inset-0 bg-black/40" />
         </div>
 
         <div className="absolute inset-0 rounded-xl ring-1 ring-inset ring-[#303035] group-hover:ring-2 group-hover:ring-[#FF007F] group-hover:ring-inset pointer-events-none z-20 transition-all duration-300" />
@@ -209,7 +202,7 @@ export const StreamCard = ({
         <div className="absolute inset-0 rounded-xl ring-1 ring-inset ring-[#303035] pointer-events-none z-20" />
       )}
 
-      <div className="absolute inset-x-0 top-0 p-4 bg-gradient-to-b from-black/80 to-transparent pointer-events-none flex items-center justify-between z-10">
+      <div className="absolute inset-x-0 top-0 p-4 pointer-events-none flex items-center justify-between z-10">
         <div className="bg-[#09090B]/85 border border-[#303035]/50 px-3 py-1 rounded-full flex items-center gap-2">
           <span className="text-white font-bold text-xs truncate">
             Трансляция {user.displayName}
@@ -232,9 +225,10 @@ export const StreamCard = ({
                 if (onClick) onClick()
               }}
               style={{ willChange: 'transform, opacity' }}
-              className="w-10 h-10 flex items-center justify-center bg-[#09090B]/90 border border-[#FF007F]/30 rounded-full hover:scale-110 active:scale-95 transition-[transform,opacity] duration-200 ease-out cursor-pointer pointer-events-auto opacity-0 group-hover:opacity-100 translate-y-2 group-hover:translate-y-0"
-              title={t('stream.minimize', 'Свернуть трансляцию')}
+              className="relative w-10 h-10 flex items-center justify-center bg-[#09090B]/90 border border-[#FF007F]/30 rounded-full hover:scale-110 active:scale-95 transition-[transform,opacity] duration-200 ease-out cursor-pointer pointer-events-auto opacity-0 group-hover:opacity-100 translate-y-2 group-hover:translate-y-0"
+              title={t('stream.minimizeHint')}
             >
+              <span className="absolute mt-[-42px] opacity-0 group-hover:opacity-100 transition-opacity bg-[#09090B]/95 border border-[#303035] rounded-md px-1.5 py-0.5 text-[9px] font-bold text-white">F</span>
               <CornersIn weight="bold" size={20} className="text-[#FF007F] shrink-0" />
             </button>
           </div>
@@ -246,8 +240,10 @@ export const StreamCard = ({
                 if (onToggleFullscreen) onToggleFullscreen()
               }}
               style={{ willChange: 'transform, opacity' }}
-              className="w-10 h-10 flex items-center justify-center bg-[#09090B]/90 border border-[#FF007F]/30 rounded-full hover:scale-110 active:scale-95 transition-[transform,opacity] duration-200 ease-out cursor-pointer pointer-events-auto opacity-0 group-hover:opacity-100 translate-y-2 group-hover:translate-y-0"
+              className="relative w-10 h-10 flex items-center justify-center bg-[#09090B]/90 border border-[#FF007F]/30 rounded-full hover:scale-110 active:scale-95 transition-[transform,opacity] duration-200 ease-out cursor-pointer pointer-events-auto opacity-0 group-hover:opacity-100 translate-y-2 group-hover:translate-y-0"
+              title={t('stream.fullscreenHint')}
             >
+              <span className="absolute mt-[-42px] opacity-0 group-hover:opacity-100 transition-opacity bg-[#09090B]/95 border border-[#303035] rounded-md px-1.5 py-0.5 text-[9px] font-bold text-white">F</span>
               <CornersOut weight="bold" size={20} className="text-[#FF007F] shrink-0" />
             </button>
           </div>

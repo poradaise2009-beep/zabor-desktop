@@ -27,8 +27,22 @@ dist-electron/
 electron.vite.config.*.mjs
 graphify-out/
 /sandbox/
-/GEMINI.md
-/.agents/
-/.continue/rules/
 /build/
+
+# AI Assistants & LLM rules
+.claude/
+CLAUDE.md
+.codex/
+AGENTS.md
+.agents/
+GEMINI.md
+.gemini/
+.cursor/
+.cursorrules
+.continue/
+.windsurf/
+.copilot/
 skills-lock.json
+
+# DeepFilterNet3 runtime assets fetched at build time (see scripts/fetch-deepfilter-assets.cjs)
+src/renderer/public/deepfilternet3/

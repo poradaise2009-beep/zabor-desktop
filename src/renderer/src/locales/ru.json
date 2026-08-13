@@ -24,19 +24,29 @@
       "default": "По умолчанию",
       "micFallback": "Микрофон",
       "speakerFallback": "Динамики",
-      "calibrateSensitivity": "Калибровка чувствительности",
-      "calibrateDesc": "Распознавание уровня шума вашего микрофона",
+      "calibrateSensitivity": "Калибровка шумоподавления",
+      "calibrateDesc": "Оценка постоянного шума для бережной очистки голоса",
       "calibrateButton": "Откалибровать микрофон",
       "calibrating": "Калибровка... {{seconds}}с",
       "calibrationComplete": "Успешно откалибровано!",
       "doNotSpeak": "Не говорите!",
-      "micThresholdAuto": "Автоматический порог чувствительности",
-      "micThresholdLabel": "ПОРОГ ЧУВСТВИТЕЛЬНОСТИ МИКРОФОНА"
+      "micThresholdAuto": "Автоматическая сила шумоподавления",
+      "micThresholdLabel": "МАКСИМАЛЬНОЕ ШУМОПОДАВЛЕНИЕ, ДБ",
+      "noiseSuppressionMode": "Режим шумоподавления",
+      "smartMode": "Умное",
+      "manualMode": "Вручную",
+      "threshold": "Порог",
+      "thresholdLabel": "Порог срабатывания микрофона",
+      "sayPhrase": "Скажите фразу",
+      "checking": "Проверяем",
+      "preparing": "Подготовка",
+      "calibrationPhrase": "Сегодня тихий ветер шуршит в листве."
     },
     "privacy": {
       "newPassword": "НОВЫЙ ПАРОЛЬ",
       "passwordHint": "Максимум 25 символов",
       "changePassword": "Сменить пароль",
+      "changePasswordTitle": "Сменить пароль",
       "logout": "Выйти из аккаунта",
       "changePasswordFailed": "Не удалось сменить пароль"
     }
@@ -273,7 +283,15 @@
     "incomingCall": "Входящий звонок...",
     "incomingChannelInvite": "Вас зовут в канал",
     "startupCalibration": "Калибровка микрофона... Пожалуйста, помолчите 2 сек.",
-    "calibrationComplete": "Микрофон успешно откалиброван!"
+    "calibrationComplete": "Микрофон успешно откалиброван!",
+    "calibrationNoSpeech": "Не услышали фразу. Повторите.",
+    "calibrationNeedSilence": "Сначала нужна тишина. Повторите.",
+    "calibrationFailedRetry": "Калибровка не удалась. Повторите."
+  },
+  "stream": {
+    "minimizeHint": "Свернуть трансляцию (F)",
+    "fullscreenHint": "Развернуть на весь экран (F)",
+    "exitFullscreenHint": "Выйти из полноэкранного режима (F)"
   },
   "joke": {
     "title": "ШУТЕЙКА:",

@@ -25,12 +25,17 @@ class SignalRService {
   private wasStreamQuality = 'low';
   private sfxContext: AudioContext | null = null;
   private sfxElements: Map<string, HTMLAudioElement> = new Map();
+  private streamDropTimers: Map<string, NodeJS.Timeout> = new Map();
   
   private isJoiningChannel = false;
+  private voiceOperationId = 0;
   
   private isStartingCall = false;
+  private isAcceptingCall = false;
+  private isPreparingToQuit = false;
   
   private static readonly CONNECT_WAIT_TIMEOUT_MS = 15000;
+  private static readonly STREAM_DROP_GRACE_MS = 30000;
 
   private playSfx(src: string, volume = 0.5) {
     try {
@@ -50,6 +55,14 @@ class SignalRService {
     if (audio) {
       audio.pause();
       audio.currentTime = 0;
+    }
+  }
+
+  private clearStreamDropTimer(userId: string) {
+    const timer = this.streamDropTimers.get(userId);
+    if (timer) {
+      clearTimeout(timer);
+      this.streamDropTimers.delete(userId);
     }
   }
 
@@ -270,6 +283,8 @@ class SignalRService {
     if (this.sfxContext) { this.sfxContext.close().catch(() => { }); this.sfxContext = null; }
     this.sfxElements.forEach(audio => { audio.pause(); audio.srcObject = null; });
     this.sfxElements.clear();
+    this.streamDropTimers.forEach(timer => clearTimeout(timer));
+    this.streamDropTimers.clear();
   }
 
   private setupListeners() {
@@ -286,6 +301,7 @@ class SignalRService {
     });
 
     this.connection.on("UserLeft", (userId: string) => {
+      this.clearStreamDropTimer(userId);
       store().updateUserStatus(userId, { isOnline: false, currentChannelId: null, currentCallUserId: null, isSpeaking: false });
       store().removeUserFromChannelMap('', userId);
       webrtc.disconnectFromPeer(userId);
@@ -298,6 +314,7 @@ class SignalRService {
 
     this.connection.on("UserJoinedChannel", (user: User, channelId?: string) => {
       if (!channelId) return;
+      if (user.id === store().currentUser?.id && store().isJoiningChannel) return;
       store().removeUserFromChannelMap('', user.id);
       store().updateUserStatus(user.id, { ...user, currentChannelId: channelId, currentCallUserId: null, isOnline: true });
       store().addUserToChannelMap(channelId, { ...user, currentChannelId: channelId, currentCallUserId: null });
@@ -309,9 +326,16 @@ class SignalRService {
     });
 
     this.connection.on("UserLeftChannel", (userId: string, channelId?: string) => {
-      store().updateUserStatus(userId, { currentChannelId: null, isSpeaking: false });
-      store().removeUserFromChannelMap('', userId);
-      webrtc.disconnectFromPeer(userId);
+      if (!channelId) return;
+      const state = store();
+      if (userId === state.currentUser?.id && state.isJoiningChannel) return;
+      const knownChannelId = state.friends.find(user => user.id === userId)?.currentChannelId
+        ?? Object.entries(state.channelUsersMap).find(([, users]) => users.some(user => user.id === userId))?.[0];
+      state.removeUserFromChannelMap(channelId, userId);
+      if (knownChannelId === channelId) {
+        state.updateUserStatus(userId, { currentChannelId: null, isSpeaking: false });
+      }
+      if (state.currentChannelId === channelId) webrtc.disconnectFromPeer(userId);
       if (store().currentChannelId === channelId && userId !== store().currentUser?.id) {
         this.playSfx(channelLeaveSound, 0.3);
       }
@@ -380,14 +404,16 @@ class SignalRService {
     });
 
     this.connection.on("UserSpeaking", (userId: string, isSpeaking: boolean) => {
-      store().setSpeakingStatus(userId, isSpeaking);
+      if (store().currentUser?.id === userId) store().setSpeakingStatus(userId, isSpeaking);
     });
 
     this.connection.on("UserStartedStreaming", (userId: string, streamQuality: string) => {
+      this.clearStreamDropTimer(userId);
       store().updateUserStatus(userId, { isStreaming: true, streamQuality });
     });
 
     this.connection.on("UserStoppedStreaming", (userId: string) => {
+      this.clearStreamDropTimer(userId);
       const appStore = store();
       if (appStore.activeStreamId === userId) {
         appStore.setActiveStreamId(null);
@@ -397,12 +423,17 @@ class SignalRService {
     });
 
     this.connection.on("StreamDropped", (userId: string) => {
-      const appStore = store();
-      if (appStore.activeStreamId === userId) {
-        appStore.setActiveStreamId(null);
-      }
-      appStore.updateUserStatus(userId, { isStreaming: false, streamQuality: undefined });
-      webrtc.cleanupRemoteStream(userId);
+      this.clearStreamDropTimer(userId);
+      const timer = setTimeout(() => {
+        this.streamDropTimers.delete(userId);
+        const appStore = store();
+        if (appStore.activeStreamId === userId) {
+          appStore.setActiveStreamId(null);
+        }
+        appStore.updateUserStatus(userId, { isStreaming: false, streamQuality: undefined });
+        webrtc.cleanupRemoteStream(userId);
+      }, SignalRService.STREAM_DROP_GRACE_MS);
+      this.streamDropTimers.set(userId, timer);
     });
 
     this.connection.on("FriendRequestReceived", (user: User) => {
@@ -466,6 +497,7 @@ class SignalRService {
       store().setModal('incomingCall', false);
       store().setCurrentCallUser(null);
       this.stopRingtone();
+      webrtc.enterBackgroundMode();
     });
 
     this.connection.on("CallEnded", () => {
@@ -489,6 +521,7 @@ class SignalRService {
       if (callStatus === 'connected') {
         this.playSfx(channelLeaveSound, 0.3);
       }
+      webrtc.enterBackgroundMode();
     });
 
     this.connection.on("CallStarted", (user: User) => {
@@ -523,10 +556,11 @@ class SignalRService {
       appStore.setFriendRequests([]); appStore.setChannelInvites([]); appStore.setVoiceUsers([]);
       appStore.setCurrentChannelId(null); appStore.setCallStatus('idle'); appStore.setCurrentCallUser(null);
       appStore.setFullChannelState({});
+      appStore.clearChannelMemberData();
       window.location.reload();
     });
 
-    window.windowControls?.onBeforeQuit?.(() => { this.disconnect(); });
+    window.windowControls?.onBeforeQuit?.(() => { void this.prepareForQuit(); });
   }
 
   
@@ -539,6 +573,8 @@ class SignalRService {
   }
 
   public playRingtone(volume = 0.3) {
+    const currentUser = useAppStore.getState().currentUser;
+    if (currentUser?.isDeafened || currentUser?.isServerDeafened) return;
     const audio = this.sfxElements.get(callRingSound);
     if (audio && !audio.paused) return;
     this.stopRingtone();
@@ -566,7 +602,21 @@ class SignalRService {
   private async safeInvoke<T>(method: string, ...args: any[]): Promise<T | null> {
     if (!await this.ensureConnected()) return null;
     try { return await this.connection!.invoke<T>(method, ...args); }
-    catch { return null; }
+    catch (error) {
+      console.warn(`[SignalR] ${method} failed`, error);
+      return null;
+    }
+  }
+
+  private async invokeCommand(method: string, ...args: any[]): Promise<boolean> {
+    if (!await this.ensureConnected()) return false;
+    try {
+      await this.connection!.invoke(method, ...args);
+      return true;
+    } catch (error) {
+      console.warn(`[SignalR] ${method} failed`, error);
+      return false;
+    }
   }
 
   
@@ -707,7 +757,14 @@ class SignalRService {
   public async getUserByUsername(username: string): Promise<User | null> {
     return await this.safeInvoke<User>("GetUserByUsername", username);
   }
-  public async getJokeOfTheDay(): Promise<string> { return await this.safeInvoke<string>("GetJokeOfTheDay") ?? ''; }
+  public async getJokeOfTheDay(): Promise<string> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const joke = await this.safeInvoke<string>("GetJokeOfTheDay");
+      if (typeof joke === 'string' && joke.trim() && joke.trim() !== '0') return joke;
+      if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+    }
+    return '';
+  }
 
   
 
@@ -718,21 +775,12 @@ class SignalRService {
       this.safeInvoke<User[]>("GetFriendRequests"),
       this.safeInvoke<ChannelInvite[]>("GetChannelInvites")
     ]);
-    useAppStore.getState().setChannels(channels || []);
-    useAppStore.getState().setFriends(friends || []);
-    useAppStore.getState().setFriendRequests(requests || []);
-    useAppStore.getState().setChannelInvites(channelInvites || []);
+    const store = useAppStore.getState();
+    if (Array.isArray(channels)) store.setChannels(channels);
+    if (Array.isArray(friends)) store.setFriends(friends);
+    if (Array.isArray(requests)) store.setFriendRequests(requests);
+    if (Array.isArray(channelInvites)) store.setChannelInvites(channelInvites);
 
-    
-    if (channels && Array.isArray(channels)) {
-      channels.forEach(ch => {
-        this.getChannelMembersList(ch.id).then(members => {
-          if (members && Array.isArray(members)) {
-            useAppStore.getState().setChannelMembersCache(ch.id, members);
-          }
-        }).catch(() => { });
-      });
-    }
   }
 
   
@@ -778,13 +826,13 @@ class SignalRService {
 
     if (store.currentChannelId === channelId) {
       webrtc.leaveAll();
-      webrtc.stopLocalStream();
+      webrtc.enterBackgroundMode();
       store.setCurrentChannelId(null);
       store.setVoiceUsers([]);
     }
 
-    const result = await this.safeInvoke("QuitAccessChannel", channelId);
-    if (!result) useAppStore.getState().setChannels(prevChannels);
+    const succeeded = await this.invokeCommand("QuitAccessChannel", channelId);
+    if (!succeeded) useAppStore.getState().setChannels(prevChannels);
   }
 
   public async kickFromChannel(channelId: string, userId: string): Promise<void> {
@@ -796,120 +844,203 @@ class SignalRService {
     store.setChannelMembers(prevMembers.filter(m => m.id !== userId));
     store.setChannelMembersCache(channelId, prevCache.filter(m => m.id !== userId));
 
-    const result = await this.safeInvoke("KickFromChannel", channelId, userId);
-    if (!result) {
-      useAppStore.getState().setChannelMembers(prevMembers);
-      useAppStore.getState().setChannelMembersCache(channelId, prevCache);
+    const succeeded = await this.invokeCommand("KickFromChannel", channelId, userId);
+    if (!succeeded) {
+      const latestStore = useAppStore.getState();
+      if (latestStore.selectedChannelForMembers?.id === channelId) latestStore.setChannelMembers(prevMembers);
+      latestStore.setChannelMembersCache(channelId, prevCache);
     }
   }
 
-  public async getChannelMembersList(channelId: string): Promise<User[]> {
-    return await this.safeInvoke<User[]>("GetChannelMembersList", channelId) || [];
+  public async getChannelMembersList(channelId: string): Promise<User[] | null> {
+    return await this.safeInvoke<User[]>("GetChannelMembersList", channelId);
   }
 
-  public async sendChannelInvite(targetUserId: string, channelId: string, channelName: string): Promise<void> {
-    await this.safeInvoke("SendChannelInvite", targetUserId, channelId, channelName);
+  public async sendChannelInvite(targetUserId: string, channelId: string, channelName: string): Promise<boolean> {
+    return await this.invokeCommand("SendChannelInvite", targetUserId, channelId, channelName);
   }
 
-  public async callToChannel(targetUserId: string, channelId: string, channelName: string): Promise<void> {
-    await this.safeInvoke("CallToChannel", targetUserId, channelId, channelName);
+  public async callToChannel(targetUserId: string, channelId: string, channelName: string): Promise<boolean> {
+    return await this.invokeCommand("CallToChannel", targetUserId, channelId, channelName);
   }
 
-  public async acceptChannelInvite(channelId: string): Promise<void> {
+  public async acceptChannelInvite(channelId: string): Promise<boolean> {
     const store = useAppStore.getState();
-    store.setChannelInvites(store.channelInvites.filter(i => i.channelId !== channelId));
-    await this.safeInvoke("AcceptChannelInvite", channelId);
+    const previousInvites = store.channelInvites;
+    store.setChannelInvites(previousInvites.filter(i => i.channelId !== channelId));
+    const succeeded = await this.invokeCommand("AcceptChannelInvite", channelId);
+    if (!succeeded) {
+      useAppStore.getState().setChannelInvites(previousInvites);
+      return false;
+    }
+    return true;
   }
 
-  public async declineChannelInvite(channelId: string): Promise<void> {
+  public async declineChannelInvite(channelId: string): Promise<boolean> {
     const store = useAppStore.getState();
-    store.setChannelInvites(store.channelInvites.filter(i => i.channelId !== channelId));
-    await this.safeInvoke("DeclineChannelInvite", channelId);
+    const previousInvites = store.channelInvites;
+    store.setChannelInvites(previousInvites.filter(i => i.channelId !== channelId));
+    const succeeded = await this.invokeCommand("DeclineChannelInvite", channelId);
+    if (!succeeded) {
+      useAppStore.getState().setChannelInvites(previousInvites);
+      return false;
+    }
+    return true;
   }
 
   
 
   public async joinChannel(channelId: string): Promise<'ok' | 'network' | 'mic_failed' | 'full'> {
-    
     if (this.isJoiningChannel) return 'network';
     this.isJoiningChannel = true;
+    const operationId = ++this.voiceOperationId;
+    useAppStore.getState().setIsJoiningChannel(true);
     try {
-      return await this._joinChannelImpl(channelId);
+      return await this._joinChannelImpl(channelId, operationId);
     } finally {
-      this.isJoiningChannel = false;
+      if (operationId === this.voiceOperationId) {
+        this.isJoiningChannel = false;
+        useAppStore.getState().setIsJoiningChannel(false);
+      }
     }
   }
 
-  private async _joinChannelImpl(channelId: string): Promise<'ok' | 'network' | 'mic_failed' | 'full'> {
+  private async _joinChannelImpl(channelId: string, operationId: number): Promise<'ok' | 'network' | 'mic_failed' | 'full'> {
     if (!await this.ensureConnected()) return 'network';
     const store = useAppStore.getState();
     const currentUser = store.currentUser;
     if (!currentUser) return 'network';
-
-    const prevChannelId = store.currentChannelId;
-    const prevVoiceUsers = store.voiceUsers;
-    const prevChannelUsersMap = { ...store.channelUsersMap };
-
     const optimisticUser: User = { ...currentUser, currentChannelId: channelId, currentCallUserId: null, isSpeaking: false };
-
+    const targetUsers = store.channelUsersMap[channelId] || [];
+    const optimisticUsers = targetUsers.some(user => user.id === currentUser.id)
+      ? targetUsers
+      : [...targetUsers, optimisticUser];
     store.removeUserFromChannelMap('', currentUser.id);
-
-    const existingUsers = store.channelUsersMap[channelId] || [];
-    const allUsers = existingUsers.find(u => u.id === currentUser.id) ? existingUsers : [...existingUsers, optimisticUser];
-
-    store.setCurrentChannelId(channelId);
-    store.setVoiceUsers(allUsers);
-    store.setChannelUsers(channelId, allUsers);
-    webrtc.leaveAll();
-    store.setCallStatus('idle');
-    store.setCurrentCallUser(null);
+    store.commitVoiceChannel(channelId, optimisticUsers);
     this.playSfx(channelJoinSound, 0.3);
 
     try {
       const micStarted = await webrtc.startLocalStream();
       if (!micStarted) {
-        this.rollbackChannelJoin(prevChannelId, prevVoiceUsers, prevChannelUsersMap);
+        store.clearVoiceChannel(channelId);
         return 'mic_failed';
       }
+      if (operationId !== this.voiceOperationId) return 'network';
       const update = await this.connection!.invoke<ChannelUpdate | null>("JoinChannel", { channelId });
+      if (operationId !== this.voiceOperationId) return 'network';
       if (update?.users) {
-        store.setVoiceUsers(update.users);
-        store.setChannelUsers(channelId, update.users);
-        
-        this.getChannelMembersList(channelId).then(members => {
-          if (members && Array.isArray(members)) {
-            store.setChannelMembersCache(channelId, members);
-          }
-        }).catch(() => { });
+        webrtc.leaveAll();
+        store.commitVoiceChannel(channelId, update.users);
+        store.setCallStatus('idle');
+        store.setCurrentCallUser(null);
+        setTimeout(() => {
+          if (operationId !== this.voiceOperationId || useAppStore.getState().currentChannelId !== channelId) return;
+          update.users
+            .filter(user => user.id !== currentUser.id)
+            .forEach(user => webrtc.connectToPeer(user.id));
+        }, 500);
         return 'ok';
       }
-      this.rollbackChannelJoin(prevChannelId, prevVoiceUsers, prevChannelUsersMap);
-      webrtc.stopLocalStream();
+      store.clearVoiceChannel(channelId);
+      webrtc.enterBackgroundMode();
       return 'full';
     } catch {
-      this.rollbackChannelJoin(prevChannelId, prevVoiceUsers, prevChannelUsersMap);
-      webrtc.stopLocalStream();
+      store.clearVoiceChannel(channelId);
+      webrtc.enterBackgroundMode();
       return 'network';
     }
   }
 
-  private rollbackChannelJoin(prevChannelId: string | null, prevVoiceUsers: User[], prevChannelUsersMap: Record<string, User[]>) {
-    const store = useAppStore.getState();
-    store.setCurrentChannelId(prevChannelId);
-    store.setVoiceUsers(prevVoiceUsers);
-    store.setFullChannelState(prevChannelUsersMap);
+  public async switchChannel(channelId: string): Promise<'ok' | 'network' | 'mic_failed' | 'full'> {
+    if (this.isJoiningChannel) return 'network';
+    this.isJoiningChannel = true;
+    const operationId = ++this.voiceOperationId;
+    const sourceChannelId = useAppStore.getState().currentChannelId;
+    const sourceUsers = [...useAppStore.getState().voiceUsers];
+    useAppStore.getState().setIsJoiningChannel(true);
+    const initialState = useAppStore.getState();
+    const initialUser = initialState.currentUser;
+    if (!initialUser) {
+      this.isJoiningChannel = false;
+      initialState.setIsJoiningChannel(false);
+      return 'network';
+    }
+    const optimisticUser: User = { ...initialUser, currentChannelId: channelId, currentCallUserId: null, isSpeaking: false };
+    const knownTargetUsers = initialState.channelUsersMap[channelId] || [];
+    const optimisticUsers = knownTargetUsers.some(user => user.id === initialUser.id)
+      ? knownTargetUsers
+      : [...knownTargetUsers, optimisticUser];
+    initialState.removeUserFromChannelMap('', initialUser.id);
+    if (sourceChannelId) {
+      this.playSfx(channelLeaveSound, 0.3);
+    }
+    initialState.commitVoiceChannel(channelId, optimisticUsers);
+    this.playSfx(channelJoinSound, 0.3);
+    // commitVoiceChannel ends the visual loading state; keep the transaction guard active.
+    initialState.setIsJoiningChannel(true);
+    let leftSource = false;
+    try {
+      const micStarted = await webrtc.startLocalStream();
+      if (!micStarted) {
+        useAppStore.getState().clearVoiceChannel(channelId);
+        if (sourceChannelId) useAppStore.getState().commitVoiceChannel(sourceChannelId, sourceUsers);
+        return 'mic_failed';
+      }
+      if (sourceChannelId) {
+        // LeaveChannel returns no payload, so safeInvoke cannot be used here:
+        // null is a valid result for a successful void hub method.
+        try {
+          await this.connection!.invoke("LeaveChannel");
+          leftSource = true;
+        } catch {
+          return 'network';
+        }
+        if (operationId !== this.voiceOperationId) return 'network';
+      }
+
+      const update = await this.connection!.invoke<ChannelUpdate | null>("JoinChannel", { channelId });
+      if (operationId !== this.voiceOperationId) return 'network';
+      if (!update?.users) {
+        useAppStore.getState().clearVoiceChannel(sourceChannelId);
+        await webrtc.enterBackgroundMode();
+        return 'full';
+      }
+      const state = useAppStore.getState();
+      const currentUser = state.currentUser;
+      webrtc.leaveAll();
+      state.commitVoiceChannel(channelId, update.users);
+      state.setCallStatus('idle');
+      state.setCurrentCallUser(null);
+      setTimeout(() => {
+        if (operationId !== this.voiceOperationId || useAppStore.getState().currentChannelId !== channelId) return;
+        update.users.filter(user => user.id !== currentUser?.id).forEach(user => webrtc.connectToPeer(user.id));
+      }, 500);
+      return 'ok';
+    } catch {
+      useAppStore.getState().clearVoiceChannel(channelId);
+      if (sourceChannelId && !leftSource) useAppStore.getState().commitVoiceChannel(sourceChannelId, sourceUsers);
+      await webrtc.enterBackgroundMode();
+      return 'network';
+    } finally {
+      if (operationId === this.voiceOperationId) {
+        this.isJoiningChannel = false;
+        useAppStore.getState().setIsJoiningChannel(false);
+      }
+    }
   }
 
   public async leaveChannel(): Promise<void> {
+    const operationId = ++this.voiceOperationId;
+    this.isJoiningChannel = false;
+    useAppStore.getState().setIsJoiningChannel(false);
     const prevChannelId = useAppStore.getState().currentChannelId;
     const currentUser = useAppStore.getState().currentUser;
 
-    if (prevChannelId) {
-      this.playSfx(channelLeaveSound, 0.3);
-    }
-
     if (currentUser) {
       useAppStore.getState().removeUserFromChannelMap('', currentUser.id);
+    }
+    if (prevChannelId) {
+      this.playSfx(channelLeaveSound, 0.3);
     }
 
     if (useAppStore.getState().currentUser?.isStreaming || webrtc.localVideoStream) {
@@ -923,10 +1054,11 @@ class SignalRService {
     webrtc.leaveAll();
     const appStore = useAppStore.getState();
     appStore.setActiveStreamId(null);
-    appStore.setCurrentChannelId(null);
-    appStore.setVoiceUsers([]);
+    appStore.clearVoiceChannel(prevChannelId);
 
-    this.safeInvoke("LeaveChannel");
+    await this.safeInvoke("LeaveChannel");
+    if (operationId !== this.voiceOperationId) return;
+    await webrtc.enterBackgroundMode();
   }
 
   
@@ -942,8 +1074,8 @@ class SignalRService {
     
     store.setFriendRequests(prevRequests.filter((r: User) => r.id !== userId));
 
-    const result = await this.safeInvoke("AcceptFriendRequest", userId);
-    if (!result) useAppStore.getState().setFriendRequests(prevRequests);
+    const succeeded = await this.invokeCommand("AcceptFriendRequest", userId);
+    if (!succeeded) useAppStore.getState().setFriendRequests(prevRequests);
   }
 
   public async declineFriendRequest(userId: string): Promise<void> {
@@ -953,8 +1085,8 @@ class SignalRService {
     
     store.setFriendRequests(prevRequests.filter((r: User) => r.id !== userId));
 
-    const result = await this.safeInvoke("DeclineFriendRequest", userId);
-    if (!result) useAppStore.getState().setFriendRequests(prevRequests);
+    const succeeded = await this.invokeCommand("DeclineFriendRequest", userId);
+    if (!succeeded) useAppStore.getState().setFriendRequests(prevRequests);
   }
 
   public async removeFriend(userId: string): Promise<void> {
@@ -964,8 +1096,8 @@ class SignalRService {
     
     store.setFriends(prevFriends.filter((f: User) => f.id !== userId));
 
-    const result = await this.safeInvoke("RemoveFriend", userId);
-    if (!result) useAppStore.getState().setFriends(prevFriends);
+    const succeeded = await this.invokeCommand("RemoveFriend", userId);
+    if (!succeeded) useAppStore.getState().setFriends(prevFriends);
   }
 
   
@@ -1002,31 +1134,43 @@ class SignalRService {
     this.playRingtone(0.1);
 
     const res = await this.safeInvoke<boolean>("StartCall", targetUserId);
-    if (!res) { store.setCallStatus('idle'); store.setCurrentCallUser(null); webrtc.stopLocalStream(); this.stopRingtone(); }
+    if (!res) { store.setCallStatus('idle'); store.setCurrentCallUser(null); await webrtc.enterBackgroundMode(); this.stopRingtone(); }
     return res ?? false;
   }
 
   public async acceptCall(callerId: string): Promise<void> {
+    if (this.isAcceptingCall) return;
+    this.isAcceptingCall = true;
     const store = useAppStore.getState();
-    if (store.currentChannelId) await this.leaveChannel();
+    const callerUser = store.incomingCall;
+    store.setModal('incomingCall', false);
+    store.setIncomingCall(null);
+    this.stopRingtone();
 
-    if (store.callStatus !== 'idle') {
-      const activeCallUser = store.currentCallUser;
-      if (activeCallUser && activeCallUser.id !== callerId) {
-        webrtc.disconnectFromPeer(activeCallUser.id);
-        await this.safeInvoke("EndCall");
+    try {
+      if (store.currentChannelId) await this.leaveChannel();
+
+      if (store.callStatus !== 'idle') {
+        const activeCallUser = store.currentCallUser;
+        if (activeCallUser && activeCallUser.id !== callerId) {
+          webrtc.disconnectFromPeer(activeCallUser.id);
+          await this.invokeCommand("EndCall");
+          store.setCallStatus('idle');
+          store.setCurrentCallUser(null);
+        }
+      }
+
+      const micStarted = await webrtc.startLocalStream();
+      if (!micStarted) {
         store.setCallStatus('idle');
         store.setCurrentCallUser(null);
+        void this.invokeCommand("DeclineCall", callerId);
+        return;
       }
-    }
 
-    const micStarted = await webrtc.startLocalStream();
-    if (!micStarted) return;
-
-    const callerUser = store.incomingCall;
-    const targetUser = store.friends.find((f: any) => f.id === callerId) || store.currentCallUser;
-    if (callerUser) {
-      store.setCurrentCallUser({
+      const targetUser = store.friends.find((f: any) => f.id === callerId) || store.currentCallUser;
+      if (callerUser) {
+        store.setCurrentCallUser({
         id: callerUser.callerId,
         displayName: callerUser.callerName,
         username: callerUser.callerName,
@@ -1040,9 +1184,9 @@ class SignalRService {
         isServerDeafened: false,
         currentChannelId: null,
         currentCallUserId: null,
-      });
-    } else if (targetUser) {
-      store.setCurrentCallUser({
+        });
+      } else if (targetUser) {
+        store.setCurrentCallUser({
         id: targetUser.id,
         displayName: targetUser.displayName,
         username: targetUser.username,
@@ -1056,20 +1200,19 @@ class SignalRService {
         isServerDeafened: false,
         currentChannelId: null,
         currentCallUserId: null,
-      });
-    }
-    store.setCallStatus('connected');
+        });
+      }
+      store.setCallStatus('connected');
 
-    const accepted = await this.safeInvoke('AcceptCall', callerId);
-    if (accepted === null) {
-      store.setCallStatus('idle');
-      store.setCurrentCallUser(null);
-      webrtc.stopLocalStream();
-      return;
+      const accepted = await this.invokeCommand('AcceptCall', callerId);
+      if (!accepted) {
+        store.setCallStatus('idle');
+        store.setCurrentCallUser(null);
+        await webrtc.enterBackgroundMode();
+      }
+    } finally {
+      this.isAcceptingCall = false;
     }
-
-    store.setModal('incomingCall', false);
-    this.stopRingtone();
   }
 
   public async declineCall(callerId: string): Promise<void> {
@@ -1085,7 +1228,7 @@ class SignalRService {
         store.setCallStatus('idle');
       }
     }
-    this.safeInvoke("DeclineCall", callerId);
+    void this.invokeCommand("DeclineCall", callerId);
   }
 
   public async endCall(): Promise<void> {
@@ -1111,7 +1254,27 @@ class SignalRService {
       this.playSfx(channelLeaveSound, 0.3);
     }
 
-    this.safeInvoke("EndCall");
+    await this.invokeCommand("EndCall");
+    await webrtc.enterBackgroundMode();
+  }
+
+  private async prepareForQuit(): Promise<void> {
+    if (this.isPreparingToQuit) return;
+    this.isPreparingToQuit = true;
+    try {
+      const state = useAppStore.getState();
+      if (state.incomingCall && state.callStatus === 'idle') {
+        await this.invokeCommand("DeclineCall", state.incomingCall.callerId);
+      } else if (state.currentCallUser || state.callStatus !== 'idle') {
+        await this.invokeCommand("EndCall");
+      }
+      if (state.currentChannelId) {
+        await this.invokeCommand("LeaveChannel");
+      }
+    } finally {
+      webrtc.leaveAll();
+      this.disconnect();
+    }
   }
 
   

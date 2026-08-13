@@ -80,7 +80,7 @@ export function Md3Slider({
         {showMuteButton && (
           <button
             onClick={handleMuteClick}
-            className="text-textMuted hover:text-white transition-all duration-200 focus:outline-none flex items-center justify-center w-10 h-10 rounded-xl bg-surface/50 border border-[#303035]"
+            className="text-textMuted hover:text-white transition-all duration-200 focus:outline-none flex items-center justify-center w-10 h-10 rounded-xl bg-surface/50"
           >
             {localValue === 0 ? (
               <SpeakerSlash weight="bold" size={20} className="text-danger" />

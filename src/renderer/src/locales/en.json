@@ -24,19 +24,29 @@
       "default": "Default",
       "micFallback": "Microphone",
       "speakerFallback": "Speakers",
-      "calibrateSensitivity": "Sensitivity Calibration",
-      "calibrateDesc": "Recognition of your microphone's noise level",
+      "calibrateSensitivity": "Noise Suppression Calibration",
+      "calibrateDesc": "Measures steady noise for speech-preserving cleanup",
       "calibrateButton": "Calibrate Microphone",
       "calibrating": "Calibrating... {{seconds}}s",
       "calibrationComplete": "Successfully Calibrated!",
       "doNotSpeak": "Do not speak!",
-      "micThresholdAuto": "Automatic sensitivity threshold",
-      "micThresholdLabel": "MICROPHONE SENSITIVITY THRESHOLD"
+      "micThresholdAuto": "Automatic noise suppression strength",
+      "micThresholdLabel": "MAXIMUM NOISE SUPPRESSION, DB",
+      "noiseSuppressionMode": "Noise suppression mode",
+      "smartMode": "Smart",
+      "manualMode": "Manual",
+      "threshold": "Threshold",
+      "thresholdLabel": "Microphone activation threshold",
+      "sayPhrase": "Say the phrase",
+      "checking": "Checking",
+      "preparing": "Preparing",
+      "calibrationPhrase": "Today the quiet wind rustles in the leaves."
     },
     "privacy": {
       "newPassword": "NEW PASSWORD",
       "passwordHint": "Maximum 25 characters",
       "changePassword": "Change Password",
+      "changePasswordTitle": "Change Password",
       "logout": "Logout",
       "changePasswordFailed": "Failed to change password"
     }
@@ -273,7 +283,15 @@
     "incomingCall": "Incoming call...",
     "incomingChannelInvite": "You are invited to a channel",
     "startupCalibration": "Microphone calibration... Please remain silent for 2s.",
-    "calibrationComplete": "Microphone successfully calibrated!"
+    "calibrationComplete": "Microphone successfully calibrated!",
+    "calibrationNoSpeech": "Didn't hear the phrase. Please try again.",
+    "calibrationNeedSilence": "Silence is required first. Please try again.",
+    "calibrationFailedRetry": "Calibration failed. Please try again."
+  },
+  "stream": {
+    "minimizeHint": "Minimize stream (F)",
+    "fullscreenHint": "Enter fullscreen (F)",
+    "exitFullscreenHint": "Exit fullscreen (F)"
   },
   "joke": {
     "title": "JOKE:",

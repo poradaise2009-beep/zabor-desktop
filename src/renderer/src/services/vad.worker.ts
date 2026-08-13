@@ -16,7 +16,9 @@ const sampleRateTensor = new Tensor(
   BigInt64Array.from([BigInt(SAMPLE_RATE)]),
   [1]
 )
-let inferenceQueue = Promise.resolve()
+let inferenceRunning = false
+const pendingFrames: ProcessMessage[] = []
+let lastProcessedSequence = -1
 
 interface ProcessMessage {
   type: 'process'
@@ -28,16 +30,16 @@ function resetModelState(): void {
   state.fill(0)
   context.fill(0)
   modelInput.fill(0)
+  lastProcessedSequence = -1
 }
 
 async function processFrame(message: ProcessMessage): Promise<void> {
   if (!session || message.audioFrame.length !== FRAME_SIZE) return
 
-  let maxPeak = 0
-  for (let i = 0; i < FRAME_SIZE; i++) {
-    const absVal = Math.abs(message.audioFrame[i])
-    if (absVal > maxPeak) maxPeak = absVal
+  if (lastProcessedSequence >= 0 && message.sequence !== lastProcessedSequence + 1) {
+    resetModelState()
   }
+  lastProcessedSequence = message.sequence
 
   try {
     modelInput.set(context, 0)
@@ -56,17 +58,6 @@ async function processFrame(message: ProcessMessage): Promise<void> {
     state.set(newStateData)
     context.set(message.audioFrame.subarray(FRAME_SIZE - CONTEXT_SIZE))
 
-    if (probability < 0.25) {
-      for (let i = 0; i < STATE_SIZE; i++) {
-        state[i] *= 0.70
-      }
-    }
-
-    if (probability < 0.20 && maxPeak > 0.25) {
-      state.fill(0)
-      context.fill(0)
-    }
-
     self.postMessage({
       type: 'probability',
       probability,
@@ -74,32 +65,51 @@ async function processFrame(message: ProcessMessage): Promise<void> {
     })
   } catch (error) {
     resetModelState()
-    self.postMessage({ type: 'error', error: String(error) })
+    self.postMessage({ type: 'error', phase: 'inference', error: String(error) })
   }
+}
+
+interface InitMessage {
+  type: 'init'
+  model: Uint8Array
+  wasmPath: string
+}
+
+async function drainFrames(message: ProcessMessage): Promise<void> {
+  inferenceRunning = true
+  let current: ProcessMessage | null = message
+  while (current) {
+    await processFrame(current)
+    current = pendingFrames.shift() ?? null
+  }
+  inferenceRunning = false
 }
 
 self.onmessage = (event: MessageEvent) => {
   const message = event.data
 
   if (message.type === 'init') {
-    const { modelUrl, wasmPath } = message
+    const { model, wasmPath } = message as InitMessage
     if (wasmPath) env.wasm.wasmPaths = wasmPath
 
-    inferenceQueue = inferenceQueue.then(async () => {
-      try {
-        session = await InferenceSession.create(modelUrl, {
-          executionProviders: ['wasm'],
-          graphOptimizationLevel: 'all'
-        })
-        resetModelState()
-        self.postMessage({ type: 'ready' })
-      } catch (error) {
-        self.postMessage({ type: 'error', error: String(error) })
-      }
-    })
+    InferenceSession.create(model, {
+      executionProviders: ['wasm'],
+      graphOptimizationLevel: 'all'
+    }).then(createdSession => {
+      session = createdSession
+      resetModelState()
+      self.postMessage({ type: 'ready' })
+    }).catch(error => self.postMessage({ type: 'error', phase: 'initialization', error: String(error) }))
   } else if (message.type === 'process') {
-    inferenceQueue = inferenceQueue.then(() => processFrame(message as ProcessMessage))
+    const frame = message as ProcessMessage
+    if (inferenceRunning) {
+      pendingFrames.push(frame)
+    } else {
+      void drainFrames(frame)
+    }
   } else if (message.type === 'reset') {
-    inferenceQueue = inferenceQueue.then(() => resetModelState())
+    pendingFrames.length = 0
+    lastProcessedSequence = -1
+    resetModelState()
   }
 }

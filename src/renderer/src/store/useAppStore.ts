@@ -116,6 +116,8 @@ interface AppState {
   setVoiceUsers: (users: User[]) => void;
   setCurrentChannelId: (id: string | null) => void;
   setIsJoiningChannel: (isJoining: boolean) => void;
+  commitVoiceChannel: (channelId: string, users: User[]) => void;
+  clearVoiceChannel: (channelId?: string | null) => void;
   
   systemToast: string | null;
   setSystemToast: (msg: string | null) => void;
@@ -129,6 +131,7 @@ interface AppState {
 
   setChannelMembers: (users: User[]) => void;
   setChannelMembersCache: (channelId: string, users: User[]) => void;
+  clearChannelMemberData: () => void;
   setSelectedChannelForMembers: (ch: VoiceChannel | null) => void;
   setUserToKick: (u: User | null) => void;
 
@@ -251,6 +254,16 @@ export const useAppStore = create<AppState>((set) => ({
   setVoiceUsers: (users) => set({ voiceUsers: users }),
   setCurrentChannelId: (id) => set({ currentChannelId: id }),
   setIsJoiningChannel: (isJoining) => set({ isJoiningChannel: isJoining }),
+  commitVoiceChannel: (channelId, users) => set((state) => ({
+    currentChannelId: channelId,
+    voiceUsers: [...users],
+    channelUsersMap: { ...state.channelUsersMap, [channelId]: [...users] },
+    isJoiningChannel: false
+  })),
+  clearVoiceChannel: (channelId) => set((state) => {
+    if (channelId && state.currentChannelId !== channelId) return state;
+    return { currentChannelId: null, voiceUsers: [], isJoiningChannel: false };
+  }),
 
   setChannelUsers: (channelId, users) => set((state) => ({
     channelUsersMap: { ...state.channelUsersMap, [channelId]: [...users] },
@@ -259,9 +272,17 @@ export const useAppStore = create<AppState>((set) => ({
 
   setFullChannelState: (stateMap) => set((state) => {
     const currentChannelId = state.currentChannelId;
-    const currentChannelUsers = currentChannelId ? (stateMap[currentChannelId] || []) : [];
+    let nextMap = stateMap;
+    if (state.isJoiningChannel && currentChannelId && state.currentUser) {
+      const serverUsers = stateMap[currentChannelId] || [];
+      const optimisticSelf = state.voiceUsers.find(user => user.id === state.currentUser?.id);
+      if (optimisticSelf && !serverUsers.some(user => user.id === optimisticSelf.id)) {
+        nextMap = { ...stateMap, [currentChannelId]: [...serverUsers, optimisticSelf] };
+      }
+    }
+    const currentChannelUsers = currentChannelId ? (nextMap[currentChannelId] || []) : [];
     return {
-      channelUsersMap: stateMap,
+      channelUsersMap: nextMap,
       voiceUsers: currentChannelId ? currentChannelUsers : state.voiceUsers
     };
   }),
@@ -322,6 +343,13 @@ export const useAppStore = create<AppState>((set) => ({
   setChannelMembersCache: (channelId, users) => set((state) => ({
     channelMembersCache: { ...state.channelMembersCache, [channelId]: users }
   })),
+  clearChannelMemberData: () => set({
+    channelMembers: [],
+    channelMembersCache: {},
+    selectedChannelForMembers: null,
+    selectedChannelForInvite: null,
+    userToKick: null
+  }),
   setSelectedChannelForMembers: (ch) => set({ selectedChannelForMembers: ch }),
   setUserToKick: (u) => set({ userToKick: u }),
 

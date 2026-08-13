@@ -1,6 +1,27 @@
-import { app, shell, BrowserWindow, ipcMain, Tray, Menu, nativeImage } from 'electron';
+import { app, shell, BrowserWindow, ipcMain, Tray, Menu, nativeImage, dialog } from 'electron';
 import { join } from 'path';
 import { existsSync, rmSync, readFileSync, writeFileSync, promises as fsPromises } from 'fs';
+
+interface StreamAudioMetadata {
+  sampleRate: number;
+  channels: number;
+  bitsPerSample: number;
+  isFloat: boolean;
+}
+
+interface NativeScreenShareAudio {
+  startCapture: (
+    processId: number,
+    isIncludeMode: boolean,
+    onData: (data: Buffer, metadata: StreamAudioMetadata) => void
+  ) => boolean;
+  stopCapture: () => boolean;
+  getPidFromWindowHandle: (windowHandle: number) => number;
+  isAvailable: () => boolean;
+  getLoadError: () => string | null;
+}
+
+const nativeScreenShareAudio = require('electron-native-screenshare') as NativeScreenShareAudio;
 
 
 if (app) {
@@ -26,6 +47,50 @@ const isDev = !app.isPackaged;
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
+let quitRequested = false;
+let streamAudioOwnerId: number | null = null;
+
+function stopStreamAudioCapture(): void {
+  if (streamAudioOwnerId === null) return;
+  streamAudioOwnerId = null;
+  try {
+    if (nativeScreenShareAudio.isAvailable()) nativeScreenShareAudio.stopCapture();
+  } catch (error) {
+    console.warn('[StreamAudio] Failed to stop native audio capture:', error);
+  }
+}
+
+function getWindowHandle(sourceId: string): number | null {
+  const match = /^window:(\d+):\d+$/.exec(sourceId);
+  if (!match) return null;
+  const handle = Number(match[1]);
+  return Number.isSafeInteger(handle) && handle > 0 ? handle : null;
+}
+
+function getMainWindowHandle(): string | null {
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
+  const handle = mainWindow.getNativeWindowHandle();
+  if (handle.length >= 8) return handle.readBigUInt64LE().toString();
+  if (handle.length >= 4) return String(handle.readUInt32LE());
+  return null;
+}
+
+function requestQuit(): void {
+  if (isQuitting || quitRequested) return;
+  quitRequested = true;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.webContents.send('before-quit');
+    } catch {}
+    setTimeout(() => {
+      isQuitting = true;
+      app.quit();
+    }, 1500);
+    return;
+  }
+  isQuitting = true;
+  app.quit();
+}
 
 
 
@@ -177,20 +242,7 @@ function createTray(): void {
     { type: 'separator' },
     {
       label: 'Выйти',
-      click: () => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          try {
-            mainWindow.webContents.send('before-quit');
-          } catch {}
-          setTimeout(() => {
-            isQuitting = true;
-            app.quit();
-          }, 800);
-        } else {
-          isQuitting = true;
-          app.quit();
-        }
-      }
+      click: requestQuit
     }
   ]);
 
@@ -279,8 +331,16 @@ function createWindow(): void {
   }
 
 
+  const showMainWindow = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  };
+
   mainWindow.once('ready-to-show', () => {
-    mainWindow?.show();
+    clearTimeout(showFallbackTimer);
+    showMainWindow();
     try {
       const pid = mainWindow?.webContents.getOSProcessId();
       if (pid) {
@@ -291,9 +351,19 @@ function createWindow(): void {
   });
 
 
-  setTimeout(() => {
-    if (mainWindow && !mainWindow.isVisible()) mainWindow.show();
-  }, 3000);
+  const showFallbackTimer = setTimeout(showMainWindow, 3000);
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame) return;
+    clearTimeout(showFallbackTimer);
+    showMainWindow();
+    dialog.showErrorBox(
+      'ZABOR не удалось запустить',
+      `Не удалось загрузить интерфейс (${errorCode}): ${errorDescription}\n${validatedURL}`
+    );
+  });
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    dialog.showErrorBox('ZABOR аварийно завершил работу', `Причина: ${details.reason}`);
+  });
 
   mainWindow.on('resize', scheduleWindowStateSave);
   mainWindow.on('move', scheduleWindowStateSave);
@@ -332,11 +402,14 @@ function createWindow(): void {
     return { action: 'deny' };
   });
 
-  if (isDev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL']);
-  } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
-  }
+  const rendererLoad = isDev && process.env['ELECTRON_RENDERER_URL']
+    ? mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    : mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
+  rendererLoad.catch(error => {
+    clearTimeout(showFallbackTimer);
+    showMainWindow();
+    dialog.showErrorBox('ZABOR не удалось запустить', error instanceof Error ? error.message : String(error));
+  });
 }
 
 
@@ -369,14 +442,12 @@ app.whenReady().then(() => {
         mainWindow.hide();
       }
     } else {
-      isQuitting = true;
-      app.quit();
+      requestQuit();
     }
   });
 
   ipcMain.on('app-quit', () => {
-    isQuitting = true;
-    app.quit();
+    requestQuit();
   });
 
 
@@ -433,6 +504,28 @@ app.whenReady().then(() => {
     return app.getPath('userData');
   });
 
+  ipcMain.handle('load-silero-model', async () => {
+    const modelPath = join(__dirname, '../renderer/silero_vad.onnx');
+    const model = await fsPromises.readFile(modelPath);
+    return new Uint8Array(model.buffer, model.byteOffset, model.byteLength);
+  });
+
+  // DeepFilterNet3 assets are bundled under renderer/deepfilternet3 (fetched at
+  // build time). Serve them from the main process so the worklet can load them
+  // offline and inside the packaged file:// app, where fetch() cannot read local
+  // files. Only the two known assets are allowed to prevent path traversal.
+  ipcMain.handle('load-deepfilter-asset', async (_event, assetPath: unknown) => {
+    const allowed = new Set(['pkg/df_bg.wasm', 'models/DeepFilterNet3_onnx.tar.gz']);
+    if (typeof assetPath !== 'string' || !allowed.has(assetPath)) return null;
+    try {
+      const filePath = join(__dirname, '../renderer/deepfilternet3', ...assetPath.split('/'));
+      const data = await fsPromises.readFile(filePath);
+      return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    } catch {
+      return null;
+    }
+  });
+
   ipcMain.handle('get-auto-launch', () => {
     if (isDev) return false;
 
@@ -463,12 +556,57 @@ app.whenReady().then(() => {
   ipcMain.handle('get-desktop-sources', async (_event, options) => {
     const { desktopCapturer } = require('electron')
     const sources = await desktopCapturer.getSources(options)
-    return sources.map(src => ({
-      id: src.id,
-      name: src.name,
-      thumbnail: src.thumbnail.toDataURL(),
-      appIcon: src.appIcon ? src.appIcon.toDataURL() : null
-    }))
+    const ownWindowHandle = getMainWindowHandle()
+    return sources
+      .filter(src => ownWindowHandle === null || getWindowHandle(src.id)?.toString() !== ownWindowHandle)
+      .map(src => ({
+        id: src.id,
+        name: src.name,
+        thumbnail: src.thumbnail.toDataURL(),
+        appIcon: src.appIcon ? src.appIcon.toDataURL() : null
+      }))
+  })
+
+  ipcMain.handle('start-stream-audio-capture', (event, sourceId: unknown) => {
+    if (typeof sourceId !== 'string') throw new TypeError('A desktop source id is required')
+    if (!nativeScreenShareAudio.isAvailable()) {
+      throw new Error(nativeScreenShareAudio.getLoadError() || 'Native stream audio capture is unavailable')
+    }
+
+    stopStreamAudioCapture()
+
+    const windowHandle = getWindowHandle(sourceId)
+    const isWindow = windowHandle !== null
+    if (!isWindow && !sourceId.startsWith('screen:')) {
+      throw new Error(`Unsupported desktop source: ${sourceId}`)
+    }
+
+    const targetProcessId = isWindow
+      ? nativeScreenShareAudio.getPidFromWindowHandle(windowHandle)
+      : process.pid
+    if (!targetProcessId) throw new Error(`Unable to resolve the process for source ${sourceId}`)
+
+    const sender = event.sender
+    streamAudioOwnerId = sender.id
+    try {
+      const started = nativeScreenShareAudio.startCapture(targetProcessId, isWindow, (data, metadata) => {
+        if (streamAudioOwnerId !== sender.id || sender.isDestroyed()) return
+        sender.send('stream-audio-data', data, metadata)
+      })
+      if (started) return true
+      throw new Error('Native stream audio capture did not start')
+    } catch (error) {
+      try {
+        if (nativeScreenShareAudio.isAvailable()) nativeScreenShareAudio.stopCapture()
+      } catch { }
+      streamAudioOwnerId = null
+      throw error
+    }
+  })
+
+  ipcMain.handle('stop-stream-audio-capture', (event) => {
+    if (streamAudioOwnerId === event.sender.id) stopStreamAudioCapture()
+    return true
   })
 
   createWindow();
@@ -489,19 +627,10 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', (event) => {
+  stopStreamAudioCapture();
   if (!isQuitting) {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      event.preventDefault();
-      try {
-        mainWindow.webContents.send('before-quit');
-      } catch {}
-      setTimeout(() => {
-        isQuitting = true;
-        app.quit();
-      }, 800);
-    } else {
-      isQuitting = true;
-    }
+    event.preventDefault();
+    requestQuit();
   }
 });
 

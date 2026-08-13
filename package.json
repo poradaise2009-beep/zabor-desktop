@@ -6,15 +6,18 @@
   "author": "vnkdevelop",
   "license": "GPL-3.0-only",
   "scripts": {
-    "start": "cross-env RUSTFLAGS=\"-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint\" electron-vite dev",
-    "dev": "cross-env RUSTFLAGS=\"-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint\" electron-vite dev",
-    "build": "cross-env RUSTFLAGS=\"-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint\" electron-vite build",
-    "dist:win": "cross-env RUSTFLAGS=\"-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint\" electron-vite build && electron-builder --win",
-    "release": "release.bat"
+    "start": "node scripts/fetch-deepfilter-assets.cjs && cross-env RUSTFLAGS=\"-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint\" electron-vite dev",
+    "dev": "node scripts/fetch-deepfilter-assets.cjs && cross-env RUSTFLAGS=\"-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint\" electron-vite dev",
+    "build": "node scripts/fetch-deepfilter-assets.cjs && cross-env RUSTFLAGS=\"-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint\" electron-vite build",
+    "dist:win": "node scripts/fetch-deepfilter-assets.cjs && cross-env RUSTFLAGS=\"-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint\" electron-vite build && electron-builder --win",
+    "postinstall": "node scripts/rebuild-native-audio.cjs && node scripts/fetch-deepfilter-assets.cjs",
+    "release": "release.bat",
+    "sandbox": "cd sandbox && npm run dev"
   },
   "build": {
     "appId": "com.zabor.desktop",
     "productName": "ZABOR",
+    "npmRebuild": false,
     "extraResources": [
       {
         "from": "build/icon.ico",
@@ -58,6 +61,7 @@
     }
   },
   "dependencies": {
+    "electron-native-screenshare": "^1.2.0",
     "framer-motion": "^12.42.2",
     "onnxruntime-web": "^1.27.0"
   },
@@ -79,6 +83,7 @@
     "electron-vite": "^2.3.0",
     "i18next": "^26.0.8",
     "i18next-browser-languagedetector": "^8.2.1",
+    "node-gyp": "^13.0.1",
     "postcss": "^8.4.49",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

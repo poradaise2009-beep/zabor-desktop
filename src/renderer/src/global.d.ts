@@ -2,6 +2,13 @@
 
 export {};
 
+interface StreamAudioMetadata {
+  sampleRate: number;
+  channels: number;
+  bitsPerSample: number;
+  isFloat: boolean;
+}
+
 declare global {
   interface Window {
     electron: {
@@ -16,6 +23,8 @@ declare global {
       quit: () => void;
       wipeAppData: () => Promise<boolean>;
       getUserDataPath: () => Promise<string>;
+      loadSileroModel: () => Promise<Uint8Array>;
+      loadDeepFilterAsset: (assetPath: string) => Promise<Uint8Array | null>;
       getAutoLaunch: () => Promise<boolean>;
       setAutoLaunch: (enabled: boolean) => Promise<boolean>;
       getMinimizeToTray: () => Promise<boolean>;
@@ -26,6 +35,11 @@ declare global {
       onMaximizeChange: (callback: (isMaximized: boolean) => void) => () => void;
       onBeforeQuit: (callback: () => void) => () => void;
       getDesktopSources: (options?: any) => Promise<any[]>;
+      startStreamAudioCapture: (sourceId: string) => Promise<boolean>;
+      stopStreamAudioCapture: () => Promise<boolean>;
+      onStreamAudioData: (
+        callback: (data: Uint8Array, metadata: StreamAudioMetadata) => void
+      ) => () => void;
     };
   }
 }
