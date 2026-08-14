@@ -16,9 +16,14 @@ const DEEPFILTER_ASSETS = new Set(['pkg/df_bg.wasm', 'models/DeepFilterNet3_onnx
 // DeepFilterNet attenuation limit (dB). Higher = more noise removed. Manual mode
 // keeps denoising minimal (the user's threshold gate does the work); smart mode
 // scales up to an aggressive ceiling for a clean voice, with speech protection.
-const DEEPFILTER_MIN_ATTEN = 6
-const DEEPFILTER_MAX_ATTEN = 36
-const DEEPFILTER_SMART_DEFAULT_ATTEN = 30
+const DEEPFILTER_MIN_ATTEN = 5
+const DEEPFILTER_MAX_ATTEN = 25
+// Before the first successful calibration use only the library minimum. A higher
+// value here would be an implicit fallback profile and could sound over-processed.
+const DEEPFILTER_SMART_DEFAULT_ATTEN = DEEPFILTER_MIN_ATTEN
+const OPUS_AUDIO_BITRATE = 128_000
+const SAFE_VAD_ON_THRESHOLD = 0.10
+const SAFE_VAD_OFF_THRESHOLD = 0.05
 
 type SpeakingEntry = {
   timer: NodeJS.Timeout
@@ -47,7 +52,7 @@ type CalibrationResult = {
 }
 
 type StoredEnvironmentProfile = {
-  version: 13
+  version: 28
   timestamp: number
   noiseFloor: number
   lowNoise: number
@@ -83,10 +88,11 @@ function optimizeSDP(sdp: string): string {
   const audioMatch = sdp.match(opusRegex)
   if (audioMatch) {
     const pt = audioMatch[1]
+    const opusFmtp = `useinbandfec=1;usedtx=0;maxaveragebitrate=${OPUS_AUDIO_BITRATE};maxplaybackrate=48000;sprop-maxcapturerate=48000;stereo=0;sprop-stereo=0;cbr=0;minptime=10`
     let fmtpFound = false
     for (let i = 0; i < lines.length; i++) {
       if (lines[i].startsWith(`a=fmtp:${pt}`)) {
-        lines[i] = `a=fmtp:${pt} useinbandfec=1;usedtx=0;maxplaybackrate=48000;sprop-maxcapturerate=48000;stereo=0;cbr=0`
+        lines[i] = `a=fmtp:${pt} ${opusFmtp}`
         fmtpFound = true
         break
       }
@@ -94,7 +100,7 @@ function optimizeSDP(sdp: string): string {
     if (!fmtpFound) {
       for (let i = 0; i < lines.length; i++) {
         if (lines[i].startsWith(`a=rtpmap:${pt}`)) {
-          lines.splice(i + 1, 0, `a=fmtp:${pt} useinbandfec=1;usedtx=0;maxplaybackrate=48000;sprop-maxcapturerate=48000;stereo=0;cbr=0`)
+          lines.splice(i + 1, 0, `a=fmtp:${pt} ${opusFmtp}`)
           break
         }
       }
@@ -107,7 +113,38 @@ function optimizeSDP(sdp: string): string {
       }
     }
     if (audioSectionIdx !== -1) {
-      lines.splice(audioSectionIdx + 1, 0, 'b=AS:96')
+      // Put Opus first even if Chromium advertises legacy codecs ahead of it.
+      const mediaParts = lines[audioSectionIdx].split(' ')
+      const payloads = mediaParts.slice(3)
+      lines[audioSectionIdx] = [...mediaParts.slice(0, 3), pt, ...payloads.filter(payload => payload !== pt)].join(' ')
+
+      let audioSectionEnd = lines.length
+      for (let i = audioSectionIdx + 1; i < lines.length; i++) {
+        if (lines[i].startsWith('m=')) {
+          audioSectionEnd = i
+          break
+        }
+      }
+      for (let i = audioSectionEnd - 1; i > audioSectionIdx; i--) {
+        if (/^b=(AS|TIAS):/i.test(lines[i]) || /^a=ptime:/i.test(lines[i])) lines.splice(i, 1)
+      }
+      audioSectionEnd = lines.length
+      for (let i = audioSectionIdx + 1; i < lines.length; i++) {
+        if (lines[i].startsWith('m=')) {
+          audioSectionEnd = i
+          break
+        }
+      }
+      let bandwidthInsertIndex = audioSectionEnd
+      for (let i = audioSectionIdx + 1; i < audioSectionEnd; i++) {
+        if (lines[i].startsWith('a=')) {
+          bandwidthInsertIndex = i
+          break
+        }
+      }
+      // TIAS is the exact media bitrate; AS is kept for peers that only honor
+      // the older SDP bandwidth field. The sender parameter below matches it.
+      lines.splice(bandwidthInsertIndex, 0, 'b=AS:128', `b=TIAS:${OPUS_AUDIO_BITRATE}`, 'a=ptime:20')
     }
   }
 
@@ -187,7 +224,7 @@ function createSilentAudioStream(): MediaStream {
 }
 
 export class WebRTCManager {
-  private static readonly CALIBRATION_SCHEMA_VERSION = 13
+  private static readonly CALIBRATION_SCHEMA_VERSION = 28
   private static readonly CALIBRATION_SCHEMA_KEY = 'zabor_mic_calibration_schema'
   private static readonly CALIBRATION_PROFILE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000
   private localStream: MediaStream | null = null
@@ -245,8 +282,8 @@ export class WebRTCManager {
   private calibratedAttenuationLimit = DEEPFILTER_SMART_DEFAULT_ATTEN
   private calibratedNoiseFloor = 0.003
   private calibratedPreGainDb = 0
-  private calibratedVadOnThreshold = 0.13
-  private calibratedVadOffThreshold = 0.07
+  private calibratedVadOnThreshold = SAFE_VAD_ON_THRESHOLD
+  private calibratedVadOffThreshold = SAFE_VAD_OFF_THRESHOLD
   private hasVoiceCalibration = false
   private calibrationDeviceId = 'default'
   private vadWorkerReady = false
@@ -300,10 +337,6 @@ export class WebRTCManager {
     const activeAttenuationLimit = this.thresholdMode === 'manual'
       ? DEEPFILTER_MIN_ATTEN
       : this.calibratedAttenuationLimit
-    const attenuationSpan = DEEPFILTER_MAX_ATTEN - DEEPFILTER_MIN_ATTEN
-    const activePostFilterBeta = Math.min(0.003, Math.max(0,
-      ((activeAttenuationLimit - DEEPFILTER_MIN_ATTEN) / attenuationSpan) * 0.003))
-
     return {
       attenuationLimit: activeAttenuationLimit,
       noiseFloor: this.calibratedNoiseFloor,
@@ -311,7 +344,9 @@ export class WebRTCManager {
       manualThresholdValue: this.manualThresholdValue,
       vadOnThreshold: this.calibratedVadOnThreshold,
       vadOffThreshold: this.calibratedVadOffThreshold,
-      postFilterBeta: activePostFilterBeta,
+      // The neural suppressor is already the spectral processor. Its optional
+      // post-filter is disabled to keep quiet consonants and breath texture intact.
+      postFilterBeta: 0,
       // VAD and calibration run before all gain nodes, so their thresholds must
       // stay independent of the user's microphone volume and calibrated pre-gain.
       gainFactor: 1
@@ -385,25 +420,85 @@ export class WebRTCManager {
       Math.abs(Math.log2(Math.max(0.05, profile.spectralTilt) / Math.max(0.05, spectralTilt))) * 2
   }
 
-  private calculateSpeechPreservingAttenuation(noiseFloor: number, speechRms?: number, stationarityRatio = 1): number {
+  private calculateSpeechPreservingAttenuation(
+    noiseFloor: number,
+    speechRms?: number,
+    quietSpeechRms?: number,
+    stationarityRatio = 1,
+    speechVadFrames = 0
+  ): number {
     const noiseDb = 20 * Math.log10(Math.max(1e-5, noiseFloor))
-    // Louder rooms get more cleanup, but calibration never drives DeepFilter into
-    // the range where low-SNR vowels and consonants become watery or disappear.
-    let attenuation = noiseDb <= -55 ? 20 : noiseDb <= -46 ? 26 : noiseDb <= -38 ? 31 : 34
+    const clamp01 = (value: number) => Math.max(0, Math.min(1, value))
 
+    // Use the complete 5-25 dB range instead of four coarse steps. A noise floor
+    // at or below -68 dBFS maps to 5 dB, while -38 dBFS or louder maps to 25 dB.
+    // Intermediate rooms receive every integer value between those endpoints.
+    const noiseStrength = clamp01((noiseDb + 68) / 30)
+    let attenuation = DEEPFILTER_MIN_ATTEN +
+      noiseStrength * (DEEPFILTER_MAX_ATTEN - DEEPFILTER_MIN_ATTEN)
+
+    // Use the median active-speech level for the main SNR decision. The previous
+    // implementation passed the 20th percentile (quietSpeechRms) here, which
+    // treated normal quiet consonants as if the whole voice had a poor SNR and
+    // kept DeepFilter near its 5 dB minimum.
+    let measuredSnrDb: number | null = null
+    let speechSafeCeiling = DEEPFILTER_MAX_ATTEN
     if (speechRms && speechRms > 0) {
       const speechDb = 20 * Math.log10(Math.max(1e-5, speechRms))
       const snrDb = speechDb - noiseDb
-      // Back off when speech barely rises above the noise so the denoiser does not
-      // chew into the voice; push harder when the voice is well clear of the noise.
-      if (snrDb < 8) attenuation = Math.min(attenuation, 15)
-      else if (snrDb < 12) attenuation = Math.min(attenuation, 18)
-      else if (snrDb < 18) attenuation = Math.min(attenuation, 22)
-      else if (snrDb < 24) attenuation = Math.min(attenuation, 27)
-      else if (snrDb > 30) attenuation += 2
+      measuredSnrDb = snrDb
+
+      // Continuous speech-safety ceiling. At poor SNR DeepFilter is restrained;
+      // from 18 dB SNR onward the full 25 dB remains available. This makes 25 dB
+      // reachable in a noisy room without applying it to barely distinguishable
+      // speech where any suppressor could damage consonants.
+      if (snrDb <= 6) speechSafeCeiling = 10
+      else if (snrDb < 10) speechSafeCeiling = 10 + ((snrDb - 6) / 4) * 6
+      else if (snrDb < 16) speechSafeCeiling = 16 + ((snrDb - 10) / 6) * 7
+      else if (snrDb < 18) speechSafeCeiling = 23 + ((snrDb - 16) / 2) * 2
     }
-    if (stationarityRatio > 6) attenuation -= 4
-    return Math.max(10, Math.min(DEEPFILTER_MAX_ATTEN, attenuation))
+
+    // A genuinely weak quiet-speech margin can still indicate that aggressive
+    // suppression would damage fricatives. It is only a cap in this rare case;
+    // ordinary quiet speech (for example 7 dB below the median) does not reduce
+    // the calibrated strength.
+    let quietMeasuredSnrDb: number | null = null
+    if (quietSpeechRms && quietSpeechRms > 0) {
+      quietMeasuredSnrDb = 20 * Math.log10(Math.max(1e-5, quietSpeechRms)) - noiseDb
+      // Quiet-speech SNR is the most sensitive predictor of consonant damage.
+      // Use a continuous cap instead of allowing a 12 dB step at ~4 dB SNR.
+      if (quietMeasuredSnrDb < 4) {
+        speechSafeCeiling = Math.min(speechSafeCeiling, 8 + Math.max(0, quietMeasuredSnrDb) * 0.5)
+      } else if (quietMeasuredSnrDb < 8) {
+        speechSafeCeiling = Math.min(speechSafeCeiling, 10 + (quietMeasuredSnrDb - 4) * 1.0)
+      }
+    }
+
+    // Silero confidence and noise stationarity must not be hard prerequisites for
+    // denoising strength: a successful calibration may also prove speech through
+    // its measured acoustic separation from the background.
+    const hasReliableSpeech = measuredSnrDb !== null && quietMeasuredSnrDb !== null &&
+      (speechVadFrames >= 6 || (measuredSnrDb >= 10 && quietMeasuredSnrDb >= 5))
+    if (hasReliableSpeech && measuredSnrDb !== null && quietMeasuredSnrDb !== null) {
+      // Continuous speech-supported target. Quiet speech receives the larger weight
+      // because weak consonants and word endings are the first parts damaged by an
+      // excessive attenuation limit. Unlike the former 12/14/16/18/20 dB steps,
+      // small measurement changes now produce small parameter changes. For example,
+      // median/quiet SNR of 12/6 dB maps to about 14 dB instead of jumping to 16.
+      const effectiveSpeechSnrDb = measuredSnrDb * 0.35 + quietMeasuredSnrDb * 0.65
+      const speechSupportedTarget = Math.max(8, Math.min(22, 8 + effectiveSpeechSnrDb * 0.75))
+      attenuation = Math.max(attenuation, speechSupportedTarget)
+    }
+
+    attenuation = Math.min(attenuation, speechSafeCeiling)
+
+    // Penalize transient/unstable noise gradually instead of a sudden mode jump.
+    // Stationary fan/room noise can reach 25 dB; clicks and keyboard bursts cannot
+    // force maximum broadband suppression from a single calibration sample.
+    const transientPenalty = 1 * clamp01((stationarityRatio - 4) / 4)
+    attenuation -= transientPenalty
+
+    return Math.round(Math.max(DEEPFILTER_MIN_ATTEN, Math.min(DEEPFILTER_MAX_ATTEN, attenuation)))
   }
 
   private calculateVadThresholds(noiseVadHigh: number, speechVadLow: number, speechVadMedian: number) {
@@ -418,17 +513,19 @@ export class WebRTCManager {
       // Put the opening threshold inside the measured gap. Quiet microphones often
       // produce low absolute Silero probabilities, so the gap matters more than a
       // global confidence constant.
-      vadOnThreshold = safeNoiseHigh + separation * 0.38
-      vadOffThreshold = safeNoiseHigh + separation * 0.12
+      vadOnThreshold = safeNoiseHigh + separation * 0.34
+      vadOffThreshold = safeNoiseHigh + separation * 0.10
     } else {
-      // Silero confidence can be compressed for some microphones. Calibration is
-      // still valid from the acoustic measurements; keep a conservative threshold
-      // above measured VAD noise instead of rejecting the spoken phrase.
-      vadOnThreshold = Math.max(0.06, safeNoiseHigh + 0.018)
-      vadOffThreshold = Math.max(0.025, safeNoiseHigh + 0.006)
+      // Do not derive a gate threshold from noise when calibration did not measure
+      // a real Silero speech/noise gap. That can place the opening threshold above
+      // every speech probability and mute the outgoing stream completely.
+      vadOnThreshold = SAFE_VAD_ON_THRESHOLD
+      vadOffThreshold = SAFE_VAD_OFF_THRESHOLD
     }
-    vadOnThreshold = Math.max(0.025, Math.min(0.20, vadOnThreshold))
-    vadOffThreshold = Math.max(0.012, Math.min(vadOnThreshold - 0.008, vadOffThreshold))
+    // Calibration may lower Silero thresholds for a quiet microphone, but must
+    // never raise them above the known audible defaults and mute the whole stream.
+    vadOnThreshold = Math.max(0.025, Math.min(SAFE_VAD_ON_THRESHOLD, vadOnThreshold))
+    vadOffThreshold = Math.max(0.012, Math.min(SAFE_VAD_OFF_THRESHOLD, vadOnThreshold - 0.008, vadOffThreshold))
     return { vadOnThreshold, vadOffThreshold }
   }
 
@@ -441,8 +538,8 @@ export class WebRTCManager {
     this.calibratedNoiseFloor = 0.003
     this.calibratedAttenuationLimit = DEEPFILTER_SMART_DEFAULT_ATTEN
     this.calibratedPreGainDb = 0
-    this.calibratedVadOnThreshold = 0.13
-    this.calibratedVadOffThreshold = 0.07
+    this.calibratedVadOnThreshold = SAFE_VAD_ON_THRESHOLD
+    this.calibratedVadOffThreshold = SAFE_VAD_OFF_THRESHOLD
     this.hasVoiceCalibration = false
 
     // Apply the most recent stored profile for this device immediately. No
@@ -460,8 +557,8 @@ export class WebRTCManager {
         Number.isFinite(latest.noiseVadHigh)
         ? this.calculateVadThresholds(latest.noiseVadHigh!, latest.speechVadLow!, latest.speechVadMedian!)
         : null
-      this.calibratedVadOnThreshold = vadThresholds?.vadOnThreshold ?? 0.13
-      this.calibratedVadOffThreshold = vadThresholds?.vadOffThreshold ?? 0.07
+      this.calibratedVadOnThreshold = vadThresholds?.vadOnThreshold ?? SAFE_VAD_ON_THRESHOLD
+      this.calibratedVadOffThreshold = vadThresholds?.vadOffThreshold ?? SAFE_VAD_OFF_THRESHOLD
       if (this.calibratedPreGainNode) {
         this.calibratedPreGainNode.gain.value = Math.pow(10, this.calibratedPreGainDb / 20)
       }
@@ -473,8 +570,8 @@ export class WebRTCManager {
     this.calibratedNoiseFloor = 0.003
     this.calibratedAttenuationLimit = DEEPFILTER_SMART_DEFAULT_ATTEN
     this.calibratedPreGainDb = 0
-    this.calibratedVadOnThreshold = 0.13
-    this.calibratedVadOffThreshold = 0.07
+    this.calibratedVadOnThreshold = SAFE_VAD_ON_THRESHOLD
+    this.calibratedVadOffThreshold = SAFE_VAD_OFF_THRESHOLD
     this.hasVoiceCalibration = false
     try {
       for (let i = localStorage.length - 1; i >= 0; i--) {
@@ -528,7 +625,14 @@ export class WebRTCManager {
 
     try {
       await ctx.audioWorklet.addModule(processorUrl)
-      this.dfNode = new AudioWorkletNode(ctx, 'deepfilter-processor')
+      this.dfNode = new AudioWorkletNode(ctx, 'deepfilter-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+        channelCount: 1,
+        channelCountMode: 'explicit',
+        channelInterpretation: 'speakers'
+      })
       this.dfNodeReady = false
       this.vadWorkerReady = false
       const me = useAppStore.getState().currentUser
@@ -559,7 +663,9 @@ export class WebRTCManager {
             this.vadWorker.postMessage({
               type: 'process',
               audioFrame,
-              sequence: event.data.sequence
+              sequence: event.data.sequence,
+              endFrameId: event.data.endFrameId,
+              windowRms: event.data.windowRms
             }, [audioFrame.buffer])
           }
         } else if (event.data.type === 'micLevelDb') {
@@ -632,7 +738,9 @@ export class WebRTCManager {
               this.dfNode.port.postMessage({
                 type: 'setSileroVadProbability',
                 probability: prob,
-                sequence: workerEvent.data.sequence
+                sequence: workerEvent.data.sequence,
+                endFrameId: workerEvent.data.endFrameId,
+                windowRms: workerEvent.data.windowRms
               })
             }
           } else if (workerEvent.data.type === 'error') {
@@ -1165,7 +1273,19 @@ export class WebRTCManager {
         echoCancellation: false,
         noiseSuppression: false,
         autoGainControl: false,
-        sampleRate: { ideal: 48000 }
+        sampleRate: { ideal: 48000 },
+        // Legacy Chromium flags are still honored by some Windows audio paths.
+        // Set every adaptive capture processor explicitly to false.
+        // @ts-ignore
+        googAutoGainControl: false,
+        googAutoGainControl2: false,
+        googNoiseSuppression: false,
+        googNoiseSuppression2: false,
+        googTypingNoiseDetection: false,
+        googHighpassFilter: false,
+        googEchoCancellation: false,
+        googEchoCancellation2: false,
+        googAudioMirroring: false
       }
       if (this.currentDeviceId && this.currentDeviceId !== 'default') {
         constraints.deviceId = { exact: this.currentDeviceId }
@@ -1315,16 +1435,28 @@ export class WebRTCManager {
         return
       }
 
-      const previousPreGainDb = this.calibratedPreGainDb
+      const previousProfile = {
+        noiseFloor: this.calibratedNoiseFloor,
+        attenuationLimit: this.calibratedAttenuationLimit,
+        preGainDb: this.calibratedPreGainDb,
+        vadOnThreshold: this.calibratedVadOnThreshold,
+        vadOffThreshold: this.calibratedVadOffThreshold,
+        hasVoiceCalibration: this.hasVoiceCalibration
+      }
       const previousInputGain = this.inputGainNode?.gain.value ?? this.inputVolumeToGain(this.inputVolume)
       const restoreInputGain = () => {
         if (this.inputGainNode) this.inputGainNode.gain.value = previousInputGain
       }
-      const restorePreviousPreGain = () => {
+      const restorePreviousProfile = () => {
         restoreInputGain()
-        this.calibratedPreGainDb = previousPreGainDb
+        this.calibratedNoiseFloor = previousProfile.noiseFloor
+        this.calibratedAttenuationLimit = previousProfile.attenuationLimit
+        this.calibratedPreGainDb = previousProfile.preGainDb
+        this.calibratedVadOnThreshold = previousProfile.vadOnThreshold
+        this.calibratedVadOffThreshold = previousProfile.vadOffThreshold
+        this.hasVoiceCalibration = previousProfile.hasVoiceCalibration
         if (this.calibratedPreGainNode) {
-          this.calibratedPreGainNode.gain.value = Math.pow(10, previousPreGainDb / 20)
+          this.calibratedPreGainNode.gain.value = Math.pow(10, previousProfile.preGainDb / 20)
         }
         this.updateThresholds()
       }
@@ -1337,7 +1469,7 @@ export class WebRTCManager {
       const timeout = window.setTimeout(() => {
         this.calibrationInProgress = false
         this.dfNode?.port.removeEventListener('message', messageHandler)
-        restorePreviousPreGain()
+        restorePreviousProfile()
         reject(new Error('Microphone calibration timed out'))
       }, durationMs + 3000)
 
@@ -1357,8 +1489,9 @@ export class WebRTCManager {
 
           if (!Number.isFinite(noiseFloor) || noiseFloor <= 0 || !Number.isFinite(lowNoise) || lowNoise <= 0 ||
             !Number.isFinite(peakNoise) || peakNoise <= 0 || !Number.isFinite(zeroCrossingRate) ||
-            !Number.isFinite(spectralTilt) || acceptedFrames < Math.max(60, totalFrames * 0.25)) {
-            restorePreviousPreGain()
+            !Number.isFinite(spectralTilt) || acceptedFrames < 20) {
+            console.warn('[WebRTC] Calibration rejected: insufficient noise samples', { acceptedFrames, rejectedSpeechFrames, totalFrames })
+            restorePreviousProfile()
             reject(new Error('Too much speech or insufficient noise samples during calibration'))
             return
           }
@@ -1373,26 +1506,56 @@ export class WebRTCManager {
           const speechVadMedian = Number(e.data.speechVadMedian)
           const speechVadFrames = Number(e.data.speechVadFrames) || 0
           const speechFrames = Number(e.data.speechFrames) || 0
-          const minimumSpeechPeak = Math.max(noiseFloor * 1.5, peakNoise * 1.12, 0.0005)
+          // A transient peak in the room must not invalidate a spoken phrase.
+          // Compare speech only with the robust noise floor, not peakNoise.
+          const minimumSpeechPeak = Math.max(noiseFloor * 1.01, 0.0002)
           if (!Number.isFinite(speechRms) || !Number.isFinite(quietSpeechRms) || !Number.isFinite(speechPeak) ||
             !Number.isFinite(noiseVadHigh) || !Number.isFinite(speechVadLow) || !Number.isFinite(speechVadMedian) ||
-            speechRms < noiseFloor * 1.04 || speechPeak < minimumSpeechPeak || speechFrames < 20) {
-            restorePreviousPreGain()
+            speechRms <= 0 || speechPeak < minimumSpeechPeak || speechFrames < 1) {
+            restorePreviousProfile()
             reject(new Error('No speech detected'))
             return
           }
 
-          const vadThresholds = this.calculateVadThresholds(noiseVadHigh, speechVadLow, speechVadMedian)
+          const vadThresholds = speechVadFrames >= 6
+            ? this.calculateVadThresholds(noiseVadHigh, speechVadLow, speechVadMedian)
+            : { vadOnThreshold: SAFE_VAD_ON_THRESHOLD, vadOffThreshold: SAFE_VAD_OFF_THRESHOLD }
 
           const speechDb = 20 * Math.log10(Math.max(1e-5, speechRms))
           const snrDb = speechDb - dbNoise
-          const attenuationLimit = this.calculateSpeechPreservingAttenuation(noiseFloor, quietSpeechRms, stationarityRatio)
+          const attenuationLimit = this.calculateSpeechPreservingAttenuation(
+            noiseFloor,
+            speechRms,
+            quietSpeechRms,
+            stationarityRatio,
+            speechVadFrames
+          )
+          const quietSpeechDb = 20 * Math.log10(Math.max(1e-5, quietSpeechRms))
+          const quietSnrDb = quietSpeechDb - dbNoise
+          console.info('[WebRTC] Calibration suppression profile', {
+            noiseDbfs: Number(dbNoise.toFixed(1)),
+            speechDbfs: Number(speechDb.toFixed(1)),
+            quietSpeechDbfs: Number(quietSpeechDb.toFixed(1)),
+            snrDb: Number(snrDb.toFixed(1)),
+            quietSnrDb: Number(quietSnrDb.toFixed(1)),
+            stationarityRatio: Number(stationarityRatio.toFixed(2)),
+            speechVadFrames,
+            attenuationLimitDb: attenuationLimit,
+            availableRangeDb: `${DEEPFILTER_MIN_ATTEN}-${DEEPFILTER_MAX_ATTEN}`
+          })
+          console.info(
+            `[WebRTC] Calibration result: noise=${dbNoise.toFixed(1)}dBFS, ` +
+            `speech=${speechDb.toFixed(1)}dBFS, quietSpeech=${quietSpeechDb.toFixed(1)}dBFS, ` +
+            `SNR=${snrDb.toFixed(1)}dB, quietSNR=${quietSnrDb.toFixed(1)}dB, ` +
+            `stationarity=${stationarityRatio.toFixed(2)}, SileroFrames=${speechVadFrames}, ` +
+            `attenuation=${attenuationLimit}dB`
+          )
           const peakDb = 20 * Math.log10(Math.max(1e-5, speechPeak))
-          const desiredPreGainDb = -18 - speechDb
-          const peakLimitedGainDb = -6 - peakDb
+          const desiredPreGainDb = -24 - speechDb
+          const peakLimitedGainDb = -12 - peakDb
           // Calibration may lift a quiet microphone, but must never turn the user
           // down because the prompted phrase happened to be louder than normal.
-          const preGainDb = Math.max(0, Math.min(6, Math.min(desiredPreGainDb, peakLimitedGainDb)))
+          const preGainDb = Math.max(0, Math.min(3, Math.min(desiredPreGainDb, peakLimitedGainDb)))
 
           restoreInputGain()
           this.calibratedNoiseFloor = noiseFloor
@@ -1403,6 +1566,14 @@ export class WebRTCManager {
           this.hasVoiceCalibration = true
           if (this.calibratedPreGainNode) this.calibratedPreGainNode.gain.value = Math.pow(10, preGainDb / 20)
           this.updateThresholds()
+          console.info('[WebRTC] DeepFilter calibrated params requested', {
+            attenuationLimitDb: this.getThresholdParams(1).attenuationLimit,
+            postFilterBeta: 0,
+            thresholdMode: this.thresholdMode,
+            vadOnThreshold: Number(this.calibratedVadOnThreshold.toFixed(4)),
+            vadOffThreshold: Number(this.calibratedVadOffThreshold.toFixed(4)),
+            preGainDb: Number(preGainDb.toFixed(2))
+          })
 
           try {
             const profile: StoredEnvironmentProfile = {
@@ -1515,7 +1686,13 @@ export class WebRTCManager {
             autoGainControl: false,
             sampleRate: { ideal: 48000 },
             // @ts-ignore
+            googAutoGainControl: false,
+            googAutoGainControl2: false,
+            googNoiseSuppression: false,
+            googNoiseSuppression2: false,
+            googTypingNoiseDetection: false,
             googHighpassFilter: false,
+            googEchoCancellation: false,
             googEchoCancellation2: false,
             googAudioMirroring: false
           }
@@ -1540,7 +1717,17 @@ export class WebRTCManager {
                   echoCancellation: false,
                   noiseSuppression: false,
                   autoGainControl: false,
-                  sampleRate: { ideal: 48000 }
+                  sampleRate: { ideal: 48000 },
+                  // @ts-ignore
+                  googAutoGainControl: false,
+                  googAutoGainControl2: false,
+                  googNoiseSuppression: false,
+                  googNoiseSuppression2: false,
+                  googTypingNoiseDetection: false,
+                  googHighpassFilter: false,
+                  googEchoCancellation: false,
+                  googEchoCancellation2: false,
+                  googAudioMirroring: false
                 },
                 video: false
               })
@@ -1556,21 +1743,23 @@ export class WebRTCManager {
                   autoGainControl: false,
                   sampleRate: { ideal: 48000 },
                   // @ts-ignore
+                  googAutoGainControl: false,
+                  googAutoGainControl2: false,
+                  googNoiseSuppression: false,
+                  googNoiseSuppression2: false,
+                  googTypingNoiseDetection: false,
                   googHighpassFilter: false,
+                  googEchoCancellation: false,
                   googEchoCancellation2: false,
                   googAudioMirroring: false
                 },
                 video: false
               })
             } catch {
-              try {
-                raw = await navigator.mediaDevices.getUserMedia({
-                  audio: true,
-                  video: false
-                })
-              } catch {
-                raw = createSilentAudioStream()
-              }
+              // Never fall back to `audio: true`: Chromium may silently enable
+              // AGC, echo cancellation and browser noise suppression, causing the
+              // exact real-time level pumping this pipeline is designed to avoid.
+              raw = createSilentAudioStream()
             }
           }
         }
@@ -1594,7 +1783,12 @@ export class WebRTCManager {
         this.localStream = await this.createProcessedStream(raw)
 
         const localTrack = this.localStream.getAudioTracks()[0]
-        if (localTrack) localTrack.contentHint = 'speech'
+        if (localTrack) {
+          // The track has already passed Silero and DeepFilter. Preserve its
+          // full-band timbre instead of asking WebRTC to apply speech-oriented
+          // encoder heuristics to an already cleaned signal.
+          localTrack.contentHint = 'music'
+        }
 
         if (this.processedContext && this.processedContext.state === 'suspended') {
           await this.processedContext.resume().catch(() => { })
@@ -1634,6 +1828,7 @@ export class WebRTCManager {
           const newTrack = this.localStream?.getAudioTracks()[0]
           if (sender && newTrack) {
             await sender.replaceTrack(newTrack).catch(() => { })
+            this.configureAudioSender(sender)
           }
         }
       } catch (e) {
@@ -2289,11 +2484,21 @@ export class WebRTCManager {
     try {
       const params = sender.getParameters()
       if (!params.encodings || params.encodings.length === 0) params.encodings = [{}]
-      params.encodings[0].maxBitrate = 96000
+      params.encodings[0].maxBitrate = OPUS_AUDIO_BITRATE
       params.encodings[0].networkPriority = 'high'
       params.encodings[0].priority = 'high'
-      sender.setParameters(params).catch(() => { })
-    } catch { }
+      sender.setParameters(params)
+        .then(() => {
+          console.info('[WebRTC] Audio sender configured', {
+            codec: 'opus/48000 mono',
+            maxBitrate: sender.getParameters().encodings?.[0]?.maxBitrate,
+            contentHint: sender.track?.contentHint
+          })
+        })
+        .catch(error => console.warn('[WebRTC] Failed to configure audio sender', error))
+    } catch (error) {
+      console.warn('[WebRTC] Failed to read audio sender parameters', error)
+    }
   }
 
   public async connectToPeer(userId: string, preserveRemoteVideoOnFailure = false) {
@@ -2409,7 +2614,6 @@ export class WebRTCManager {
 
     try {
       const offer = JSON.parse(offerStr)
-      offer.sdp = optimizeSDP(offer.sdp)
 
       const offerCollision = pc.signalingState !== 'stable'
       if (offerCollision) {
@@ -2439,7 +2643,6 @@ export class WebRTCManager {
     if (pc) {
       try {
         const answer = JSON.parse(answerStr)
-        answer.sdp = optimizeSDP(answer.sdp)
         await pc.setRemoteDescription(new RTCSessionDescription(answer))
         await this.drainPendingCandidates(senderId)
         this.flushPendingRenegotiation(senderId)

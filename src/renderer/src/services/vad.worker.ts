@@ -18,12 +18,15 @@ const sampleRateTensor = new Tensor(
 )
 let inferenceRunning = false
 const pendingFrames: ProcessMessage[] = []
+const MAX_PENDING_FRAMES = 4
 let lastProcessedSequence = -1
 
 interface ProcessMessage {
   type: 'process'
   audioFrame: Float32Array
   sequence: number
+  endFrameId: number
+  windowRms: number
 }
 
 function resetModelState(): void {
@@ -61,7 +64,9 @@ async function processFrame(message: ProcessMessage): Promise<void> {
     self.postMessage({
       type: 'probability',
       probability,
-      sequence: message.sequence
+      sequence: message.sequence,
+      endFrameId: message.endFrameId,
+      windowRms: message.windowRms
     })
   } catch (error) {
     resetModelState()
@@ -103,6 +108,10 @@ self.onmessage = (event: MessageEvent) => {
   } else if (message.type === 'process') {
     const frame = message as ProcessMessage
     if (inferenceRunning) {
+      // Never let delayed VAD decisions control newer audio. If inference falls
+      // behind, discard the stale backlog; the sequence gap resets Silero state
+      // before the newest contiguous group is evaluated.
+      if (pendingFrames.length >= MAX_PENDING_FRAMES) pendingFrames.splice(0, pendingFrames.length - 1)
       pendingFrames.push(frame)
     } else {
       void drainFrames(frame)
