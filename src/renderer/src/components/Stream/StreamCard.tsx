@@ -10,6 +10,7 @@ interface StreamCardProps {
   cardSize: { w: number; h: number }
   isFocused: boolean
   isFullscreen?: boolean
+  showOverlays?: boolean
   onClick: () => void
   onContextMenu: (e: React.MouseEvent) => void
   onToggleFullscreen?: () => void
@@ -22,6 +23,7 @@ export const StreamCard = ({
   cardSize,
   isFocused,
   isFullscreen,
+  showOverlays = true,
   onClick,
   onContextMenu,
   onToggleFullscreen,
@@ -202,7 +204,7 @@ export const StreamCard = ({
         <div className="absolute inset-0 rounded-xl ring-1 ring-inset ring-[#303035] pointer-events-none z-20" />
       )}
 
-      <div className="absolute inset-x-0 top-0 p-4 pointer-events-none flex items-center justify-between z-10">
+      <div className={`absolute inset-x-0 top-0 p-4 pointer-events-none flex items-center justify-between z-10 transition-all duration-300 ${isFullscreen && !showOverlays ? '-translate-y-4 opacity-0' : 'translate-y-0 opacity-100'}`}>
         <div className="bg-[#09090B]/85 border border-[#303035]/50 px-3 py-1 rounded-full flex items-center gap-2">
           <span className="text-white font-bold text-xs truncate">
             Трансляция {user.displayName}
@@ -225,10 +227,15 @@ export const StreamCard = ({
                 if (onClick) onClick()
               }}
               style={{ willChange: 'transform, opacity' }}
-              className="relative w-10 h-10 flex items-center justify-center bg-[#09090B]/90 border border-[#FF007F]/30 rounded-full hover:scale-110 active:scale-95 transition-[transform,opacity] duration-200 ease-out cursor-pointer pointer-events-auto opacity-0 group-hover:opacity-100 translate-y-2 group-hover:translate-y-0"
-              title={t('stream.minimizeHint')}
+              className="group/mode-button relative w-10 h-10 flex items-center justify-center bg-[#09090B]/90 border border-[#FF007F]/30 rounded-full hover:scale-110 active:scale-95 transition-[transform,opacity] duration-200 ease-out cursor-pointer pointer-events-auto opacity-0 group-hover:opacity-100 translate-y-2 group-hover:translate-y-0"
+              aria-label={t('stream.minimizeHint')}
             >
-              <span className="absolute mt-[-42px] opacity-0 group-hover:opacity-100 transition-opacity bg-[#09090B]/95 border border-[#303035] rounded-md px-1.5 py-0.5 text-[9px] font-bold text-white">F</span>
+              <span
+                role="tooltip"
+                className="absolute bottom-full left-0 mb-2 pointer-events-none whitespace-nowrap opacity-0 group-hover/mode-button:opacity-100 delay-0 group-hover/mode-button:delay-[2000ms] transition-opacity duration-150 bg-[#09090B]/95 border border-[#303035] rounded-md px-2 py-1 text-[9px] font-bold text-white shadow-xl"
+              >
+                {t('stream.minimizeHint')}
+              </span>
               <CornersIn weight="bold" size={20} className="text-[#FF007F] shrink-0" />
             </button>
           </div>
@@ -240,10 +247,15 @@ export const StreamCard = ({
                 if (onToggleFullscreen) onToggleFullscreen()
               }}
               style={{ willChange: 'transform, opacity' }}
-              className="relative w-10 h-10 flex items-center justify-center bg-[#09090B]/90 border border-[#FF007F]/30 rounded-full hover:scale-110 active:scale-95 transition-[transform,opacity] duration-200 ease-out cursor-pointer pointer-events-auto opacity-0 group-hover:opacity-100 translate-y-2 group-hover:translate-y-0"
-              title={t('stream.fullscreenHint')}
+              className="group/mode-button relative w-10 h-10 flex items-center justify-center bg-[#09090B]/90 border border-[#FF007F]/30 rounded-full hover:scale-110 active:scale-95 transition-[transform,opacity] duration-200 ease-out cursor-pointer pointer-events-auto opacity-0 group-hover:opacity-100 translate-y-2 group-hover:translate-y-0"
+              aria-label={t('stream.fullscreenHint')}
             >
-              <span className="absolute mt-[-42px] opacity-0 group-hover:opacity-100 transition-opacity bg-[#09090B]/95 border border-[#303035] rounded-md px-1.5 py-0.5 text-[9px] font-bold text-white">F</span>
+              <span
+                role="tooltip"
+                className="absolute bottom-full right-0 mb-2 pointer-events-none whitespace-nowrap opacity-0 group-hover/mode-button:opacity-100 delay-0 group-hover/mode-button:delay-[2000ms] transition-opacity duration-150 bg-[#09090B]/95 border border-[#303035] rounded-md px-2 py-1 text-[9px] font-bold text-white shadow-xl"
+              >
+                {t('stream.fullscreenHint')}
+              </span>
               <CornersOut weight="bold" size={20} className="text-[#FF007F] shrink-0" />
             </button>
           </div>

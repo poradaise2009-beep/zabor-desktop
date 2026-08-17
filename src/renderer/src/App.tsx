@@ -6,7 +6,7 @@ import { useTranslation, Trans } from 'react-i18next';
 import { useAppStore, User, VoiceChannel } from './store/useAppStore';
 import { useSpeakingStore } from './store/useSpeakingStore';
 import { signalRService } from './services/signalr';
-import { webrtc } from './services/webrtc';
+import { webrtc, CalibrationError } from './services/webrtc';
 import { isPackedGif, packGif, unpackGif, getDisplaySrc, getStaticFrameSync, preloadStaticFrame } from './utils/avatar';
 import i18n from './i18n';
 
@@ -55,14 +55,16 @@ const VoiceUserCard = memo(({ user, cardSize, isIdle, t, handleContextMenu, webr
           </div>
         </div>
       )}
-      <div className={`absolute ${cardSize.avatarSize <= 48 ? 'bottom-2' : 'bottom-4'} left-1/2 -translate-x-1/2 transition-all duration-300 ${isIdle ? 'translate-y-8 opacity-0 pointer-events-none' : 'translate-y-0 opacity-100'}`}>
-        <div className={`bg-[#09090B]/80 backdrop-blur-md border border-[#303035]/50 rounded-full flex items-center gap-1.5 shadow-lg whitespace-nowrap ${cardSize.avatarSize <= 48 ? 'px-2 py-0.5' : 'px-4 py-1.5'
-          }`} style={{ maxWidth: `${cardSize.w - 20}px` }}>
-          <span className={`text-white font-bold truncate ${cardSize.avatarSize <= 48 ? 'text-[11px]' : 'text-sm'}`}>{user.displayName}</span>
-          {(user.isMuted || user.isServerMuted) && <MicOff weight="bold" size={cardSize.avatarSize <= 48 ? 10 : 14} className="text-danger shrink-0" />}
-          {(user.isDeafened || user.isServerDeafened) && <SpeakerSlash weight="bold" size={cardSize.avatarSize <= 48 ? 10 : 14} className="text-danger shrink-0" />}
+      {isConnected && (
+        <div className={`absolute ${cardSize.avatarSize <= 48 ? 'bottom-2' : 'bottom-4'} left-1/2 -translate-x-1/2 transition-all duration-300 ${isIdle ? 'translate-y-8 opacity-0 pointer-events-none' : 'translate-y-0 opacity-100'}`}>
+          <div className={`bg-[#09090B]/80 backdrop-blur-md border border-[#303035]/50 rounded-full flex items-center gap-1.5 shadow-lg whitespace-nowrap ${cardSize.avatarSize <= 48 ? 'px-2 py-0.5' : 'px-4 py-1.5'
+            }`} style={{ maxWidth: `${cardSize.w - 20}px` }}>
+            <span className={`text-white font-bold truncate ${cardSize.avatarSize <= 48 ? 'text-[11px]' : 'text-sm'}`}>{user.displayName}</span>
+            {(user.isMuted || user.isServerMuted) && <MicOff weight="bold" size={cardSize.avatarSize <= 48 ? 10 : 14} className="text-danger shrink-0" />}
+            {(user.isDeafened || user.isServerDeafened) && <SpeakerSlash weight="bold" size={cardSize.avatarSize <= 48 ? 10 : 14} className="text-danger shrink-0" />}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 });
@@ -132,7 +134,7 @@ const CallUserCard = memo(({ currentCallUser, callStatus, cardSize, webrtcConnec
           </div>
         )}
 
-        {(isConnected || callStatus === 'connected') && <div
+        {(isConnected || callStatus === 'calling') && <div
           className={`absolute bottom-4 left-1/2 -translate-x-1/2 transition-all duration-300 ${isIdle && callStatus === 'connected'
             ? 'translate-y-8 opacity-0 pointer-events-none'
             : 'translate-y-0 opacity-100'
@@ -175,10 +177,27 @@ export default function App() {
   const [volumeType, setVolumeType] = useState<'voice' | 'stream'>('voice');
   const [showOverlays, setShowOverlays] = useState(true);
   const overlayTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [windowSize, setWindowSize] = useState({
+    width: typeof window !== 'undefined' ? window.innerWidth : 1280,
+    height: typeof window !== 'undefined' ? window.innerHeight : 720
+  });
+
+  useEffect(() => {
+    const handleResize = () => {
+      setWindowSize({ width: window.innerWidth, height: window.innerHeight });
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   useEffect(() => {
     if (store.isStreamFullscreen) {
       setShowOverlays(true);
+      if (overlayTimeoutRef.current) clearTimeout(overlayTimeoutRef.current);
+      overlayTimeoutRef.current = setTimeout(() => {
+        setShowOverlays(false);
+      }, 3000);
+
       const onMove = () => {
         setShowOverlays(true);
         if (overlayTimeoutRef.current) clearTimeout(overlayTimeoutRef.current);
@@ -199,9 +218,9 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!document.hasFocus() || event.key.toLowerCase() !== 'f' || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (!document.hasFocus() || event.repeat || event.code !== 'KeyF' || event.ctrlKey || event.metaKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
-      if (target?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
+      if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
       if (!store.activeStreamId) return;
       event.preventDefault();
       store.setStreamFullscreen(!store.isStreamFullscreen);
@@ -309,6 +328,12 @@ export default function App() {
       }).catch(err => console.error("Failed to fetch fresh user profile:", err));
     }
   }, [store.modals.profile, store.selectedProfileUser?.id]);
+
+  useEffect(() => {
+    if (!store.modals.settings) {
+      setCalibrationSuccess(false);
+    }
+  }, [store.modals.settings]);
 
   useEffect(() => {
     if (!store.incomingChannelInvite) return;
@@ -1043,6 +1068,7 @@ export default function App() {
     setCropScale(1);
     setCropPos({ x: 0, y: 0 });
     setIsDragging(false);
+    setCalibrationSuccess(false);
 
     store.closeAllModals();
   }, [store]);
@@ -1184,15 +1210,29 @@ export default function App() {
         }, 200);
       });
       setCalibrationSuccess(true);
-      setTimeout(() => setCalibrationSuccess(false), 4000);
     } catch (err) {
-      console.warn('Manual calibration failed:', err);
-      const reason = err instanceof Error ? err.message : '';
-      const message = reason === 'No speech detected'
-        ? t('toasts.calibrationNoSpeech', 'Не услышали фразу. Повторите.')
-        : reason === 'Too much speech or insufficient noise samples during calibration'
-          ? t('toasts.calibrationNeedSilence', 'Сначала нужна тишина. Повторите.')
-          : t('toasts.calibrationFailedRetry', 'Калибровка не удалась. Повторите.');
+      // Every failure cause gets its own message: a single generic toast made
+      // machine-specific problems (dead DeepFilter engine, busy or missing
+      // microphone) indistinguishable from "say the phrase again".
+      const code = err instanceof CalibrationError ? err.code : null;
+      console.error('Manual calibration failed:', {
+        code: code ?? (err instanceof Error ? err.message : String(err)),
+        detail: err instanceof CalibrationError ? err.detail : '',
+        ...webrtc.getCalibrationDiagnostics()
+      });
+      const message = code === 'CALIBRATION_ENGINE_UNAVAILABLE'
+        ? t('toasts.calibrationEngineUnavailable', 'Шумоподавление не запустилось на этом устройстве. Перезапустите приложение.')
+        : code === 'CALIBRATION_NO_MIC'
+          ? t('toasts.calibrationNoMic', 'Микрофон недоступен. Проверьте устройство ввода и повторите.')
+          : code === 'CALIBRATION_BUSY'
+            ? t('toasts.calibrationBusy', 'Калибровка уже идёт. Дождитесь её окончания.')
+            : code === 'CALIBRATION_TIMEOUT'
+              ? t('toasts.calibrationTimeout', 'Микрофон перестал отдавать звук. Проверьте устройство и повторите.')
+              : code === 'CALIBRATION_NEEDS_SILENCE'
+                ? t('toasts.calibrationNeedSilence', 'Сначала нужна тишина. Повторите.')
+                : code === 'CALIBRATION_NO_SPEECH'
+                  ? t('toasts.calibrationNoSpeech', 'Не услышали фразу. Повторите.')
+                  : t('toasts.calibrationFailedRetry', 'Калибровка не удалась. Повторите.');
       store.setSystemToast(message);
       setTimeout(() => {
         const currentStore = useAppStore.getState();
@@ -2243,32 +2283,40 @@ export default function App() {
                   const activeStream = items.find(item => item.type === 'stream' && store.activeStreamId === item.user.id);
 
                   if (activeStream && store.isStreamFullscreen) {
-                    const fsMaxW = window.innerWidth - 40;
-                    const fsMaxH = window.innerHeight - 140;
-                    let fsW = fsMaxW;
-                    let fsH = fsW / streamRatio;
-                    if (fsH > fsMaxH) {
-                      fsH = fsMaxH;
-                      fsW = fsH * streamRatio;
+                    const normalMaxW = windowSize.width - 40;
+                    const normalMaxH = windowSize.height - 140;
+                    let normalW = normalMaxW;
+                    let normalH = normalW / streamRatio;
+                    if (normalH > normalMaxH) {
+                      normalH = normalMaxH;
+                      normalW = normalH * streamRatio;
                     }
 
-                    const normalH = fsH;
-                    const normalW = fsW;
-                    const normalTop = 40 + (fsMaxH - normalH) / 2;
-                    const normalLeft = 20 + (fsMaxW - normalW) / 2;
+                    const normalTop = 40 + (normalMaxH - normalH) / 2;
+                    const normalLeft = (windowSize.width - normalW) / 2;
 
-                    const expandedH = fsH + 30;
-                    const expandedW = expandedH * streamRatio;
-                    const expandedTop = normalTop - 2;
-                    const expandedLeft = 20 + (fsMaxW - expandedW) / 2;
+                    const expMarginX = 8;
+                    const expMarginTop = 38;
+                    const expMarginBottom = 8;
+                    const expMaxW = windowSize.width - expMarginX * 2;
+                    const expMaxH = windowSize.height - expMarginTop - expMarginBottom;
+                    let expW = expMaxW;
+                    let expH = expW / streamRatio;
+                    if (expH > expMaxH) {
+                      expH = expMaxH;
+                      expW = expH * streamRatio;
+                    }
 
-                    const currentW = showOverlays ? normalW : expandedW;
-                    const currentH = showOverlays ? normalH : expandedH;
-                    const currentTop = showOverlays ? normalTop : expandedTop;
-                    const currentLeft = showOverlays ? normalLeft : expandedLeft;
+                    const expTop = expMarginTop + (expMaxH - expH) / 2;
+                    const expLeft = (windowSize.width - expW) / 2;
+
+                    const currentW = showOverlays ? normalW : expW;
+                    const currentH = showOverlays ? normalH : expH;
+                    const currentTop = showOverlays ? normalTop : expTop;
+                    const currentLeft = showOverlays ? normalLeft : expLeft;
 
                     return (
-                      <div className="fixed inset-0 bg-black z-[9999]">
+                      <div className={`fixed inset-0 bg-black z-[9999] ${showOverlays ? '' : 'cursor-none'}`}>
                         <div
                           style={{
                             position: 'absolute',
@@ -2286,6 +2334,7 @@ export default function App() {
                             cardSize={{ w: currentW, h: currentH }}
                             isFocused={true}
                             isFullscreen={true}
+                            showOverlays={showOverlays}
                             onClick={() => { }}
                             onContextMenu={e => handleContextMenu(e, 'stream', activeStream.user)}
                             onRatioChange={setStreamRatio}
@@ -2315,11 +2364,16 @@ export default function App() {
                         <div className={`absolute bottom-6 left-1/2 -translate-x-1/2 bg-panelBg/95 backdrop-blur-xl px-6 py-4 rounded-full flex gap-4 items-center shadow-2xl border border-[#303035] transition-all duration-300 z-50 ${showOverlays ? 'translate-y-0 opacity-100' : 'translate-y-28 opacity-0 pointer-events-none'}`}>
                           <button
                             onClick={() => store.setStreamFullscreen(false)}
-                            className="group relative w-14 h-14 rounded-full flex items-center justify-center bg-surface hover:bg-surfaceHover text-white transition-colors"
-                            title={t('stream.exitFullscreenHint')}
+                            className="group/mode-button relative w-14 h-14 rounded-full flex items-center justify-center bg-surface hover:bg-surfaceHover text-white transition-colors"
+                            aria-label={t('stream.exitFullscreenHint')}
                           >
-                            <span className="absolute mt-[-52px] opacity-0 group-hover:opacity-100 transition-opacity bg-[#09090B]/95 border border-[#303035] rounded-md px-2 py-1 text-[10px] font-bold text-white">F</span>
-                            <div className="flex items-center justify-center transition-transform duration-200 group-hover:scale-110">
+                            <span
+                              role="tooltip"
+                              className="absolute bottom-full left-1/2 mb-3 -translate-x-1/2 pointer-events-none whitespace-nowrap opacity-0 group-hover/mode-button:opacity-100 delay-0 group-hover/mode-button:delay-[2000ms] transition-opacity duration-150 bg-[#09090B]/95 border border-[#303035] rounded-md px-2.5 py-1.5 text-[10px] font-bold text-white shadow-xl"
+                            >
+                              {t('stream.exitFullscreenHint')}
+                            </span>
+                            <div className="flex items-center justify-center transition-transform duration-200 group-hover/mode-button:scale-110">
                               <CornersIn weight="bold" size={24} />
                             </div>
                           </button>

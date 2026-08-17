@@ -83,6 +83,9 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
   private readonly VAD_FRAME_SIZE = 512
   private readonly VAD_ON_THRESHOLD = 0.10
   private readonly VAD_OFF_THRESHOLD = 0.05
+  // Two consecutive 32 ms decisions reject isolated clicks while the existing
+  // 200 ms output delay preserves the complete speech onset through preroll.
+  private readonly VAD_ATTACK_RESULTS = 2
   // Fixed Silero-only hangover, following the stable "Нормальный шумодав" design.
   // Energy never changes the open state or gain. Seven 32 ms negative decisions
   // preserve quiet word endings while sustained non-speech closes in ~224 ms.
@@ -96,6 +99,7 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
   private vadOnThreshold = this.VAD_ON_THRESHOLD
   private vadOffThreshold = this.VAD_OFF_THRESHOLD
   private speechSegmentOpen = false
+  private consecutiveVadSpeechResults = 0
   private consecutiveVadSilenceResults = 0
   private lastVadSequence = -1
   private audioFrameId = 0
@@ -129,8 +133,8 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
   private readonly vad16kBuffer = new Float32Array(this.VAD_FRAME_SIZE)
   private vad16kWriteIndex = 0
   private vadSequence = 0
-  private readonly vadDecimatorTaps = new Float32Array(21)
-  private readonly vadDecimatorHistory = new Float32Array(21)
+  private readonly vadDecimatorTaps = new Float32Array(49)
+  private readonly vadDecimatorHistory = new Float32Array(49)
   private vadDecimatorWriteIndex = 0
   private vadDecimatorPhase = 0
   private vadWindowSquareSum = 0
@@ -143,10 +147,13 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
   private readonly calibrationSpeechPeaks = new Float32Array(1200)
   private readonly calibrationNoiseVad = new Float32Array(1200)
   private readonly calibrationSpeechVad = new Float32Array(1200)
+  private readonly calibrationSpeechVadRms = new Float32Array(1200)
   private calibrationTotalFrames = 0
+  private calibrationStartFrameId = 0
   private calibrationCount = 0
   private calibrationSpeechCount = 0
   private calibrationNoiseVadCount = 0
+  private calibrationSpeechVadCount = 0
   private calibrationRejectedSpeechFrames = 0
   private calibrationZcrSum = 0
   private calibrationSpectralTiltSum = 0
@@ -172,9 +179,10 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < this.speechRingSpeech.length; i++) {
       this.speechRingFrames.push(new Float32Array(this.FRAME_SIZE))
     }
-    // Windowed-sinc low-pass for clean 48 -> 16 kHz decimation. The previous
-    // two-state approximation changed the spectral shape of quiet consonants and
-    // made Silero less stable on some microphones.
+    // Windowed-sinc low-pass for clean 48 -> 16 kHz decimation. Forty-nine taps
+    // preserve the speech band while rejecting aliases above the 8 kHz Nyquist
+    // limit much more strongly than the former short filter. The coefficients are
+    // normalized to unity DC gain, so Silero still receives the raw voice level.
     const center = (this.vadDecimatorTaps.length - 1) / 2
     const cutoff = 0.15
     let tapSum = 0
@@ -212,7 +220,17 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
         }
         if (event.data.isMuted !== undefined) {
           const nextMuted = event.data.isMuted
-          if (nextMuted && !this.isMuted) {
+          if (nextMuted && !this.isMuted && this.calibrationFramesLeft > 0) {
+            // Muting in the middle of a calibration run: the full reset below
+            // would zero audioFrameId and invalidate calibrationStartFrameId, so
+            // the run could never produce a result. Only silence what is already
+            // buffered — process() keeps writing zeros while muted.
+            this.outputBuffer.fill(0)
+            if (this.lastVadSent) {
+              this.port.postMessage({ type: 'vad', isSpeaking: false })
+              this.lastVadSent = false
+            }
+          } else if (nextMuted && !this.isMuted) {
             this.inputBuffer.fill(0)
             this.outputBuffer.fill(0)
             this.inputReadIndex = 0
@@ -221,6 +239,7 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
             this.outputWriteIndex = this.FRAME_SIZE * 2
             this.rmsSmoothed = 0
             this.speechSegmentOpen = false
+            this.consecutiveVadSpeechResults = 0
             this.consecutiveVadSilenceResults = 0
             this.sileroVadHealthy = false
             this.lastSileroResultFrameId = -1
@@ -270,10 +289,10 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
           const vadOnThreshold = Number(event.data.vadOnThreshold)
           const vadOffThreshold = Number(event.data.vadOffThreshold)
           this.vadOnThreshold = Number.isFinite(vadOnThreshold)
-            ? Math.max(0.025, Math.min(0.20, vadOnThreshold))
+            ? Math.max(0.018, Math.min(0.20, vadOnThreshold))
             : this.VAD_ON_THRESHOLD
           this.vadOffThreshold = Number.isFinite(vadOffThreshold)
-            ? Math.max(0.012, Math.min(this.vadOnThreshold - 0.008, vadOffThreshold))
+            ? Math.max(0.008, Math.min(this.vadOnThreshold - 0.006, vadOffThreshold))
             : this.VAD_OFF_THRESHOLD
         }
         if (event.data.attenuationLimit !== undefined) {
@@ -310,9 +329,11 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
         this.calibrationMode = event.data.type === 'startEnvironmentProbe' ? 'probe' : 'manual'
         this.calibrationTotalFrames = Math.floor((event.data.durationMs || 5000) / 10)
         this.calibrationFramesLeft = this.calibrationTotalFrames
+        this.calibrationStartFrameId = this.audioFrameId
         this.calibrationCount = 0
         this.calibrationSpeechCount = 0
         this.calibrationNoiseVadCount = 0
+        this.calibrationSpeechVadCount = 0
         this.calibrationRejectedSpeechFrames = 0
         this.calibrationZcrSum = 0
         this.calibrationSpectralTiltSum = 0
@@ -321,10 +342,13 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
         // the first silence stage of a new one-shot calibration.
         this.sileroVadProbability = 0
         this.speechSegmentOpen = false
+        this.consecutiveVadSpeechResults = 0
         this.consecutiveVadSilenceResults = 0
         this.port.postMessage({ type: 'log', message: 'Calibration started' })
       } else if (event.data.type === 'setSileroVadProbability') {
-        if (this.isMuted || !this.sileroVadEnabled) return
+        // Calibration keeps consuming VAD results while muted: without them the
+        // run has no labelled speech distribution and can only fail.
+        if ((this.isMuted && this.calibrationFramesLeft <= 0) || !this.sileroVadEnabled) return
         const sequence = Number(event.data.sequence)
         const endFrameId = Number(event.data.endFrameId)
         const windowRms = Number(event.data.windowRms)
@@ -335,20 +359,62 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
         this.lastSileroResultFrameId = Number.isFinite(endFrameId) ? endFrameId : this.audioFrameId
         this.sileroVadProbability = Math.max(0, Math.min(1, Number(event.data.probability) || 0))
 
-        if (this.sileroVadProbability >= this.vadOnThreshold) {
-          this.speechSegmentOpen = true
-          this.consecutiveVadSilenceResults = 0
-          if (Number.isFinite(endFrameId)) {
-            this.markBufferedSpeechFrom(endFrameId - this.SPEECH_PREROLL_FRAMES)
+        // Calibration must pair a Silero probability with the exact raw 32 ms
+        // window classified by the model. The worker returns both its source frame
+        // id and RMS; using the current 10 ms processing frame here would introduce
+        // inference-latency skew and bias quiet-speech thresholds unpredictably.
+        if (this.calibrationFramesLeft > 0 && Number.isFinite(endFrameId) && Number.isFinite(windowRms)) {
+          const elapsedFrames = endFrameId - this.calibrationStartFrameId
+          const silenceStageFrames = Math.floor(this.calibrationTotalFrames * 0.3)
+          const speechStageEnd = Math.floor(this.calibrationTotalFrames * 0.8)
+          const phaseGuardFrames = Math.min(20, Math.floor(this.calibrationTotalFrames * 0.02))
+          const isSilenceStage = elapsedFrames >= phaseGuardFrames &&
+            elapsedFrames < silenceStageFrames - phaseGuardFrames
+          const isSpeechStage = this.calibrationMode === 'manual' &&
+            elapsedFrames >= silenceStageFrames + phaseGuardFrames &&
+            elapsedFrames < speechStageEnd - phaseGuardFrames
+          const isProbeFrame = this.calibrationMode === 'probe' &&
+            elapsedFrames >= 0 && elapsedFrames < this.calibrationTotalFrames
+          const normalizedWindowRms = windowRms / this.gainFactor
+          // Do not let an early spoken phrase contaminate the labelled noise
+          // distribution. The floor is deliberately below the normal runtime
+          // opening threshold so quiet speech is excluded from noise estimates,
+          // while ordinary room noise remains part of the measured background.
+          const calibrationSpeechVadFloor = Math.max(0.03, Math.min(0.08, this.vadOnThreshold + 0.01))
+          const likelySpeechWindow = this.calibrationMode === 'manual' &&
+            this.sileroVadProbability >= calibrationSpeechVadFloor && normalizedWindowRms >= 0.0002
+          if ((isProbeFrame || (isSilenceStage && !likelySpeechWindow)) &&
+            this.calibrationNoiseVadCount < this.calibrationNoiseVad.length) {
+            this.calibrationNoiseVad[this.calibrationNoiseVadCount++] = this.sileroVadProbability
           }
-        } else if (this.speechSegmentOpen) {
-          if (this.sileroVadProbability >= this.vadOffThreshold) {
-            this.consecutiveVadSilenceResults = 0
-          } else {
-            this.consecutiveVadSilenceResults++
-            if (this.consecutiveVadSilenceResults >= this.VAD_RELEASE_RESULTS) {
-              this.speechSegmentOpen = false
+          if (isSpeechStage && normalizedWindowRms >= 0.0001 &&
+            this.calibrationSpeechVadCount < this.calibrationSpeechVad.length) {
+            this.calibrationSpeechVad[this.calibrationSpeechVadCount] = this.sileroVadProbability
+            this.calibrationSpeechVadRms[this.calibrationSpeechVadCount] = normalizedWindowRms
+            this.calibrationSpeechVadCount++
+          }
+        }
+
+        if (this.sileroVadProbability >= this.vadOnThreshold) {
+          this.consecutiveVadSpeechResults++
+          this.consecutiveVadSilenceResults = 0
+          if (!this.speechSegmentOpen && this.consecutiveVadSpeechResults >= this.VAD_ATTACK_RESULTS) {
+            this.speechSegmentOpen = true
+            if (Number.isFinite(endFrameId)) {
+              this.markBufferedSpeechFrom(endFrameId - this.SPEECH_PREROLL_FRAMES)
+            }
+          }
+        } else {
+          this.consecutiveVadSpeechResults = 0
+          if (this.speechSegmentOpen) {
+            if (this.sileroVadProbability >= this.vadOffThreshold) {
               this.consecutiveVadSilenceResults = 0
+            } else {
+              this.consecutiveVadSilenceResults++
+              if (this.consecutiveVadSilenceResults >= this.VAD_RELEASE_RESULTS) {
+                this.speechSegmentOpen = false
+                this.consecutiveVadSilenceResults = 0
+              }
             }
           }
         }
@@ -403,7 +469,12 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
       })
       this.port.postMessage({ type: 'ready' })
     } catch (e) {
-      this.port.postMessage({ type: 'log', message: 'DeepFilterNet3 initialization failed: ' + (e instanceof Error ? e.message : String(e)) })
+      const message = e instanceof Error ? e.message : String(e)
+      this.port.postMessage({ type: 'log', message: 'DeepFilterNet3 initialization failed: ' + message })
+      // A separate message, not a log line: the main thread has to know that this
+      // machine has no working engine, otherwise calibration only reports a
+      // timeout and the real reason stays in the console.
+      this.port.postMessage({ type: 'engineError', message: `DeepFilterNet3 initialization failed: ${message}` })
     }
   }
 
@@ -452,7 +523,11 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
     const inputChannel = input[0]
     const outputChannel = output[0]
 
-    if (this.isMuted) {
+    // A muted user must still be able to calibrate the microphone: the frames are
+    // measured exactly as usual while the output stays silent, so nothing reaches
+    // the channel. Outside calibration a muted processor still costs nothing.
+    const measureWhileMuted = this.isMuted && this.calibrationFramesLeft > 0
+    if (this.isMuted && !measureWhileMuted) {
       outputChannel.fill(0)
       return true
     }
@@ -530,6 +605,7 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
         this.audioFrameId - this.lastSileroResultFrameId > 120) {
         this.sileroVadHealthy = false
         this.speechSegmentOpen = false
+        this.consecutiveVadSpeechResults = 0
         this.consecutiveVadSilenceResults = 0
       }
 
@@ -581,9 +657,10 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
       const hasDelayedFrame = this.speechRingCount > this.DECISION_DELAY_FRAMES
       const delayedIsSpeech = hasDelayedFrame && this.speechRingSpeech[readIndex] === 1
 
-      if (this.lastVadSent !== isSpeaking) {
-        this.port.postMessage({ type: 'vad', isSpeaking })
-        this.lastVadSent = isSpeaking
+      const reportedSpeaking = measureWhileMuted ? false : isSpeaking
+      if (this.lastVadSent !== reportedSpeaking) {
+        this.port.postMessage({ type: 'vad', isSpeaking: reportedSpeaking })
+        this.lastVadSent = reportedSpeaking
       }
 
       const delayedFrame = this.speechRingFrames[readIndex]
@@ -635,7 +712,9 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
         const silenceStageFrames = Math.floor(this.calibrationTotalFrames * 0.3)
         const speechStageEnd = Math.floor(this.calibrationTotalFrames * 0.8)
         const phaseGuardFrames = Math.min(20, Math.floor(this.calibrationTotalFrames * 0.02))
-        const calibrationVadFloor = this.calibrationMode === 'manual' ? this.VAD_OFF_THRESHOLD : this.vadOffThreshold
+        const calibrationVadFloor = this.calibrationMode === 'manual'
+          ? Math.max(0.03, Math.min(0.08, this.vadOnThreshold + 0.01))
+          : this.vadOffThreshold
         const isManualSilenceStage = this.calibrationMode === 'manual' &&
           elapsedFrames >= phaseGuardFrames && elapsedFrames < silenceStageFrames - phaseGuardFrames
         const isManualSpeechStage = this.calibrationMode === 'manual' &&
@@ -644,28 +723,20 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
 
         const normalizedRms = currentRms / this.gainFactor
         const normalizedPeak = currentPeak / this.gainFactor
-        // During the silence stage, a false-positive VAD result must not reject
-        // genuinely quiet room noise. A fixed acoustic floor still rejects normal
-        // speech (which is several dB above 0.0015 RMS) from the noise profile.
-        const noiseEnergyFloor = 0.0015
+        // Pair Silero with a very low raw-energy floor so quiet early speech is
+        // excluded, while numerical microphone silence cannot become evidence.
+        const noiseEnergyFloor = 0.0002
         const containsSpeech = this.sileroVadProbability >= calibrationVadFloor &&
           normalizedRms >= noiseEnergyFloor
 
-        if (collectNoise && this.calibrationNoiseVadCount < this.calibrationNoiseVad.length) {
-          this.calibrationNoiseVad[this.calibrationNoiseVadCount++] = this.sileroVadProbability
-        }
-
-        // The manual calibration prompt defines the silence phase. Collect every
-        // frame in that phase and use robust percentiles later; Silero is only a
-        // diagnostic signal here and must not make a valid calibration fail.
-        if (collectNoise && this.calibrationCount < this.calibrationRms.length) {
+        // The manual calibration prompt defines the silence phase. Keep its room
+        // sound, but exclude frames independently identified as speech so starting
+        // the phrase slightly early cannot inflate the measured noise floor.
+        if (collectNoise && !containsSpeech && this.calibrationCount < this.calibrationRms.length) {
           this.calibrationRms[this.calibrationCount] = normalizedRms
           this.calibrationCount++
           this.calibrationZcrSum += zeroCrossings / (this.FRAME_SIZE - 1)
           this.calibrationSpectralTiltSum += Math.sqrt(highBandSquares / Math.max(1e-12, lowBandSquares))
-          if (containsSpeech) {
-            this.calibrationRejectedSpeechFrames++
-          }
         } else if (collectNoise && containsSpeech) {
           this.calibrationRejectedSpeechFrames++
         }
@@ -681,16 +752,17 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
         if (isManualSpeechStage && normalizedRms >= 0.0001 && this.calibrationSpeechCount < this.calibrationSpeechRms.length) {
           this.calibrationSpeechRms[this.calibrationSpeechCount] = normalizedRms
           this.calibrationSpeechPeaks[this.calibrationSpeechCount] = normalizedPeak
-          this.calibrationSpeechVad[this.calibrationSpeechCount] = this.sileroVadProbability
           this.calibrationSpeechCount++
         }
 
         if (this.calibrationFramesLeft === 0) {
           const samples = Array.from(this.calibrationRms.subarray(0, this.calibrationCount)).sort((a, b) => a - b)
-          const allSpeechSamples = Array.from(this.calibrationSpeechRms.subarray(0, this.calibrationSpeechCount)).sort((a, b) => a - b)
-          const allSpeechPeaks = Array.from(this.calibrationSpeechPeaks.subarray(0, this.calibrationSpeechCount)).sort((a, b) => a - b)
+          const speechRmsFrames = Array.from(this.calibrationSpeechRms.subarray(0, this.calibrationSpeechCount))
+          const speechPeakFrames = Array.from(this.calibrationSpeechPeaks.subarray(0, this.calibrationSpeechCount))
+          const speechVadFrames = Array.from(this.calibrationSpeechVad.subarray(0, this.calibrationSpeechVadCount))
+          const speechVadRmsFrames = Array.from(this.calibrationSpeechVadRms.subarray(0, this.calibrationSpeechVadCount))
+          const allSpeechSamples = [...speechRmsFrames].sort((a, b) => a - b)
           const noiseVadSamples = Array.from(this.calibrationNoiseVad.subarray(0, this.calibrationNoiseVadCount)).sort((a, b) => a - b)
-          const speechVadSamples = Array.from(this.calibrationSpeechVad.subarray(0, this.calibrationSpeechCount)).sort((a, b) => a - b)
           const percentile = (values: number[], p: number) => values.length
             ? values[Math.min(values.length - 1, Math.floor((values.length - 1) * p))]
             : 0
@@ -698,10 +770,44 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
           // Select the active-energy portion of the prompted phrase. This removes
           // pauses robustly without making successful calibration depend on Silero.
           const activeSpeechFloor = Math.max(measuredNoise * 1.08, percentile(allSpeechSamples, 0.3))
-          const speechSamples = allSpeechSamples.filter(value => value >= activeSpeechFloor)
-          const speechPeaks = allSpeechPeaks.filter(value => value >= activeSpeechFloor)
+          const speechSamples = speechRmsFrames.filter(value => value >= activeSpeechFloor).sort((a, b) => a - b)
+          const speechPeaks = speechPeakFrames
+            .filter((_, index) => speechRmsFrames[index] >= activeSpeechFloor)
+            .sort((a, b) => a - b)
+          // Keep each Silero probability paired with the raw acoustic frame that
+          // produced it. Filtering probabilities against noise first biased the
+          // low speech quantile upward and could make calibrated gates miss quiet
+          // consonants. Acoustic activity selects speech candidates; Silero then
+          // supplies their complete probability distribution without truncation.
+          const vadActiveSpeechFloor = Math.max(measuredNoise * 1.08, percentile([...speechVadRmsFrames].sort((a, b) => a - b), 0.3))
+          const activeSpeechVad = speechVadFrames
+            .filter((_, index) => speechVadRmsFrames[index] >= vadActiveSpeechFloor)
+            .sort((a, b) => a - b)
+          const noiseVadMedian = percentile(noiseVadSamples, 0.5)
           const noiseVadHigh = percentile(noiseVadSamples, 0.95)
-          const speechVadAboveNoise = speechVadSamples.filter(probability => probability >= noiseVadHigh + 0.002)
+          const speechVadLow = percentile(activeSpeechVad, 0.05)
+          const speechVadMedian = percentile(activeSpeechVad, 0.5)
+          const speechEvidenceThreshold = Math.max(0.02, noiseVadHigh + 0.006)
+          const confirmedSpeechVadFrames = activeSpeechVad.filter(probability => probability >= speechEvidenceThreshold).length
+          const confirmedSpeechVadRatio = confirmedSpeechVadFrames / Math.max(1, activeSpeechVad.length)
+          let vadOnThreshold = this.VAD_ON_THRESHOLD
+          let vadOffThreshold = this.VAD_OFF_THRESHOLD
+          if (noiseVadSamples.length >= 6 && activeSpeechVad.length >= 6) {
+            // Explicit calibration phases provide labelled noise and speech
+            // distributions. Choose the opening boundary for at least 95% recall
+            // of acoustically active speech. When distributions separate, retain a
+            // small part of the gap above the 95th noise percentile; when they
+            // overlap, prefer speech recall and let the two-result onset reject
+            // isolated noise decisions.
+            vadOnThreshold = noiseVadHigh < speechVadLow
+              ? noiseVadHigh + (speechVadLow - noiseVadHigh) * 0.2
+              : speechVadLow
+            vadOnThreshold = Math.max(0.018, Math.min(this.VAD_ON_THRESHOLD, vadOnThreshold))
+            const offAnchor = noiseVadMedian < vadOnThreshold
+              ? noiseVadMedian + (vadOnThreshold - noiseVadMedian) * 0.2
+              : vadOnThreshold - 0.006
+            vadOffThreshold = Math.max(0.008, Math.min(this.VAD_OFF_THRESHOLD, vadOnThreshold - 0.006, offAnchor))
+          }
           this.port.postMessage({
             type: this.calibrationMode === 'probe' ? 'environmentProbeResult' : 'calibrationResult',
             noiseFloor: measuredNoise,
@@ -710,10 +816,15 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
             speechRms: percentile(speechSamples, 0.5),
             quietSpeechRms: percentile(speechSamples, 0.2),
             speechPeak: percentile(speechPeaks, 0.95),
+            noiseVadMedian,
             noiseVadHigh,
-            speechVadLow: percentile(speechVadAboveNoise, 0.15),
-            speechVadMedian: percentile(speechVadAboveNoise, 0.5),
-            speechVadFrames: speechVadAboveNoise.length,
+            speechVadLow,
+            speechVadMedian,
+            speechVadFrames: activeSpeechVad.length,
+            confirmedSpeechVadFrames,
+            confirmedSpeechVadRatio,
+            vadOnThreshold,
+            vadOffThreshold,
             speechFrames: this.calibrationSpeechCount,
             zeroCrossingRate: this.calibrationZcrSum / Math.max(1, this.calibrationCount),
             spectralTilt: this.calibrationSpectralTiltSum / Math.max(1, this.calibrationCount),
@@ -723,6 +834,12 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
         }
       }
 
+      if (measureWhileMuted) {
+        // The calibration above already measured the real frame; the stream must
+        // still receive nothing but silence while the user is muted.
+        this.processedFrame.fill(0)
+        this.gateGain = 0
+      }
       this.outputWriteIndex = this.pushToBuffer(this.outputBuffer, this.processedFrame, this.outputWriteIndex, this.outputReadIndex)
     }
 

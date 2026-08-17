@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Check, Microphone as Mic, Sliders, Sparkle } from '@phosphor-icons/react';
+import { Check, Sliders, Sparkle } from '@phosphor-icons/react';
 import { Md3Switch } from '../Shared/Md3Switch';
 import { webrtc } from '../../services/webrtc';
 
@@ -35,13 +35,12 @@ export function NoiseSuppressionSettings({
   onManualThresholdChange,
   onStartCalibration,
   isCalibrating = false,
-  calibrationCountdown = 3,
   calibrationPhase = 'idle',
   calibrationSuccess = false,
   liveMicLevel: externalMicLevel,
   className = ''
 }: NoiseSuppressionSettingsProps) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const [internalMicLevelDb, setInternalMicLevelDb] = useState(-100);
 
   useEffect(() => {
@@ -51,16 +50,16 @@ export function NoiseSuppressionSettings({
 
   const micLevelDb = Math.max(-100, Math.min(0, externalMicLevel ?? internalMicLevelDb));
   const threshold = Math.max(MIN_THRESHOLD_DB, Math.min(MAX_THRESHOLD_DB, manualThreshold));
-  const secondsUnit = i18n.language === 'en' ? 's' : 'с';
+  const phrase = t('settings.audio.calibrationPhrase', 'Сегодня тихий ветер шуршит в листве.');
   const calibrationText = calibrationPhase === 'silence'
-    ? t('settings.audio.doNotSpeak', 'Не говорите!')
+    ? t('settings.audio.doNotSpeak', 'Молчите')
     : calibrationPhase === 'speech'
-      ? t('settings.audio.sayPhrase', 'Скажите фразу')
+      ? t('settings.audio.sayPhraseButton', 'Скажи: "{{phrase}}"', { phrase })
       : calibrationPhase === 'checking'
         ? t('settings.audio.checking', 'Проверяем')
         : calibrationPhase === 'preparing'
           ? t('settings.audio.preparing', 'Подготовка')
-          : t('settings.audio.calibrateButton', 'Откалибровать микрофон');
+          : t('settings.audio.calibrateButton', 'Определить шум');
   const meterPosition = Math.max(0, Math.min(100, ((micLevelDb - MIN_THRESHOLD_DB) / (MAX_THRESHOLD_DB - MIN_THRESHOLD_DB)) * 100));
 
   return (
@@ -113,32 +112,31 @@ export function NoiseSuppressionSettings({
               <div className="space-y-2">
                 <button
                   type="button"
-                  onClick={() => !isCalibrating && onStartCalibration?.()}
-                  disabled={isCalibrating}
-                  className={`flex h-10 w-full items-center justify-center gap-2 rounded-xl border text-xs font-bold transition-colors duration-200 ${isCalibrating
+                  onClick={() => !isCalibrating && !calibrationSuccess && onStartCalibration?.()}
+                  disabled={isCalibrating || calibrationSuccess}
+                  className={`relative flex min-h-10 w-full items-center justify-center overflow-hidden rounded-xl border px-3 py-2 text-xs font-bold transition-all duration-200 ${isCalibrating
                       ? 'cursor-default border-[#c70060]/25 bg-[#c70060]/10 text-[#ff7dbd]'
                       : calibrationSuccess
-                        ? 'border-[#34323a] bg-[#1a191e] text-white hover:bg-[#211f25]'
-                        : 'border-[#c70060] bg-[#c70060] text-white hover:bg-[#d30068]'
+                        ? 'cursor-default border-[#FF007F]/40 bg-[#FF007F]/15 text-white select-none'
+                        : 'border-[#c70060] bg-[#c70060] text-white hover:bg-[#d30068] active:scale-[0.99]'
                     }`}
                 >
                   {isCalibrating ? (
+                    <div className="flex items-center justify-center gap-2">
+                      <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-[#ff7dbd] border-t-transparent" />
+                      <span className="text-center leading-snug">{calibrationText}</span>
+                    </div>
+                  ) : calibrationSuccess ? (
                     <>
-                      <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-[#ff7dbd] border-t-transparent" />
-                      {calibrationText}{calibrationPhase === 'preparing' ? '' : ` · ${calibrationCountdown}${secondsUnit}`}
+                      <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                        <Check size={52} weight="bold" className="animate-checkmark-pop text-[#FF007F]" />
+                      </div>
+                      <span className="relative z-10 font-bold tracking-wide text-white">{t('settings.audio.calibrationSuccess', 'Успешно')}</span>
                     </>
                   ) : (
-                    <>
-                      {calibrationSuccess ? <Check size={16} weight="bold" className="text-[#FF007F]" /> : <Mic size={16} weight="bold" />}
-                      {t('settings.audio.calibrateButton', 'Откалибровать микрофон')}
-                    </>
+                    <span>{t('settings.audio.calibrateButton', 'Определить шум')}</span>
                   )}
                 </button>
-                {isCalibrating && calibrationPhase === 'speech' && (
-                  <p className="text-center text-xs font-medium leading-relaxed text-textMuted">
-                    {t('settings.audio.calibrationPhrase', 'Сегодня тихий ветер шуршит в листве.')}
-                  </p>
-                )}
               </div>
             )}
 

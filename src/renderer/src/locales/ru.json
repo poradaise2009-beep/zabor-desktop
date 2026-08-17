@@ -26,10 +26,11 @@
       "speakerFallback": "Динамики",
       "calibrateSensitivity": "Калибровка шумоподавления",
       "calibrateDesc": "Оценка постоянного шума для бережной очистки голоса",
-      "calibrateButton": "Откалибровать микрофон",
-      "calibrating": "Калибровка... {{seconds}}с",
-      "calibrationComplete": "Успешно откалибровано!",
-      "doNotSpeak": "Не говорите!",
+      "calibrateButton": "Определить шум",
+      "calibrating": "Определение шума...",
+      "calibrationComplete": "Успешно",
+      "calibrationSuccess": "Успешно",
+      "doNotSpeak": "Молчите",
       "micThresholdAuto": "Автоматическая сила шумоподавления",
       "micThresholdLabel": "МАКСИМАЛЬНОЕ ШУМОПОДАВЛЕНИЕ, ДБ",
       "noiseSuppressionMode": "Режим шумоподавления",
@@ -38,6 +39,7 @@
       "threshold": "Порог",
       "thresholdLabel": "Порог срабатывания микрофона",
       "sayPhrase": "Скажите фразу",
+      "sayPhraseButton": "Скажи: \"{{phrase}}\"",
       "checking": "Проверяем",
       "preparing": "Подготовка",
       "calibrationPhrase": "Сегодня тихий ветер шуршит в листве."
@@ -286,12 +288,17 @@
     "calibrationComplete": "Микрофон успешно откалиброван!",
     "calibrationNoSpeech": "Не услышали фразу. Повторите.",
     "calibrationNeedSilence": "Сначала нужна тишина. Повторите.",
-    "calibrationFailedRetry": "Калибровка не удалась. Повторите."
+    "calibrationFailedRetry": "Калибровка не удалась. Повторите.",
+    "calibrationEngineUnavailable": "Шумоподавление не запустилось на этом устройстве. Перезапустите приложение.",
+    "calibrationNoMic": "Микрофон недоступен. Проверьте устройство ввода и повторите.",
+    "calibrationTimeout": "Микрофон перестал отдавать звук. Проверьте устройство и повторите.",
+    "calibrationBusy": "Калибровка уже идёт. Дождитесь её окончания.",
+    "micUnknownError": "Неизвестная ошибка микрофона"
   },
   "stream": {
-    "minimizeHint": "Свернуть трансляцию (F)",
+    "minimizeHint": "Свернуть трансляцию в миниатюру",
     "fullscreenHint": "Развернуть на весь экран (F)",
-    "exitFullscreenHint": "Выйти из полноэкранного режима (F)"
+    "exitFullscreenHint": "Вернуться в режим фокуса (F)"
   },
   "joke": {
     "title": "ШУТЕЙКА:",

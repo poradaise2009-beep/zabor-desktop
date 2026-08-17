@@ -45,14 +45,19 @@ type CalibrationResult = {
   quietSpeechRms: number
   speechPeak: number
   speechFrames: number
+  noiseVadMedian: number
   noiseVadHigh: number
   speechVadLow: number
   speechVadMedian: number
   speechVadFrames: number
+  confirmedSpeechVadFrames: number
+  confirmedSpeechVadRatio: number
+  vadOnThreshold: number
+  vadOffThreshold: number
 }
 
 type StoredEnvironmentProfile = {
-  version: 28
+  version: 35
   timestamp: number
   noiseFloor: number
   lowNoise: number
@@ -66,9 +71,14 @@ type StoredEnvironmentProfile = {
   speechPeak?: number
   speechFrames?: number
   snrDb?: number
+  noiseVadMedian?: number
   noiseVadHigh?: number
   speechVadLow?: number
   speechVadMedian?: number
+  confirmedSpeechVadFrames?: number
+  confirmedSpeechVadRatio?: number
+  vadOnThreshold?: number
+  vadOffThreshold?: number
 }
 
 type AudioDevices = {
@@ -79,6 +89,47 @@ type AudioDevices = {
 type AudioDeviceChangeResult = AudioDevices & {
   inputDeviceId: string
   outputDeviceId: string
+}
+
+// Calibration fails for reasons the user can act on: a denied or busy device, an
+// audio engine that never started on this machine, speaking during the silence
+// stage. Report them as codes so the UI can name the actual cause instead of
+// collapsing every failure into one "try again" message.
+export type CalibrationFailureCode =
+  | 'CALIBRATION_ENGINE_UNAVAILABLE'
+  | 'CALIBRATION_NO_MIC'
+  | 'CALIBRATION_BUSY'
+  | 'CALIBRATION_TIMEOUT'
+  | 'CALIBRATION_NO_SPEECH'
+  | 'CALIBRATION_NEEDS_SILENCE'
+
+export class CalibrationError extends Error {
+  constructor(public readonly code: CalibrationFailureCode, public readonly detail = '') {
+    super(detail ? `${code}: ${detail}` : code)
+    this.name = 'CalibrationError'
+  }
+}
+
+// getUserMedia rejects with a DOMException whose `name` carries the diagnosis;
+// `message` alone loses it. Keep both so the cause survives every wrapper.
+export function describeMediaError(error: unknown): string {
+  if (error && typeof error === 'object' && 'name' in error) {
+    const named = error as { name?: string, message?: string }
+    return `${named.name || 'Error'}: ${named.message || ''}`.trim()
+  }
+  return error instanceof Error ? error.message : String(error)
+}
+
+export type MicrophoneErrorKind = 'micNoAccess' | 'micBusy' | 'micNotFound' | 'unknown'
+
+// Order matters: check the specific device states before the generic
+// MIC_ACCESS_FAILED wrapper, otherwise a busy or missing microphone is always
+// reported as a permission problem.
+export function classifyMicrophoneError(detail: string): MicrophoneErrorKind {
+  if (/NotReadableError|TrackStartError|AbortError/i.test(detail)) return 'micBusy'
+  if (/NotFoundError|DevicesNotFoundError|OverconstrainedError/i.test(detail)) return 'micNotFound'
+  if (/NotAllowedError|PermissionDeniedError|SecurityError|MIC_ACCESS_FAILED/i.test(detail)) return 'micNoAccess'
+  return 'unknown'
 }
 
 function optimizeSDP(sdp: string): string {
@@ -224,7 +275,7 @@ function createSilentAudioStream(): MediaStream {
 }
 
 export class WebRTCManager {
-  private static readonly CALIBRATION_SCHEMA_VERSION = 28
+  private static readonly CALIBRATION_SCHEMA_VERSION = 35
   private static readonly CALIBRATION_SCHEMA_KEY = 'zabor_mic_calibration_schema'
   private static readonly CALIBRATION_PROFILE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000
   private localStream: MediaStream | null = null
@@ -276,6 +327,11 @@ export class WebRTCManager {
   private inputGainNode: GainNode | null = null
   private dfNode: AudioWorkletNode | null = null
   private dfNodeReady = false
+  // Why the DeepFilter graph is unusable on this machine (worklet module, WASM /
+  // ONNX runtime or a non-48 kHz context). Surfaced with the calibration error.
+  private dfEngineError: string | null = null
+  private lastMicCaptureError: string | null = null
+  private lastReportedMicError: string | null = null
   private vadWorker: Worker | null = null
 
 
@@ -288,6 +344,9 @@ export class WebRTCManager {
   private calibrationDeviceId = 'default'
   private vadWorkerReady = false
   private calibrationInProgress = false
+  // Set while calibration runs with the worklet mute lifted, so a muted user is
+  // never broadcast as speaking during the run.
+  private calibrationSuppressesSpeaking = false
   private localSpeakingState = false
   private thresholdMode = localStorage.getItem('zabor_threshold_mode') || 'auto'
   private manualThresholdValue = this.normalizeManualThreshold(parseFloat(localStorage.getItem('zabor_manual_threshold_value') || '-42'))
@@ -424,9 +483,8 @@ export class WebRTCManager {
     noiseFloor: number,
     speechRms?: number,
     quietSpeechRms?: number,
-    stationarityRatio = 1,
-    speechVadFrames = 0
-  ): number {
+    stationarityRatio = 1
+  ): { attenuationLimit: number, noiseMarginDb: number, voiceSafetyCeilingDb: number } {
     const noiseDb = 20 * Math.log10(Math.max(1e-5, noiseFloor))
     const clamp01 = (value: number) => Math.max(0, Math.min(1, value))
 
@@ -437,60 +495,19 @@ export class WebRTCManager {
     let attenuation = DEEPFILTER_MIN_ATTEN +
       noiseStrength * (DEEPFILTER_MAX_ATTEN - DEEPFILTER_MIN_ATTEN)
 
-    // Use the median active-speech level for the main SNR decision. The previous
-    // implementation passed the 20th percentile (quietSpeechRms) here, which
-    // treated normal quiet consonants as if the whole voice had a poor SNR and
-    // kept DeepFilter near its 5 dB minimum.
-    let measuredSnrDb: number | null = null
-    let speechSafeCeiling = DEEPFILTER_MAX_ATTEN
-    if (speechRms && speechRms > 0) {
-      const speechDb = 20 * Math.log10(Math.max(1e-5, speechRms))
-      const snrDb = speechDb - noiseDb
-      measuredSnrDb = snrDb
-
-      // Continuous speech-safety ceiling. At poor SNR DeepFilter is restrained;
-      // from 18 dB SNR onward the full 25 dB remains available. This makes 25 dB
-      // reachable in a noisy room without applying it to barely distinguishable
-      // speech where any suppressor could damage consonants.
-      if (snrDb <= 6) speechSafeCeiling = 10
-      else if (snrDb < 10) speechSafeCeiling = 10 + ((snrDb - 6) / 4) * 6
-      else if (snrDb < 16) speechSafeCeiling = 16 + ((snrDb - 10) / 6) * 7
-      else if (snrDb < 18) speechSafeCeiling = 23 + ((snrDb - 16) / 2) * 2
+    // Voice is a protection signal, not a second loudness control. Earlier logic
+    // raised attenuation for loud calibration phrases and capped it sharply for
+    // quiet phrases, so the same room could produce 17 dB or 10 dB. Keep the
+    // measured noise level as the primary estimator and allow speech only a small,
+    // one-sided reduction when its quiet tail is genuinely close to the noise.
+    let speechSnrDb: number | null = null
+    let quietSnrDb: number | null = null
+    if (speechRms && speechRms > 0 && quietSpeechRms && quietSpeechRms > 0) {
+      speechSnrDb = 20 * Math.log10(Math.max(1e-5, speechRms)) - noiseDb
+      quietSnrDb = 20 * Math.log10(Math.max(1e-5, quietSpeechRms)) - noiseDb
+      if (speechSnrDb < 6) attenuation -= 1
+      if (quietSnrDb < 6) attenuation -= Math.min(2.5, Math.max(0, (6 - quietSnrDb) * 0.625))
     }
-
-    // A genuinely weak quiet-speech margin can still indicate that aggressive
-    // suppression would damage fricatives. It is only a cap in this rare case;
-    // ordinary quiet speech (for example 7 dB below the median) does not reduce
-    // the calibrated strength.
-    let quietMeasuredSnrDb: number | null = null
-    if (quietSpeechRms && quietSpeechRms > 0) {
-      quietMeasuredSnrDb = 20 * Math.log10(Math.max(1e-5, quietSpeechRms)) - noiseDb
-      // Quiet-speech SNR is the most sensitive predictor of consonant damage.
-      // Use a continuous cap instead of allowing a 12 dB step at ~4 dB SNR.
-      if (quietMeasuredSnrDb < 4) {
-        speechSafeCeiling = Math.min(speechSafeCeiling, 8 + Math.max(0, quietMeasuredSnrDb) * 0.5)
-      } else if (quietMeasuredSnrDb < 8) {
-        speechSafeCeiling = Math.min(speechSafeCeiling, 10 + (quietMeasuredSnrDb - 4) * 1.0)
-      }
-    }
-
-    // Silero confidence and noise stationarity must not be hard prerequisites for
-    // denoising strength: a successful calibration may also prove speech through
-    // its measured acoustic separation from the background.
-    const hasReliableSpeech = measuredSnrDb !== null && quietMeasuredSnrDb !== null &&
-      (speechVadFrames >= 6 || (measuredSnrDb >= 10 && quietMeasuredSnrDb >= 5))
-    if (hasReliableSpeech && measuredSnrDb !== null && quietMeasuredSnrDb !== null) {
-      // Continuous speech-supported target. Quiet speech receives the larger weight
-      // because weak consonants and word endings are the first parts damaged by an
-      // excessive attenuation limit. Unlike the former 12/14/16/18/20 dB steps,
-      // small measurement changes now produce small parameter changes. For example,
-      // median/quiet SNR of 12/6 dB maps to about 14 dB instead of jumping to 16.
-      const effectiveSpeechSnrDb = measuredSnrDb * 0.35 + quietMeasuredSnrDb * 0.65
-      const speechSupportedTarget = Math.max(8, Math.min(22, 8 + effectiveSpeechSnrDb * 0.75))
-      attenuation = Math.max(attenuation, speechSupportedTarget)
-    }
-
-    attenuation = Math.min(attenuation, speechSafeCeiling)
 
     // Penalize transient/unstable noise gradually instead of a sudden mode jump.
     // Stationary fan/room noise can reach 25 dB; clicks and keyboard bursts cannot
@@ -498,7 +515,39 @@ export class WebRTCManager {
     const transientPenalty = 1 * clamp01((stationarityRatio - 4) / 4)
     attenuation -= transientPenalty
 
-    return Math.round(Math.max(DEEPFILTER_MIN_ATTEN, Math.min(DEEPFILTER_MAX_ATTEN, attenuation)))
+    // A confident phrase only authorizes a small safety margin; it never sets the
+    // suppression strength itself. SNR between 8 and 24 dB proves that background
+    // noise is meaningful but speech remains safely distinguishable. Give every
+    // such low-strength profile 1 dB, and 2 dB only for stable noise with at least
+    // 6 dB of quiet-speech separation. Apply it after the transient penalty so an
+    // authorized reserve cannot silently collapse back to the 5 dB library floor.
+    let noiseMarginDb = 0
+    const hasMeaningfulNoise = speechSnrDb !== null && speechSnrDb >= 8 && speechSnrDb <= 24
+    if (attenuation < 11 && hasMeaningfulNoise) {
+      noiseMarginDb = quietSnrDb !== null && quietSnrDb >= 6 && stationarityRatio <= 5 ? 2 : 1
+      attenuation = Math.max(attenuation + noiseMarginDb, DEEPFILTER_MIN_ATTEN + noiseMarginDb)
+    }
+
+    // Protect the quiet tail of speech with a continuous ceiling instead of the
+    // former binary 6 dB low-SNR mode. At <=2 dB quiet-speech separation Silero
+    // carries most of the speech/no-speech decision, so neural attenuation stays
+    // near the minimum. Between 2 and 6 dB a smoothstep transition progressively
+    // releases the full noise-driven value; >=6 dB leaves normal calibration
+    // unchanged. This avoids jumps such as 23 -> 6 dB around one SNR threshold.
+    let voiceSafetyCeilingDb = DEEPFILTER_MAX_ATTEN
+    if (quietSnrDb !== null) {
+      const transition = clamp01((quietSnrDb - 2) / 4)
+      const smoothTransition = transition * transition * (3 - 2 * transition)
+      voiceSafetyCeilingDb = DEEPFILTER_MIN_ATTEN + 1 +
+        smoothTransition * (DEEPFILTER_MAX_ATTEN - DEEPFILTER_MIN_ATTEN - 1)
+      attenuation = Math.min(attenuation, voiceSafetyCeilingDb)
+    }
+
+    return {
+      attenuationLimit: Math.round(Math.max(DEEPFILTER_MIN_ATTEN, Math.min(DEEPFILTER_MAX_ATTEN, attenuation))),
+      noiseMarginDb,
+      voiceSafetyCeilingDb
+    }
   }
 
   private calculateVadThresholds(noiseVadHigh: number, speechVadLow: number, speechVadMedian: number) {
@@ -509,12 +558,19 @@ export class WebRTCManager {
     const medianSeparation = safeSpeechMedian - safeNoiseHigh
     let vadOnThreshold: number
     let vadOffThreshold: number
-    if (separation >= 0.006 && medianSeparation >= 0.015) {
-      // Put the opening threshold inside the measured gap. Quiet microphones often
-      // produce low absolute Silero probabilities, so the gap matters more than a
-      // global confidence constant.
-      vadOnThreshold = safeNoiseHigh + separation * 0.34
-      vadOffThreshold = safeNoiseHigh + separation * 0.10
+    if (separation >= 0.004 && medianSeparation >= 0.012) {
+      // Use the measured boundary between the 95th noise percentile and the 10th
+      // active-speech percentile. Weight it toward noise so quiet consonants open
+      // the gate, while the robust noise percentile still rejects room sound.
+      vadOnThreshold = safeNoiseHigh + separation * 0.28
+      vadOffThreshold = safeNoiseHigh + separation * 0.08
+    } else if (medianSeparation >= 0.012) {
+      // Quiet speech and noise can overlap in the lower tail. The median remains a
+      // stable speech measurement in that case, so derive a cautious boundary near
+      // the measured noise distribution instead of reverting to a global threshold
+      // that may sit above every probability produced by a quiet microphone.
+      vadOnThreshold = safeNoiseHigh + medianSeparation * 0.08
+      vadOffThreshold = safeNoiseHigh + medianSeparation * 0.025
     } else {
       // Do not derive a gate threshold from noise when calibration did not measure
       // a real Silero speech/noise gap. That can place the opening threshold above
@@ -524,8 +580,8 @@ export class WebRTCManager {
     }
     // Calibration may lower Silero thresholds for a quiet microphone, but must
     // never raise them above the known audible defaults and mute the whole stream.
-    vadOnThreshold = Math.max(0.025, Math.min(SAFE_VAD_ON_THRESHOLD, vadOnThreshold))
-    vadOffThreshold = Math.max(0.012, Math.min(SAFE_VAD_OFF_THRESHOLD, vadOnThreshold - 0.008, vadOffThreshold))
+    vadOnThreshold = Math.max(0.02, Math.min(SAFE_VAD_ON_THRESHOLD, vadOnThreshold))
+    vadOffThreshold = Math.max(0.01, Math.min(SAFE_VAD_OFF_THRESHOLD, vadOnThreshold - 0.008, vadOffThreshold))
     return { vadOnThreshold, vadOffThreshold }
   }
 
@@ -553,7 +609,9 @@ export class WebRTCManager {
       }
       this.calibratedAttenuationLimit = Math.max(DEEPFILTER_MIN_ATTEN, Math.min(DEEPFILTER_MAX_ATTEN, latest.attenuationLimit))
       this.calibratedPreGainDb = Number.isFinite(latest.preGainDb) ? Math.max(0, Math.min(6, latest.preGainDb!)) : 0
-      const vadThresholds = Number.isFinite(latest.speechVadLow) && Number.isFinite(latest.speechVadMedian) &&
+      const vadThresholds = Number.isFinite(latest.vadOnThreshold) && Number.isFinite(latest.vadOffThreshold)
+        ? { vadOnThreshold: latest.vadOnThreshold!, vadOffThreshold: latest.vadOffThreshold! }
+        : Number.isFinite(latest.speechVadLow) && Number.isFinite(latest.speechVadMedian) &&
         Number.isFinite(latest.noiseVadHigh)
         ? this.calculateVadThresholds(latest.noiseVadHigh!, latest.speechVadLow!, latest.speechVadMedian!)
         : null
@@ -606,12 +664,15 @@ export class WebRTCManager {
 
   private async createProcessedStream(rawStream: MediaStream): Promise<MediaStream> {
     this.cleanupProcessedStream()
+    this.dfEngineError = null
 
     const ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' })
     this.processedContext = ctx
 
     if (ctx.sampleRate !== 48000) {
-      console.warn(`[WebRTC] Audio processing requires 48000Hz, got ${ctx.sampleRate}Hz`)
+      const detail = `AudioContext runs at ${ctx.sampleRate}Hz, 48000Hz required`
+      console.error(`[WebRTC] Audio processing requires 48000Hz, got ${ctx.sampleRate}Hz`)
+      this.dfEngineError = detail
       await ctx.close().catch(() => { })
       this.processedContext = null
       return this.noiseSuppression ? createSilentAudioStream() : rawStream
@@ -640,7 +701,8 @@ export class WebRTCManager {
         this.clearVAD(me.id)
       }
     } catch (e) {
-      console.warn('[WebRTC] Failed to load deepfilter-processor.js', e)
+      this.dfEngineError = `AudioWorklet module failed: ${e instanceof Error ? e.message : String(e)}`
+      console.error('[WebRTC] Failed to load deepfilter-processor.js', e)
     }
 
     if (this.dfNode) {
@@ -649,6 +711,10 @@ export class WebRTCManager {
       this.dfNode.port.onmessage = (event) => {
         if (event.data.type === 'vad') {
           const isSpeaking = event.data.isSpeaking
+          // Calibration lifts the worklet mute to measure the real microphone.
+          // A muted user must not light up as speaking for everyone else while
+          // that runs — nothing is being transmitted anyway.
+          if (isSpeaking && this.calibrationSuppressesSpeaking) return
           if (isSpeaking !== this.localSpeakingState) {
             this.localSpeakingState = isSpeaking
             const me = useAppStore.getState().currentUser
@@ -709,8 +775,15 @@ export class WebRTCManager {
           }
         } else if (event.data.type === 'log') {
           console.log('[WebRTC Worklet Log]:', event.data.message)
+        } else if (event.data.type === 'engineError') {
+          // The neural denoiser can fail to start on a specific machine while raw
+          // audio keeps flowing. Remember why, so calibration can say so instead
+          // of waiting for a "ready" message that will never arrive.
+          this.dfEngineError = String(event.data.message || 'DeepFilterNet3 initialization failed')
+          console.error('[WebRTC] DeepFilterNet3 engine unavailable:', this.dfEngineError)
         } else if (event.data.type === 'ready') {
           this.dfNodeReady = true
+          this.dfEngineError = null
           console.log('[WebRTC Worklet Log]: DeepFilterProcessor is ready.')
         }
       }
@@ -800,7 +873,7 @@ export class WebRTCManager {
     const peakCurve = new Float32Array(65536)
     // Static peak limiter: the transfer curve never changes and remains linear
     // until the signal is genuinely close to digital clipping.
-    const linearLimit = 0.95
+    const linearLimit = 0.98
     const outputLimit = 0.995
     const softRange = 1 - linearLimit
     const normalization = 1 - Math.exp(-3)
@@ -1139,6 +1212,17 @@ export class WebRTCManager {
 
 
 
+  private toCleanAudioDevice(device: MediaDeviceInfo): MediaDeviceInfo {
+    const cleanLabel = (device.label || '').replace(/^(Default|Communications|По умолчанию|Связь)[\s:\-]+/i, '').trim()
+    return {
+      deviceId: device.deviceId,
+      kind: device.kind,
+      label: cleanLabel,
+      groupId: device.groupId,
+      toJSON: () => ({ deviceId: device.deviceId, kind: device.kind, label: cleanLabel, groupId: device.groupId })
+    } as MediaDeviceInfo
+  }
+
   private filterAndDeduplicateDevices(devices: MediaDeviceInfo[]): MediaDeviceInfo[] {
     const result: MediaDeviceInfo[] = []
     const seenDeviceIds = new Set<string>()
@@ -1158,25 +1242,31 @@ export class WebRTCManager {
     })
 
     for (const dev of sortedDevices) {
-      const rawLabel = dev.label || ''
-      const cleanLabel = rawLabel.replace(/^(Default|Communications|По умолчанию|Связь)[\s:\-]+/i, '').trim()
       if (!seenDeviceIds.has(dev.deviceId)) {
         seenDeviceIds.add(dev.deviceId)
-        result.push({
-          deviceId: dev.deviceId,
-          kind: dev.kind,
-          label: cleanLabel,
-          groupId: dev.groupId,
-          toJSON: () => ({ deviceId: dev.deviceId, kind: dev.kind, label: cleanLabel, groupId: dev.groupId })
-        } as MediaDeviceInfo)
+        result.push(this.toCleanAudioDevice(dev))
       }
+    }
+
+    // Some systems expose only the "default"/"communications" pseudo-devices.
+    // Dropping them would leave an empty selector with nothing to choose, so keep
+    // them rather than hiding a microphone the user actually has.
+    if (result.length === 0) {
+      return devices.filter(device => device.deviceId).map(device => this.toCleanAudioDevice(device))
     }
 
     return result
   }
 
   private getDefaultDeviceFingerprint(devices: MediaDeviceInfo[], kind: MediaDeviceKind): string | null {
-    const device = devices.find(item => item.kind === kind && item.deviceId === 'default')
+    const devicesOfKind = devices.filter(device => device.kind === kind)
+    // Windows exposes a "default" pseudo-device mirroring the system choice. Where
+    // it is missing, a constraint without deviceId lands on the first enumerated
+    // device, so use that as the fingerprint instead of returning null and never
+    // noticing that the system default changed.
+    const device = devicesOfKind.find(item => item.deviceId === 'default')
+      ?? devicesOfKind.find(item => item.deviceId === 'communications')
+      ?? devicesOfKind[0]
     if (!device) return null
     return `${device.groupId}|${device.label}`
   }
@@ -1197,7 +1287,10 @@ export class WebRTCManager {
       this.defaultInputFingerprint ??= this.getDefaultDeviceFingerprint(devices, 'audioinput')
       this.defaultOutputFingerprint ??= this.getDefaultDeviceFingerprint(devices, 'audiooutput')
       return this.toAudioDevices(devices)
-    } catch { return { inputs: [], outputs: [] } }
+    } catch (error) {
+      console.error('[WebRTC] Failed to enumerate audio devices:', error)
+      return { inputs: [], outputs: [] }
+    }
   }
 
   public setInputDevice(deviceId: string) { this.currentDeviceId = deviceId }
@@ -1260,6 +1353,123 @@ export class WebRTCManager {
     }, 50)
   }
 
+  private buildMicConstraints(deviceId?: string): MediaTrackConstraints {
+    const constraints: MediaTrackConstraints = {
+      channelCount: 1,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      sampleRate: { ideal: 48000 },
+      // Legacy Chromium flags are still honored by some Windows audio paths.
+      // Set every adaptive capture processor explicitly to false.
+      // @ts-ignore
+      googAutoGainControl: false,
+      googAutoGainControl2: false,
+      googNoiseSuppression: false,
+      googNoiseSuppression2: false,
+      googTypingNoiseDetection: false,
+      googHighpassFilter: false,
+      googEchoCancellation: false,
+      googEchoCancellation2: false,
+      googAudioMirroring: false
+    }
+    // Omitting deviceId is deliberate for "default": Chromium then follows the
+    // system default device on its own, including later changes.
+    if (deviceId && deviceId !== 'default') constraints.deviceId = { exact: deviceId }
+    return constraints
+  }
+
+  /**
+   * The single microphone capture path for both the foreground and the background
+   * graph. Never falls back to `audio: true`: Chromium would silently enable AGC,
+   * echo cancellation and its own noise suppression, producing the exact level
+   * pumping this pipeline exists to avoid. The first DOMException is preserved
+   * (name included) so the UI can tell "no permission" from "busy" and "missing".
+   */
+  private async captureRawMicStream(): Promise<MediaStream> {
+    const requestedDeviceId = this.currentDeviceId
+    const attempts: Array<{ label: string, keepsSelection: boolean, run: () => Promise<MediaStream> }> = []
+
+    if (requestedDeviceId && requestedDeviceId !== 'default') {
+      attempts.push({
+        label: `selected device ${requestedDeviceId}`,
+        keepsSelection: true,
+        run: () => navigator.mediaDevices.getUserMedia({
+          audio: this.buildMicConstraints(requestedDeviceId),
+          video: false
+        })
+      })
+    }
+    attempts.push({
+      label: 'system default',
+      keepsSelection: requestedDeviceId === 'default',
+      run: () => navigator.mediaDevices.getUserMedia({ audio: this.buildMicConstraints(), video: false })
+    })
+    attempts.push({
+      label: 'first available input',
+      keepsSelection: false,
+      run: async () => {
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        const inputs = devices.filter(device => device.kind === 'audioinput' && device.deviceId)
+        const input = inputs.find(device => device.deviceId !== 'default' && device.deviceId !== 'communications')
+          ?? inputs[0]
+        if (!input) throw new DOMException('No audio input devices found', 'NotFoundError')
+        return navigator.mediaDevices.getUserMedia({
+          audio: this.buildMicConstraints(input.deviceId),
+          video: false
+        })
+      }
+    })
+
+    let firstError: unknown = null
+    for (const attempt of attempts) {
+      try {
+        const stream = await attempt.run()
+        if (!attempt.keepsSelection) {
+          // The stored selection is gone. Follow the system default from now on
+          // instead of failing the same constraint on every restart.
+          this.currentDeviceId = 'default'
+          console.warn(`[WebRTC] Microphone "${requestedDeviceId}" unavailable, captured via ${attempt.label}`)
+        }
+        this.lastMicCaptureError = null
+        this.lastReportedMicError = null
+        return stream
+      } catch (error) {
+        firstError ??= error
+        console.warn(`[WebRTC] Microphone capture failed (${attempt.label}):`, error)
+      }
+    }
+
+    this.lastMicCaptureError = describeMediaError(firstError)
+    throw firstError instanceof Error
+      ? firstError
+      : new Error(`MIC_ACCESS_FAILED: ${this.lastMicCaptureError}`)
+  }
+
+  private reportMicCaptureError(error: unknown): void {
+    const detail = describeMediaError(error)
+    this.lastMicCaptureError = detail
+    // enumerateDevices/devicechange can retry capture many times. Report each
+    // distinct failure once instead of stacking identical toasts.
+    if (this.lastReportedMicError === detail) return
+    this.lastReportedMicError = detail
+
+    const store = useAppStore.getState()
+    const kind = classifyMicrophoneError(detail)
+    const toastMsg = kind === 'micBusy'
+      ? i18n.t('toasts.micBusy', 'Микрофон занят другим приложением.')
+      : kind === 'micNotFound'
+        ? i18n.t('toasts.micNotFound', 'Микрофон не найден. Подключите устройство и попробуйте снова.')
+        : kind === 'micNoAccess'
+          ? i18n.t('toasts.micNoAccess', 'Нет доступа к микрофону. Проверьте разрешения в ОС.')
+          : i18n.t('toasts.audioError', { message: detail, defaultValue: `Ошибка аудио: ${detail}` })
+    store.setSystemToast(toastMsg)
+    setTimeout(() => {
+      const currentStore = useAppStore.getState()
+      if (currentStore.systemToast === toastMsg) currentStore.setSystemToast(null)
+    }, 4000)
+  }
+
   public async startBackgroundMic(deviceId?: string): Promise<boolean> {
     if (deviceId !== undefined) this.currentDeviceId = deviceId
     if (this.rawStream?.getAudioTracks().some(track => track.readyState === 'live')) {
@@ -1268,35 +1478,18 @@ export class WebRTCManager {
     }
 
     try {
-      const constraints: MediaTrackConstraints = {
-        channelCount: 1,
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-        sampleRate: { ideal: 48000 },
-        // Legacy Chromium flags are still honored by some Windows audio paths.
-        // Set every adaptive capture processor explicitly to false.
-        // @ts-ignore
-        googAutoGainControl: false,
-        googAutoGainControl2: false,
-        googNoiseSuppression: false,
-        googNoiseSuppression2: false,
-        googTypingNoiseDetection: false,
-        googHighpassFilter: false,
-        googEchoCancellation: false,
-        googEchoCancellation2: false,
-        googAudioMirroring: false
-      }
-      if (this.currentDeviceId && this.currentDeviceId !== 'default') {
-        constraints.deviceId = { exact: this.currentDeviceId }
-      }
-      this.rawStream = await navigator.mediaDevices.getUserMedia({ audio: constraints, video: false })
-      const settings = this.rawStream.getAudioTracks()[0]?.getSettings()
-      this.loadCalibration(settings?.deviceId || this.currentDeviceId)
+      this.rawStream = await this.captureRawMicStream()
+      const rawTrack = this.rawStream.getAudioTracks()[0]
+      const settings = rawTrack?.getSettings()
+      // Pass the label: without it this path stores the profile under
+      // "default:unknown" while startLocalStream uses "default:<label>", and a
+      // successful calibration is never found again.
+      this.loadCalibration(settings?.deviceId || this.currentDeviceId, rawTrack?.label || '')
       this.startBackgroundMeter()
       return true
     } catch (error) {
-      console.warn('[WebRTC] Failed to initialize background microphone:', error)
+      console.error('[WebRTC] Failed to initialize background microphone:', error)
+      this.reportMicCaptureError(error)
       return false
     }
   }
@@ -1345,7 +1538,7 @@ export class WebRTCManager {
       }
 
       const defaultOutputChanged = this.currentOutputDeviceId === 'default' &&
-        (previousOutputFingerprint === null || nextOutputFingerprint !== previousOutputFingerprint)
+        previousOutputFingerprint !== null && nextOutputFingerprint !== previousOutputFingerprint
       if (selectedOutputMissing || defaultOutputChanged) await this.applyOutputDevice()
 
       return {
@@ -1396,42 +1589,124 @@ export class WebRTCManager {
     })
   }
 
+  public getCalibrationDiagnostics() {
+    const rawTrack = this.rawStream?.getAudioTracks()[0]
+    const rawSettings = rawTrack?.getSettings()
+    return {
+      inputDeviceId: this.currentDeviceId,
+      outputDeviceId: this.currentOutputDeviceId,
+      calibrationProfileKey: this.calibrationDeviceId,
+      noiseSuppression: this.noiseSuppression,
+      thresholdMode: this.thresholdMode,
+      hasDfNode: Boolean(this.dfNode),
+      dfNodeReady: this.dfNodeReady,
+      dfEngineError: this.dfEngineError,
+      vadWorkerReady: this.vadWorkerReady,
+      micCaptureError: this.lastMicCaptureError,
+      processedContextState: this.processedContext?.state ?? null,
+      processedContextSampleRate: this.processedContext?.sampleRate ?? null,
+      capturedDeviceId: rawSettings?.deviceId ?? null,
+      capturedSampleRate: rawSettings?.sampleRate ?? null,
+      capturedChannelCount: rawSettings?.channelCount ?? null,
+      rawTrackLabel: rawTrack?.label ?? null,
+      rawTrackState: rawTrack?.readyState ?? null,
+      rawTrackEnabled: rawTrack?.enabled ?? null,
+      rawTrackMuted: rawTrack?.muted ?? null,
+      localTrackEnabled: this.localStream?.getAudioTracks()[0]?.enabled ?? null
+    }
+  }
+
   public async calibrateMic(durationMs = 10000, onStarted?: () => void): Promise<CalibrationResult> {
     const wasInActiveSession = Boolean(useAppStore.getState().currentChannelId || useAppStore.getState().currentCallUser)
+
+    // A live localStream is not proof of a working graph: the worklet or the
+    // DeepFilter engine can fail on a specific machine while the raw delayed frame
+    // keeps reaching the channel, so the user is heard but nothing can be
+    // calibrated. Plain startLocalStream() returns early on a live stream and
+    // would never repair that, so force the graph to be rebuilt.
     if (!this.dfNode || !this.dfNodeReady) {
-      await this.startLocalStream()
+      try {
+        if (this.localStream) {
+          // Also replaces the outgoing track on every peer connection.
+          await this.updateSettings(this.currentDeviceId, this.noiseSuppression)
+        } else {
+          await this.startLocalStream(this.currentDeviceId, this.noiseSuppression, true)
+        }
+      } catch (error) {
+        const detail = describeMediaError(error)
+        console.error('[WebRTC] Calibration could not start the microphone:', detail)
+        if (!wasInActiveSession) await this.enterBackgroundMode()
+        throw new CalibrationError('CALIBRATION_NO_MIC', detail)
+      }
     }
+
+    // Calibration must measure the real microphone even while the user is muted:
+    // the worklet keeps counting frames and writes silence, and the localStream
+    // tracks stay disabled, so nothing reaches the channel.
+    const me = useAppStore.getState().currentUser
+    const wasMuted = Boolean(me?.isMuted || me?.isServerMuted)
+    if (wasMuted) {
+      this.calibrationSuppressesSpeaking = true
+      this.dfNode?.port.postMessage({ type: 'setConfig', isMuted: false })
+    }
+
     try {
+      if (this.lastMicCaptureError) {
+        // Capture fell back to a silent track: calibration would only measure
+        // digital silence and report "no speech" for a device problem.
+        throw new CalibrationError('CALIBRATION_NO_MIC', this.lastMicCaptureError)
+      }
       await this.waitForCalibrationReady()
       onStarted?.()
       return await this.calibrateActiveMic(durationMs)
     } finally {
+      if (wasMuted) {
+        // Re-read the state instead of blindly restoring: the user may have
+        // unmuted during the run, and forcing the worklet mute back on would
+        // silence them while the UI shows them as live.
+        const currentUser = useAppStore.getState().currentUser
+        const stillMuted = Boolean(currentUser?.isMuted || currentUser?.isServerMuted)
+        this.dfNode?.port.postMessage({ type: 'setConfig', isMuted: stillMuted })
+        this.calibrationSuppressesSpeaking = false
+        if (stillMuted && this.localSpeakingState) {
+          this.localSpeakingState = false
+          if (currentUser) {
+            useAppStore.getState().setSpeakingStatus(currentUser.id, false)
+            signalRService.setSpeakingState(false)
+          }
+        }
+      }
       if (!wasInActiveSession) await this.enterBackgroundMode()
     }
   }
 
-  private async waitForCalibrationReady(timeoutMs = 15000): Promise<void> {
+  private async waitForCalibrationReady(timeoutMs = 8000): Promise<void> {
     const startedAt = Date.now()
     while (!this.dfNodeReady && Date.now() - startedAt < timeoutMs) {
+      // A failed engine never becomes ready. Stop waiting as soon as the worklet
+      // or the DeepFilter runtime has reported why it is unavailable.
+      if (!this.dfNode || this.dfEngineError) break
       await new Promise(resolve => setTimeout(resolve, 100))
     }
     if (!this.dfNodeReady) {
-      throw new Error('Audio processors are not ready')
+      throw new CalibrationError('CALIBRATION_ENGINE_UNAVAILABLE', this.dfEngineError || (this.dfNode
+        ? 'DeepFilterNet3 did not become ready'
+        : 'Audio worklet node is unavailable'))
     }
   }
 
   private calibrateActiveMic(durationMs = 10000): Promise<CalibrationResult> {
     return new Promise((resolve, reject) => {
       if (!this.dfNode || !this.dfNodeReady) {
-        reject(new Error('Audio processors are not ready'))
+        reject(new CalibrationError('CALIBRATION_ENGINE_UNAVAILABLE', this.dfEngineError || 'Audio processors are not ready'))
         return
       }
       if (this.calibrationInProgress) {
-        reject(new Error('Microphone calibration is already running'))
+        reject(new CalibrationError('CALIBRATION_BUSY', 'Microphone calibration is already running'))
         return
       }
       if (!this.rawStream?.getAudioTracks().some(track => track.readyState === 'live' && track.enabled)) {
-        reject(new Error('Microphone is muted or unavailable'))
+        reject(new CalibrationError('CALIBRATION_NO_MIC', this.lastMicCaptureError || 'The microphone track is not live'))
         return
       }
 
@@ -1470,7 +1745,11 @@ export class WebRTCManager {
         this.calibrationInProgress = false
         this.dfNode?.port.removeEventListener('message', messageHandler)
         restorePreviousProfile()
-        reject(new Error('Microphone calibration timed out'))
+        // The worklet stopped producing frames mid-run: the track died, the
+        // context got suspended or the engine crashed after it reported ready.
+        const rawTrack = this.rawStream?.getAudioTracks()[0]
+        reject(new CalibrationError('CALIBRATION_TIMEOUT', this.dfEngineError
+          || `no result within ${durationMs + 3000}ms (context ${this.processedContext?.state ?? 'none'}, track ${rawTrack?.readyState ?? 'none'}${rawTrack?.muted ? ', muted by the system' : ''})`))
       }, durationMs + 3000)
 
       const messageHandler = (e: MessageEvent) => {
@@ -1492,7 +1771,8 @@ export class WebRTCManager {
             !Number.isFinite(spectralTilt) || acceptedFrames < 20) {
             console.warn('[WebRTC] Calibration rejected: insufficient noise samples', { acceptedFrames, rejectedSpeechFrames, totalFrames })
             restorePreviousProfile()
-            reject(new Error('Too much speech or insufficient noise samples during calibration'))
+            reject(new CalibrationError('CALIBRATION_NEEDS_SILENCE',
+              `accepted ${acceptedFrames} of ${totalFrames} noise frames`))
             return
           }
 
@@ -1501,35 +1781,71 @@ export class WebRTCManager {
           const speechRms = Number(e.data.speechRms)
           const quietSpeechRms = Number(e.data.quietSpeechRms)
           const speechPeak = Number(e.data.speechPeak)
+          const noiseVadMedian = Number(e.data.noiseVadMedian)
           const noiseVadHigh = Number(e.data.noiseVadHigh)
           const speechVadLow = Number(e.data.speechVadLow)
           const speechVadMedian = Number(e.data.speechVadMedian)
           const speechVadFrames = Number(e.data.speechVadFrames) || 0
+          const confirmedSpeechVadFrames = Number(e.data.confirmedSpeechVadFrames) || 0
+          const confirmedSpeechVadRatio = Number(e.data.confirmedSpeechVadRatio) || 0
           const speechFrames = Number(e.data.speechFrames) || 0
           // A transient peak in the room must not invalidate a spoken phrase.
           // Compare speech only with the robust noise floor, not peakNoise.
           const minimumSpeechPeak = Math.max(noiseFloor * 1.01, 0.0002)
           if (!Number.isFinite(speechRms) || !Number.isFinite(quietSpeechRms) || !Number.isFinite(speechPeak) ||
-            !Number.isFinite(noiseVadHigh) || !Number.isFinite(speechVadLow) || !Number.isFinite(speechVadMedian) ||
+            !Number.isFinite(noiseVadMedian) || !Number.isFinite(noiseVadHigh) ||
+            !Number.isFinite(speechVadLow) || !Number.isFinite(speechVadMedian) ||
+            !Number.isFinite(confirmedSpeechVadRatio) ||
             speechRms <= 0 || speechPeak < minimumSpeechPeak || speechFrames < 1) {
             restorePreviousProfile()
-            reject(new Error('No speech detected'))
+            reject(new CalibrationError('CALIBRATION_NO_SPEECH',
+              `speech frames ${speechFrames}, peak ${speechPeak.toFixed(5)}, required ${minimumSpeechPeak.toFixed(5)}`))
             return
           }
 
-          const vadThresholds = speechVadFrames >= 6
-            ? this.calculateVadThresholds(noiseVadHigh, speechVadLow, speechVadMedian)
-            : { vadOnThreshold: SAFE_VAD_ON_THRESHOLD, vadOffThreshold: SAFE_VAD_OFF_THRESHOLD }
-
           const speechDb = 20 * Math.log10(Math.max(1e-5, speechRms))
           const snrDb = speechDb - dbNoise
-          const attenuationLimit = this.calculateSpeechPreservingAttenuation(
+          const hasAcousticSpeech = snrDb >= 5.5
+          const hasSileroSpeech = confirmedSpeechVadFrames >= 4 && confirmedSpeechVadRatio >= 0.06
+          const hasStrongSileroSpeech = confirmedSpeechVadFrames >= 10 &&
+            confirmedSpeechVadRatio >= 0.15 && speechVadMedian >= noiseVadMedian + 0.01
+          const sileroDominantCalibration = !hasAcousticSpeech && hasStrongSileroSpeech
+          // Normal calibration still requires both acoustic separation and Silero.
+          // In a genuinely noisy room, a stronger and sustained Silero result may
+          // replace only the acoustic SNR requirement, never the speech evidence.
+          if (!hasSileroSpeech || (!hasAcousticSpeech && !hasStrongSileroSpeech)) {
+            console.warn('[WebRTC] Calibration rejected: no confirmed speech', {
+              snrDb: Number(snrDb.toFixed(1)),
+              noiseVadMedian: Number(noiseVadMedian.toFixed(4)),
+              speechVadMedian: Number(speechVadMedian.toFixed(4)),
+              confirmedSpeechVadFrames,
+              confirmedSpeechVadRatio: Number(confirmedSpeechVadRatio.toFixed(3)),
+              requiredStrongSilero: !hasAcousticSpeech
+            })
+            restorePreviousProfile()
+            reject(new CalibrationError('CALIBRATION_NO_SPEECH',
+              `snr ${snrDb.toFixed(1)}dB, confirmed Silero frames ${confirmedSpeechVadFrames}`))
+            return
+          }
+
+          const measuredVadThresholds = {
+            vadOnThreshold: Number(e.data.vadOnThreshold),
+            vadOffThreshold: Number(e.data.vadOffThreshold)
+          }
+          const vadThresholds = Number.isFinite(measuredVadThresholds.vadOnThreshold) &&
+            Number.isFinite(measuredVadThresholds.vadOffThreshold)
+            ? measuredVadThresholds
+            : speechVadFrames >= 6
+              ? this.calculateVadThresholds(noiseVadHigh, speechVadLow, speechVadMedian)
+              : { vadOnThreshold: SAFE_VAD_ON_THRESHOLD, vadOffThreshold: SAFE_VAD_OFF_THRESHOLD }
+
+          const suppressionCalibration = this.calculateSpeechPreservingAttenuation(
             noiseFloor,
             speechRms,
             quietSpeechRms,
-            stationarityRatio,
-            speechVadFrames
+            stationarityRatio
           )
+          const attenuationLimit = suppressionCalibration.attenuationLimit
           const quietSpeechDb = 20 * Math.log10(Math.max(1e-5, quietSpeechRms))
           const quietSnrDb = quietSpeechDb - dbNoise
           console.info('[WebRTC] Calibration suppression profile', {
@@ -1540,7 +1856,14 @@ export class WebRTCManager {
             quietSnrDb: Number(quietSnrDb.toFixed(1)),
             stationarityRatio: Number(stationarityRatio.toFixed(2)),
             speechVadFrames,
+            confirmedSpeechVadFrames,
+            confirmedSpeechVadRatio: Number(confirmedSpeechVadRatio.toFixed(3)),
+            validationMode: sileroDominantCalibration ? 'silero-dominant' : 'acoustic-and-silero',
             attenuationLimitDb: attenuationLimit,
+            noiseMarginDb: suppressionCalibration.noiseMarginDb,
+            voiceSafetyCeilingDb: Number(suppressionCalibration.voiceSafetyCeilingDb.toFixed(1)),
+            vadOnThreshold: Number(vadThresholds.vadOnThreshold.toFixed(4)),
+            vadOffThreshold: Number(vadThresholds.vadOffThreshold.toFixed(4)),
             availableRangeDb: `${DEEPFILTER_MIN_ATTEN}-${DEEPFILTER_MAX_ATTEN}`
           })
           console.info(
@@ -1548,7 +1871,8 @@ export class WebRTCManager {
             `speech=${speechDb.toFixed(1)}dBFS, quietSpeech=${quietSpeechDb.toFixed(1)}dBFS, ` +
             `SNR=${snrDb.toFixed(1)}dB, quietSNR=${quietSnrDb.toFixed(1)}dB, ` +
             `stationarity=${stationarityRatio.toFixed(2)}, SileroFrames=${speechVadFrames}, ` +
-            `attenuation=${attenuationLimit}dB`
+            `attenuation=${attenuationLimit}dB, vadOn=${vadThresholds.vadOnThreshold.toFixed(4)}, ` +
+            `vadOff=${vadThresholds.vadOffThreshold.toFixed(4)}`
           )
           const peakDb = 20 * Math.log10(Math.max(1e-5, speechPeak))
           const desiredPreGainDb = -24 - speechDb
@@ -1591,6 +1915,8 @@ export class WebRTCManager {
               noiseVadHigh,
               speechVadLow,
               speechVadMedian,
+              vadOnThreshold: vadThresholds.vadOnThreshold,
+              vadOffThreshold: vadThresholds.vadOffThreshold,
               preGainDb,
               zeroCrossingRate,
               spectralTilt
@@ -1624,9 +1950,14 @@ export class WebRTCManager {
             quietSpeechRms,
             speechPeak,
             speechFrames,
+            noiseVadMedian,
             noiseVadHigh,
             speechVadLow,
             speechVadMedian,
+            confirmedSpeechVadFrames,
+            confirmedSpeechVadRatio,
+            vadOnThreshold: vadThresholds.vadOnThreshold,
+            vadOffThreshold: vadThresholds.vadOffThreshold,
             speechVadFrames,
             zeroCrossingRate,
             spectralTilt,
@@ -1678,89 +2009,14 @@ export class WebRTCManager {
         this.cleanupProcessedStream()
 
         let raw = this.rawStream
-        if (!raw?.getAudioTracks().some(track => track.readyState === 'live')) try {
-          const constraints: MediaTrackConstraints = {
-            channelCount: 1,
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false,
-            sampleRate: { ideal: 48000 },
-            // @ts-ignore
-            googAutoGainControl: false,
-            googAutoGainControl2: false,
-            googNoiseSuppression: false,
-            googNoiseSuppression2: false,
-            googTypingNoiseDetection: false,
-            googHighpassFilter: false,
-            googEchoCancellation: false,
-            googEchoCancellation2: false,
-            googAudioMirroring: false
-          }
-          if (this.currentDeviceId && this.currentDeviceId !== 'default') {
-            constraints.deviceId = { exact: this.currentDeviceId }
-          }
-          raw = await navigator.mediaDevices.getUserMedia({
-            audio: constraints,
-            video: false
-          })
-        } catch {
-          this.currentDeviceId = 'default'
+        if (!raw?.getAudioTracks().some(track => track.readyState === 'live')) {
           try {
-            const devices = await navigator.mediaDevices.enumerateDevices()
-            const audioInputs = devices.filter(d => d.kind === 'audioinput' && d.deviceId)
-            if (audioInputs.length > 0) {
-              const firstDevice = audioInputs.find(d => d.deviceId === 'default') || audioInputs[0]
-              raw = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                  deviceId: { exact: firstDevice.deviceId },
-                  channelCount: 1,
-                  echoCancellation: false,
-                  noiseSuppression: false,
-                  autoGainControl: false,
-                  sampleRate: { ideal: 48000 },
-                  // @ts-ignore
-                  googAutoGainControl: false,
-                  googAutoGainControl2: false,
-                  googNoiseSuppression: false,
-                  googNoiseSuppression2: false,
-                  googTypingNoiseDetection: false,
-                  googHighpassFilter: false,
-                  googEchoCancellation: false,
-                  googEchoCancellation2: false,
-                  googAudioMirroring: false
-                },
-                video: false
-              })
-            } else {
-              throw new Error('No audio input devices found')
-            }
-          } catch {
-            try {
-              raw = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                  echoCancellation: false,
-                  noiseSuppression: false,
-                  autoGainControl: false,
-                  sampleRate: { ideal: 48000 },
-                  // @ts-ignore
-                  googAutoGainControl: false,
-                  googAutoGainControl2: false,
-                  googNoiseSuppression: false,
-                  googNoiseSuppression2: false,
-                  googTypingNoiseDetection: false,
-                  googHighpassFilter: false,
-                  googEchoCancellation: false,
-                  googEchoCancellation2: false,
-                  googAudioMirroring: false
-                },
-                video: false
-              })
-            } catch {
-              // Never fall back to `audio: true`: Chromium may silently enable
-              // AGC, echo cancellation and browser noise suppression, causing the
-              // exact real-time level pumping this pipeline is designed to avoid.
-              raw = createSilentAudioStream()
-            }
+            raw = await this.captureRawMicStream()
+          } catch (error) {
+            // Keep the session alive with a silent track instead of tearing the
+            // call down, but tell the user which device problem to fix.
+            this.reportMicCaptureError(error)
+            raw = createSilentAudioStream()
           }
         }
 
@@ -1804,7 +2060,9 @@ export class WebRTCManager {
 
         return true
       } catch (e) {
-        throw new Error(`MIC_ACCESS_FAILED: ${(e as Error).message}`)
+        // Keep the DOMException name inside the message: the toast classifier
+        // needs it to tell a busy or missing microphone from a denied one.
+        throw new Error(`MIC_ACCESS_FAILED: ${describeMediaError(e)}`)
       }
     }
 
