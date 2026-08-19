@@ -1,6 +1,35 @@
 import { app, shell, BrowserWindow, ipcMain, Tray, Menu, nativeImage, dialog } from 'electron';
 import { join } from 'path';
 import { existsSync, rmSync, readFileSync, writeFileSync, promises as fsPromises } from 'fs';
+import { createHmac, randomBytes } from 'crypto';
+
+/**
+ * Подпись сборки для сервера ZABOR.
+ *
+ * Секрет внедряется на этапе сборки только в main-бандл (см. electron.vite.config.ts)
+ * и в репозиторий не попадает: на CI он берётся из GitHub Actions secrets. Сборка,
+ * собранная без секрета, подпись не отправляет и считается неофициальной.
+ *
+ * Это НЕ криптографический барьер: клиент распространяется по GPL-3.0, поэтому секрет
+ * извлекаем из установленного приложения. Задача механизма — отличать официальные сборки
+ * от посторонних, задавать норму и делать нарушение TERMS.md доказуемым.
+ * Подробности и порядок ротации: docs/client-attestation.md
+ */
+declare const __ZABOR_CLIENT_SECRET__: string;
+declare const __ZABOR_CLIENT_CHANNEL__: string;
+
+const CLIENT_SECRET = typeof __ZABOR_CLIENT_SECRET__ === 'string' ? __ZABOR_CLIENT_SECRET__ : '';
+const CLIENT_CHANNEL = typeof __ZABOR_CLIENT_CHANNEL__ === 'string' ? __ZABOR_CLIENT_CHANNEL__ : 'unofficial';
+const ATTESTATION_SCHEME = 'v1';
+
+function buildClientAttestation(): string | null {
+  if (!CLIENT_SECRET) return null;
+  const timestamp = Math.floor(Date.now() / 1000);
+  const nonce = randomBytes(8).toString('hex');
+  const payload = `${ATTESTATION_SCHEME}:${CLIENT_CHANNEL}:${app.getVersion()}:${timestamp}:${nonce}`;
+  const signature = createHmac('sha256', CLIENT_SECRET).update(payload).digest('base64url');
+  return `${payload}:${signature}`;
+}
 
 interface StreamAudioMetadata {
   sampleRate: number;
@@ -498,6 +527,10 @@ app.whenReady().then(() => {
   ipcMain.handle('clear-session', async () => {
     try { if (existsSync(SESSION_PATH)) await fsPromises.rm(SESSION_PATH, { force: true }); } catch {}
     return true;
+  });
+
+  ipcMain.handle('get-client-attestation', () => {
+    try { return buildClientAttestation(); } catch { return null; }
   });
 
   ipcMain.handle('get-userdata-path', () => {

@@ -30,3 +30,9 @@ jobs:
 
       - name: Build application
         run: npm run build
+        env:
+          # CI собирает канал `dev` и подписывает отдельным dev-секретом: релизный
+          # секрет в CI не попадает вовсе. Для pull request из форка GitHub секреты
+          # не выдаёт, и такая сборка честно остаётся неофициальной.
+          ZABOR_CLIENT_SECRET: ${{ github.event_name == 'push' && secrets.ZABOR_CLIENT_DEV_SECRET || '' }}
+          ZABOR_CLIENT_CHANNEL: dev

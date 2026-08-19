@@ -158,6 +158,30 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
   private calibrationZcrSum = 0
   private calibrationSpectralTiltSum = 0
   private calibrationNoiseReference = 0.003
+  // Trailing level history of the silence stage, used to tell the user's own voice
+  // from speech-shaped room background. It has to be measured inside this run:
+  // noiseFloorEstimate is a stored calibration value that is 20 dB off on a first
+  // run, and any absolute dBFS threshold is wrong on some microphone.
+  private readonly calibrationSilenceHistory = new Float32Array(100)
+  private readonly calibrationSilenceScratch = new Float32Array(100)
+  private calibrationSilenceHistoryCount = 0
+  private calibrationSilenceHistoryIndex = 0
+  private calibrationSilenceLevel = 0
+  // Sustained-speech evidence for the prompted phrase. A click, a cough or a
+  // chair creak produce a few loud frames; a spoken sentence produces hundreds
+  // of them in long runs. Counting them here is the only way to tell the two
+  // apart, because every percentile of the speech stage looks alike otherwise.
+  private calibrationSpeechWindowFrames = 0
+  private calibrationSpeechActiveFrames = 0
+  private calibrationSpeechRunFrames = 0
+  private calibrationSpeechGapFrames = 0
+  private calibrationSpeechLongestRun = 0
+  // Level a speech-stage frame has to reach to count as voiced. Derived from the
+  // spread of the silence stage once that stage is complete, never from a fixed
+  // margin: a built-in laptop array can capture a voice only 4 dB above its own
+  // room, where a flat +6 dB bar counts nothing, while in a stationary room
+  // +2.5 dB already excludes every noise frame.
+  private calibrationVoicedFloor = 0.0004
 
   private manualThresholdDb = -42
   private manualVadHoldFrames = 0
@@ -338,6 +362,15 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
         this.calibrationZcrSum = 0
         this.calibrationSpectralTiltSum = 0
         this.calibrationNoiseReference = this.noiseFloorEstimate
+        this.calibrationSilenceHistoryCount = 0
+        this.calibrationSilenceHistoryIndex = 0
+        this.calibrationSilenceLevel = 0
+        this.calibrationSpeechWindowFrames = 0
+        this.calibrationSpeechActiveFrames = 0
+        this.calibrationSpeechRunFrames = 0
+        this.calibrationSpeechGapFrames = 0
+        this.calibrationSpeechLongestRun = 0
+        this.calibrationVoicedFloor = Math.max(this.calibrationNoiseReference * 2, 0.0004)
         // Do not let a VAD decision from the preceding conversation contaminate
         // the first silence stage of a new one-shot calibration.
         this.sileroVadProbability = 0
@@ -376,13 +409,16 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
           const isProbeFrame = this.calibrationMode === 'probe' &&
             elapsedFrames >= 0 && elapsedFrames < this.calibrationTotalFrames
           const normalizedWindowRms = windowRms / this.gainFactor
-          // Do not let an early spoken phrase contaminate the labelled noise
-          // distribution. The floor is deliberately below the normal runtime
-          // opening threshold so quiet speech is excluded from noise estimates,
-          // while ordinary room noise remains part of the measured background.
+          // Exclude only the user's own voice from the labelled noise distribution.
+          // Speech-shaped background - a television in another room, a conversation
+          // down the hallway - has to stay inside it: noiseVadHigh is the anchor the
+          // runtime gate threshold is built on, so a distribution that pretends the
+          // room never produces speech probabilities would place the gate below what
+          // the room actually produces and hold it open on that background.
           const calibrationSpeechVadFloor = Math.max(0.03, Math.min(0.08, this.vadOnThreshold + 0.01))
           const likelySpeechWindow = this.calibrationMode === 'manual' &&
-            this.sileroVadProbability >= calibrationSpeechVadFloor && normalizedWindowRms >= 0.0002
+            this.sileroVadProbability >= calibrationSpeechVadFloor &&
+            normalizedWindowRms >= Math.max(this.calibrationSilenceLevel * 8, 0.0008)
           if ((isProbeFrame || (isSilenceStage && !likelySpeechWindow)) &&
             this.calibrationNoiseVadCount < this.calibrationNoiseVad.length) {
             this.calibrationNoiseVad[this.calibrationNoiseVadCount++] = this.sileroVadProbability
@@ -723,11 +759,36 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
 
         const normalizedRms = currentRms / this.gainFactor
         const normalizedPeak = currentPeak / this.gainFactor
-        // Pair Silero with a very low raw-energy floor so quiet early speech is
-        // excluded, while numerical microphone silence cannot become evidence.
-        const noiseEnergyFloor = 0.0002
+        if (collectNoise) {
+          // Keep the trailing level history regardless of the decision below, so
+          // the reference can never depend on its own outcome. A low percentile
+          // survives speech-shaped content that fills most of the stage.
+          this.calibrationSilenceHistory[this.calibrationSilenceHistoryIndex] = normalizedRms
+          this.calibrationSilenceHistoryIndex =
+            (this.calibrationSilenceHistoryIndex + 1) % this.calibrationSilenceHistory.length
+          this.calibrationSilenceHistoryCount++
+          if (this.calibrationSilenceHistoryCount % 10 === 0) {
+            const filled = Math.min(this.calibrationSilenceHistoryCount, this.calibrationSilenceHistory.length)
+            const recent = this.calibrationSilenceScratch.subarray(0, filled)
+            recent.set(this.calibrationSilenceHistory.subarray(0, filled))
+            recent.sort()
+            this.calibrationSilenceLevel = recent[Math.floor((filled - 1) * 0.4)]
+          }
+        }
+        // Distant speech - a television in another room, a conversation at the far
+        // end of the apartment - is background noise for this microphone, and the
+        // denoiser is expected to remove exactly that, so it belongs in the noise
+        // profile instead of aborting calibration. Only the user's own voice has to
+        // stay out of it, and near-field speech is ~18 dB above the room level
+        // measured in this very stage. The former test rejected any Silero
+        // detection above -74 dBFS, which on a quiet microphone is the room tone
+        // itself, so one distant conversation could reject the whole stage and
+        // report that silence was required. Heavier contamination than this filter
+        // can catch is still caught twice: the noise floor is a median, and a
+        // speech-dominated silence stage collapses the final SNR.
+        const nearFieldSpeechFloor = Math.max(this.calibrationSilenceLevel * 8, 0.0008)
         const containsSpeech = this.sileroVadProbability >= calibrationVadFloor &&
-          normalizedRms >= noiseEnergyFloor
+          normalizedRms >= nearFieldSpeechFloor
 
         // The manual calibration prompt defines the silence phase. Keep its room
         // sound, but exclude frames independently identified as speech so starting
@@ -742,17 +803,49 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
         }
 
         if (elapsedFrames === silenceStageFrames && this.calibrationCount > 0) {
+          // Median, not a high percentile: the noise profile may now legitimately
+          // contain distant speech, and its louder moments must not raise the
+          // sustained-speech floor of the next stage above the user's own voice.
           const noiseSamples = Array.from(this.calibrationRms.subarray(0, this.calibrationCount)).sort((a, b) => a - b)
-          this.calibrationNoiseReference = noiseSamples[Math.floor((noiseSamples.length - 1) * 0.8)]
+          this.calibrationNoiseReference = noiseSamples[Math.floor((noiseSamples.length - 1) * 0.5)]
+          // The voiced bar follows the room's own spread instead of a fixed margin.
+          // Just above the loud edge of the silence stage is exactly the level no
+          // noise frame reaches, and the bounds keep it usable at both extremes:
+          // never under +2.5 dB, so a stationary room cannot pass its own tone as
+          // voice, and never over +6 dB, so a built-in microphone whose voice rises
+          // only 4 dB above the room still registers the phrase it just captured.
+          const loudNoiseEdge = noiseSamples[Math.floor((noiseSamples.length - 1) * 0.8)] * 1.122
+          this.calibrationVoicedFloor = Math.max(0.0004, Math.min(
+            this.calibrationNoiseReference * 1.995,
+            Math.max(this.calibrationNoiseReference * 1.334, loudNoiseEdge)
+          ))
         }
 
         // The speech phase is also explicit in the UI. Keep all audible frames so
         // a missed Silero decision cannot produce an empty speech profile. The
         // percentile estimator rejects brief pauses without requiring VAD success.
-        if (isManualSpeechStage && normalizedRms >= 0.0001 && this.calibrationSpeechCount < this.calibrationSpeechRms.length) {
-          this.calibrationSpeechRms[this.calibrationSpeechCount] = normalizedRms
-          this.calibrationSpeechPeaks[this.calibrationSpeechCount] = normalizedPeak
-          this.calibrationSpeechCount++
+        if (isManualSpeechStage) {
+          this.calibrationSpeechWindowFrames++
+          // Sustained-speech evidence, measured against the bar derived from this
+          // run's own silence stage so it stays independent of the device's raw
+          // sensitivity and of how live the room is. Stop closures inside words
+          // must not break a run, so up to 60 ms of silence is bridged before the
+          // current run is considered finished.
+          if (normalizedRms >= this.calibrationVoicedFloor) {
+            this.calibrationSpeechActiveFrames++
+            this.calibrationSpeechRunFrames++
+            this.calibrationSpeechGapFrames = 0
+            if (this.calibrationSpeechRunFrames > this.calibrationSpeechLongestRun) {
+              this.calibrationSpeechLongestRun = this.calibrationSpeechRunFrames
+            }
+          } else if (++this.calibrationSpeechGapFrames > 6) {
+            this.calibrationSpeechRunFrames = 0
+          }
+          if (normalizedRms >= 0.0001 && this.calibrationSpeechCount < this.calibrationSpeechRms.length) {
+            this.calibrationSpeechRms[this.calibrationSpeechCount] = normalizedRms
+            this.calibrationSpeechPeaks[this.calibrationSpeechCount] = normalizedPeak
+            this.calibrationSpeechCount++
+          }
         }
 
         if (this.calibrationFramesLeft === 0) {
@@ -787,26 +880,60 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
           const noiseVadHigh = percentile(noiseVadSamples, 0.95)
           const speechVadLow = percentile(activeSpeechVad, 0.05)
           const speechVadMedian = percentile(activeSpeechVad, 0.5)
-          const speechEvidenceThreshold = Math.max(0.02, noiseVadHigh + 0.006)
-          const confirmedSpeechVadFrames = activeSpeechVad.filter(probability => probability >= speechEvidenceThreshold).length
+          // Speech evidence must clear a real probability, not merely rise above a
+          // silent room. Anchor the floor at 0.04 and always above the measured
+          // noise distribution: quiet microphones still qualify, while a Silero
+          // output of a few percent - what room tone, clicks and breath produce -
+          // no longer counts as a spoken phrase. The 0.5 cap keeps the test
+          // reachable in a room whose own background is speech-shaped: there the
+          // noise distribution reaches 0.9, and telling that background from the
+          // user is the job of the sustained-energy measurement, not of a threshold
+          // no near-field phrase could clear.
+          const speechEvidenceThreshold = Math.min(0.5, Math.max(0.04, noiseVadHigh + 0.01))
+          const confirmedSpeechVad = activeSpeechVad.filter(probability => probability >= speechEvidenceThreshold)
+          const confirmedSpeechVadFrames = confirmedSpeechVad.length
           const confirmedSpeechVadRatio = confirmedSpeechVadFrames / Math.max(1, activeSpeechVad.length)
-          let vadOnThreshold = this.VAD_ON_THRESHOLD
-          let vadOffThreshold = this.VAD_OFF_THRESHOLD
-          if (noiseVadSamples.length >= 6 && activeSpeechVad.length >= 6) {
-            // Explicit calibration phases provide labelled noise and speech
-            // distributions. Choose the opening boundary for at least 95% recall
-            // of acoustically active speech. When distributions separate, retain a
-            // small part of the gap above the 95th noise percentile; when they
-            // overlap, prefer speech recall and let the two-result onset reject
-            // isolated noise decisions.
-            vadOnThreshold = noiseVadHigh < speechVadLow
-              ? noiseVadHigh + (speechVadLow - noiseVadHigh) * 0.2
-              : speechVadLow
-            vadOnThreshold = Math.max(0.018, Math.min(this.VAD_ON_THRESHOLD, vadOnThreshold))
-            const offAnchor = noiseVadMedian < vadOnThreshold
-              ? noiseVadMedian + (vadOnThreshold - noiseVadMedian) * 0.2
-              : vadOnThreshold - 0.006
-            vadOffThreshold = Math.max(0.008, Math.min(this.VAD_OFF_THRESHOLD, vadOnThreshold - 0.006, offAnchor))
+          // The lowest confirmed probability is the speech anchor for the gate.
+          // The 5th percentile of every active window (speechVadLow) also contains
+          // inter-word gaps, so it collapses to zero for any real phrase and drove
+          // the derived opening threshold onto its clamp on every run.
+          const confirmedSpeechVadLow = percentile(confirmedSpeechVad, 0.1)
+          // Longest sustained confirmed run, in 32 ms windows, tolerating a single
+          // dropped window. A phrase produces seconds of it; a cough produces one
+          // isolated burst that must not be accepted as calibrated speech.
+          //
+          // Deliberately measured WITHOUT the active-energy mask that the frame
+          // count above applies, so the two numbers describe different populations
+          // and a run larger than the frame count is expected, not a bug. The mask
+          // punches holes at every inter-word gap - energy drops instantly there
+          // while Silero holds its probability across the gap - and this run is the
+          // evidence that rescues a low-sensitivity capture whose voice rises only
+          // 4 dB above the room, where no energy bar can be cleared at all. The
+          // acoustic requirement is not lost: the masked frame count is required
+          // alongside this run, so at least part of the stretch has to sit above
+          // the measured room level.
+          let confirmedRun = 0
+          let confirmedGap = 0
+          let confirmedSpeechVadRun = 0
+          let maskedRun = 0
+          let maskedGap = 0
+          let confirmedSpeechVadRunActive = 0
+          for (let index = 0; index < speechVadFrames.length; index++) {
+            if (speechVadRmsFrames[index] >= vadActiveSpeechFloor &&
+              speechVadFrames[index] >= speechEvidenceThreshold) {
+              maskedRun++
+              maskedGap = 0
+              if (maskedRun > confirmedSpeechVadRunActive) confirmedSpeechVadRunActive = maskedRun
+            } else if (++maskedGap > 1) {
+              maskedRun = 0
+            }
+            if (speechVadFrames[index] >= speechEvidenceThreshold) {
+              confirmedRun++
+              confirmedGap = 0
+              if (confirmedRun > confirmedSpeechVadRun) confirmedSpeechVadRun = confirmedRun
+            } else if (++confirmedGap > 1) {
+              confirmedRun = 0
+            }
           }
           this.port.postMessage({
             type: this.calibrationMode === 'probe' ? 'environmentProbeResult' : 'calibrationResult',
@@ -823,13 +950,20 @@ class DeepFilterProcessor extends AudioWorkletProcessor {
             speechVadFrames: activeSpeechVad.length,
             confirmedSpeechVadFrames,
             confirmedSpeechVadRatio,
-            vadOnThreshold,
-            vadOffThreshold,
+            confirmedSpeechVadLow,
+            confirmedSpeechVadRun,
+            confirmedSpeechVadRunActive,
+            speechEvidenceThreshold,
             speechFrames: this.calibrationSpeechCount,
+            speechWindowFrames: this.calibrationSpeechWindowFrames,
+            speechActiveFrames: this.calibrationSpeechActiveFrames,
+            speechLongestRunFrames: this.calibrationSpeechLongestRun,
             zeroCrossingRate: this.calibrationZcrSum / Math.max(1, this.calibrationCount),
             spectralTilt: this.calibrationSpectralTiltSum / Math.max(1, this.calibrationCount),
             acceptedFrames: this.calibrationCount,
-            rejectedSpeechFrames: this.calibrationRejectedSpeechFrames
+            rejectedSpeechFrames: this.calibrationRejectedSpeechFrames,
+            silenceReference: this.calibrationSilenceLevel,
+            voicedFloor: this.calibrationVoicedFloor
           })
         }
       }

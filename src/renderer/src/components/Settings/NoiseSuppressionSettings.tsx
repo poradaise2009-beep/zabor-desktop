@@ -50,7 +50,7 @@ export function NoiseSuppressionSettings({
 
   const micLevelDb = Math.max(-100, Math.min(0, externalMicLevel ?? internalMicLevelDb));
   const threshold = Math.max(MIN_THRESHOLD_DB, Math.min(MAX_THRESHOLD_DB, manualThreshold));
-  const phrase = t('settings.audio.calibrationPhrase', 'Сегодня тихий ветер шуршит в листве.');
+  const phrase = t('settings.audio.calibrationPhrase', 'Шумный шмель жужжал, кружил и тихо сел на цветок.');
   const calibrationText = calibrationPhase === 'silence'
     ? t('settings.audio.doNotSpeak', 'Молчите')
     : calibrationPhase === 'speech'

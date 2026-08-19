@@ -320,14 +320,21 @@ export default function App() {
 
   useEffect(() => {
     setProfileFriendRequestStatus('idle');
-    if (store.modals.profile && store.selectedProfileUser && store.selectedProfileUser.id !== store.currentUser?.id) {
-      signalRService.getUserByUsername(store.selectedProfileUser.username).then(freshUser => {
-        if (freshUser && store.modals.profile && store.selectedProfileUser?.id === freshUser.id) {
-          store.setSelectedProfileUser(freshUser, store.profileSource);
-        }
-      }).catch(err => console.error("Failed to fetch fresh user profile:", err));
-    }
-  }, [store.modals.profile, store.selectedProfileUser?.id]);
+    const profile = store.selectedProfileUser;
+    if (!store.modals.profile || !profile || profile.id === store.currentUser?.id) return;
+
+    let cancelled = false;
+    const profileId = profile.id;
+    const profileSource = store.profileSource;
+    signalRService.getUserByUsername(profile.username).then(freshUser => {
+      const latestStore = useAppStore.getState();
+      if (!cancelled && freshUser && latestStore.modals.profile && latestStore.selectedProfileUser?.id === profileId) {
+        latestStore.setSelectedProfileUser(freshUser, profileSource);
+      }
+    }).catch(err => console.error("Failed to fetch fresh user profile:", err));
+
+    return () => { cancelled = true; };
+  }, [store.modals.profile, store.selectedProfileUser?.id, store.selectedProfileUser?.username, store.currentUser?.id]);
 
   useEffect(() => {
     if (!store.modals.settings) {
@@ -401,6 +408,10 @@ export default function App() {
   const initCompleteRef = useRef(false);
 
   const autoLoginPendingRef = useRef(false);
+  const autoLoginInFlightRef = useRef(false);
+  const autoLoginAttemptsRef = useRef(0);
+  const autoLoginRetryTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const attemptAutoLoginRef = useRef<() => void>(() => { });
   const loginInputRef = useRef<HTMLInputElement>(null);
   const passwordInputRef = useRef<HTMLInputElement>(null);
 
@@ -711,6 +722,71 @@ export default function App() {
     );
   }, [inviteChannelId, store.channelMembersCache, store.friends, inviteFriendSearch]);
 
+  /**
+   * Повторный вход после разрыва соединения.
+   *
+   * Сервер отвечает 'network' и на живом соединении — например, когда он занят и
+   * вызов не успел пройти. Раньше на этом попытки заканчивались: следующая
+   * запускалась только по очередному переходу соединения в Connected, которого
+   * уже не будет, и экран подключения висел до перезапуска приложения. Теперь
+   * попытки повторяются сами, с растущей паузой и джиттером, чтобы клиенты не
+   * били в занятый сервер в такт друг с другом.
+   */
+  const attemptAutoLogin = useCallback(async () => {
+    if (autoLoginInFlightRef.current) return;
+    const creds = credentialsRef.current;
+    if (!creds.login || !creds.password) return;
+    autoLoginInFlightRef.current = true;
+    autoLoginPendingRef.current = false;
+    setServerConnected(false);
+    try {
+      const result = await signalRService.login(creds.login, creds.password);
+      if (result === 'ok') {
+        autoLoginAttemptsRef.current = 0;
+        const needsLoadSettings = !isAuth;
+        const [serverSettings, jokeText] = await Promise.all([
+          needsLoadSettings ? signalRService.loadAudioSettings() : Promise.resolve(null),
+          signalRService.getJokeOfTheDay().catch(() => '__NO_JOKE__')
+        ]);
+        if (serverSettings) applySettings(serverSettings);
+        setJoke(jokeText || '__NO_JOKE__');
+        setServerConnected(true);
+        setIsAuth(true);
+        saveLocalCache();
+        setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
+        setLoadingFadeOut(true);
+        setTimeout(() => setAppLoading(false), 650);
+        return;
+      }
+      if (result === 'invalid') {
+        autoLoginAttemptsRef.current = 0;
+        setLoadingFadeOut(true);
+        setTimeout(() => setAppLoading(false), 650);
+        return;
+      }
+      autoLoginPendingRef.current = true;
+      setShowErrorText(true);
+      setShowReconnectingOverlay(true);
+      const attempt = ++autoLoginAttemptsRef.current;
+      const delay = Math.min(2000 * 2 ** Math.min(attempt - 1, 4), 30000) + Math.floor(Math.random() * 1000);
+      if (autoLoginRetryTimerRef.current) clearTimeout(autoLoginRetryTimerRef.current);
+      autoLoginRetryTimerRef.current = setTimeout(() => {
+        autoLoginRetryTimerRef.current = null;
+        attemptAutoLoginRef.current();
+      }, delay);
+    } finally {
+      autoLoginInFlightRef.current = false;
+    }
+  }, [isAuth, applySettings, saveLocalCache]);
+
+  // Ссылка на актуальную версию: отложенный повтор не должен держать замыкание
+  // с устаревшими зависимостями.
+  useEffect(() => { attemptAutoLoginRef.current = () => { void attemptAutoLogin(); }; }, [attemptAutoLogin]);
+
+  useEffect(() => () => {
+    if (autoLoginRetryTimerRef.current) clearTimeout(autoLoginRetryTimerRef.current);
+  }, []);
+
   useEffect(() => {
     const unsubConnection = signalRService.onConnectionUpdate((isConnected) => {
       if (!initCompleteRef.current) {
@@ -729,38 +805,13 @@ export default function App() {
         setShowReconnectingOverlay(false);
 
         if (autoLoginPendingRef.current) {
-          setServerConnected(false);
-          autoLoginPendingRef.current = false;
-          const creds = credentialsRef.current;
-          if (creds.login && creds.password) {
-            signalRService.login(creds.login, creds.password).then(async (result) => {
-              if (result === 'ok') {
-                const needsLoadSettings = !isAuth;
-                const [serverSettings, jokeText] = await Promise.all([
-                  needsLoadSettings ? signalRService.loadAudioSettings() : Promise.resolve(null),
-                  signalRService.getJokeOfTheDay().catch(() => '__NO_JOKE__')
-                ]);
-                if (serverSettings) applySettings(serverSettings);
-                setJoke(jokeText || '__NO_JOKE__');
-                setServerConnected(true);
-                setIsAuth(true);
-                saveLocalCache();
-                setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
-                setLoadingFadeOut(true);
-                setTimeout(() => setAppLoading(false), 650);
-              } else if (result === 'invalid') {
-
-                autoLoginPendingRef.current = false;
-                setLoadingFadeOut(true);
-                setTimeout(() => setAppLoading(false), 650);
-              } else {
-
-                autoLoginPendingRef.current = true;
-                setShowErrorText(true);
-                setShowReconnectingOverlay(true);
-              }
-            });
+          // Соединение только что вернулось: отсчёт попыток начинается заново.
+          autoLoginAttemptsRef.current = 0;
+          if (autoLoginRetryTimerRef.current) {
+            clearTimeout(autoLoginRetryTimerRef.current);
+            autoLoginRetryTimerRef.current = null;
           }
+          void attemptAutoLogin();
         } else {
           setServerConnected(true);
           setLoadingFadeOut(true);
@@ -769,6 +820,12 @@ export default function App() {
       } else if (isAuth) {
         setServerConnected(false);
         autoLoginPendingRef.current = true;
+        // Пока сокета нет, повторять вход бессмысленно: попытку заново запустит
+        // переход соединения в Connected.
+        if (autoLoginRetryTimerRef.current) {
+          clearTimeout(autoLoginRetryTimerRef.current);
+          autoLoginRetryTimerRef.current = null;
+        }
         store.closeAllModals();
         store.setIncomingCall(null);
         store.setIncomingChannelInvite(null);
@@ -785,13 +842,13 @@ export default function App() {
         }
       }
     });
-    const unsubPing = signalRService.onPingUpdate((newPing) => setPing(newPing));
+    const unsubPing = signalRService.onPingUpdate(setPing);
     return () => {
       unsubConnection();
       unsubPing();
       if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
     };
-  }, [isAuth, applySettings, saveLocalCache, store.closeAllModals, store.setIncomingCall, store.setIncomingChannelInvite]);
+  }, [isAuth, attemptAutoLogin, store.closeAllModals, store.setIncomingCall, store.setIncomingChannelInvite]);
 
   useEffect(() => {
     const init = async () => {
@@ -1381,14 +1438,33 @@ export default function App() {
     signalRService.updateChannel(id, name);
   }, [editChannelId, editChannelName, validateName, closeAndResetModals]);
 
+  /**
+   * Единая реакция на итог входа в канал. Раньше 'network' игнорировался молча:
+   * загрузка исчезала, пользователь оставался вне канала и не понимал, почему.
+   * Про 'mic_failed' уже сообщает аудиослой своим разбором ошибки устройства.
+   */
+  const reportChannelJoinStatus = useCallback((status: 'ok' | 'network' | 'mic_failed' | 'full') => {
+    if (status === 'ok' || status === 'mic_failed') return;
+    if (status === 'full') { store.setModal('channelFull', true); return; }
+    // Отказ по уже идущей голосовой операции (двойной клик по каналу) — не сбой:
+    // в этот момент вход всё ещё выполняется.
+    if (useAppStore.getState().isJoiningChannel) return;
+    const message = t('toasts.channelJoinFailed', 'Не удалось войти в канал: сервер не ответил. Попробуйте снова.');
+    store.setSystemToast(message);
+    setTimeout(() => {
+      const currentStore = useAppStore.getState();
+      if (currentStore.systemToast === message) currentStore.setSystemToast(null);
+    }, 4000);
+  }, [store, t]);
+
   const handleChannelClick = useCallback(async (channelId: string) => {
     if (store.currentChannelId === channelId) return;
     if (store.currentChannelId || store.currentCallUser) {
       store.setPendingChannelSwitch(channelId); store.setModal('channelSwitch', true); return;
     }
     const status = await signalRService.joinChannel(channelId);
-    if (status === 'full') store.setModal('channelFull', true);
-  }, [store.currentChannelId, store.currentCallUser]);
+    reportChannelJoinStatus(status);
+  }, [store.currentChannelId, store.currentCallUser, reportChannelJoinStatus]);
 
   const confirmChannelSwitch = useCallback(async () => {
     if (!store.pendingChannelSwitch || isSwitchingChannel) return;
@@ -1404,11 +1480,11 @@ export default function App() {
       } else {
         status = await signalRService.switchChannel(targetId);
       }
-      if (status === 'full') store.setModal('channelFull', true);
+      reportChannelJoinStatus(status);
     } finally {
       setIsSwitchingChannel(false);
     }
-  }, [store.pendingChannelSwitch, store.currentCallUser, isSwitchingChannel]);
+  }, [store.pendingChannelSwitch, store.currentCallUser, isSwitchingChannel, reportChannelJoinStatus]);
 
   const cancelChannelSwitch = useCallback(() => {
     store.setPendingChannelSwitch(null);
@@ -1435,8 +1511,8 @@ export default function App() {
       store.setPendingChannelSwitch(channelId); store.setModal('channelSwitch', true); return;
     }
     const status = await signalRService.joinChannel(channelId);
-    if (status === 'full') store.setModal('channelFull', true);
-  }, [store.currentChannelId, store.currentCallUser]);
+    reportChannelJoinStatus(status);
+  }, [store.currentChannelId, store.currentCallUser, reportChannelJoinStatus]);
 
   const handleDeclineChannelInvite = useCallback((channelId: string) => {
     signalRService.declineChannelInvite(channelId);
@@ -1964,7 +2040,9 @@ export default function App() {
               <h1 className="text-5xl font-black text-white tracking-widest animate-pulse">ZABOR</h1>
               {showInitConnectionError && (
                 <div className="flex flex-col items-center mt-2 animate-fade-in">
-                  <p className="text-danger font-bold text-center">{t('main.connection.noConnection')}</p>
+                  <p className="text-danger font-bold text-center">
+                    {t(signalRService.isClientRejected ? 'main.connection.clientRejectedTitle' : 'main.connection.noConnection')}
+                  </p>
                   {signalRService.lastConnectionError && (
                     <p className="text-white/60 text-xs mt-1 text-center max-w-[300px] break-words">
                       {signalRService.lastConnectionError}
@@ -1985,7 +2063,9 @@ export default function App() {
               <h1 className="text-5xl font-black text-white tracking-widest animate-pulse">ZABOR</h1>
               {showErrorText && (
                 <div className="flex flex-col items-center mt-4 animate-fade-in">
-                  <p className="text-danger font-bold text-center">{t('main.connection.reconnecting')}</p>
+                  <p className="text-danger font-bold text-center">
+                    {t(signalRService.isClientRejected ? 'main.connection.clientRejectedTitle' : 'main.connection.reconnecting')}
+                  </p>
                   {signalRService.lastConnectionError && (
                     <p className="text-white/60 text-xs mt-1 text-center max-w-[300px] break-words">
                       {signalRService.lastConnectionError}

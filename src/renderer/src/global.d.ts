@@ -32,6 +32,7 @@ declare global {
       saveSession: (data: string) => Promise<boolean>;
       loadSession: () => Promise<string | null>;
       clearSession: () => Promise<boolean>;
+      getClientAttestation: () => Promise<string | null>;
       onMaximizeChange: (callback: (isMaximized: boolean) => void) => () => void;
       onBeforeQuit: (callback: () => void) => () => void;
       getDesktopSources: (options?: any) => Promise<any[]>;

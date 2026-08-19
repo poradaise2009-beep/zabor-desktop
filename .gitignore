@@ -42,7 +42,4 @@ GEMINI.md
 .continue/
 .windsurf/
 .copilot/
-skills-lock.json
-
-# DeepFilterNet3 runtime assets fetched at build time (see scripts/fetch-deepfilter-assets.cjs)
-src/renderer/public/deepfilternet3/
+skills-lock.jsonsrc/renderer/public/deepfilternet3/

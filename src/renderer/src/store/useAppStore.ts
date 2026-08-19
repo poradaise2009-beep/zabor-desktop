@@ -272,12 +272,25 @@ export const useAppStore = create<AppState>((set) => ({
 
   setFullChannelState: (stateMap) => set((state) => {
     const currentChannelId = state.currentChannelId;
-    let nextMap = stateMap;
-    if (state.isJoiningChannel && currentChannelId && state.currentUser) {
-      const serverUsers = stateMap[currentChannelId] || [];
-      const optimisticSelf = state.voiceUsers.find(user => user.id === state.currentUser?.id);
-      if (optimisticSelf && !serverUsers.some(user => user.id === optimisticSelf.id)) {
-        nextMap = { ...stateMap, [currentChannelId]: [...serverUsers, optimisticSelf] };
+    const currentUserId = state.currentUser?.id;
+    const nextMap = Object.fromEntries(
+      Object.entries(stateMap).map(([channelId, users]) => [
+        channelId,
+        currentUserId && channelId !== currentChannelId
+          ? users.filter(user => user.id !== currentUserId)
+          : [...users]
+      ])
+    );
+    if (currentChannelId) {
+      // A full snapshot can arrive before JoinChannel has committed on the
+      // server. Keep the active list stable during that transaction and never
+      // let an older snapshot remove the local user from the active channel.
+      const serverUsers = nextMap[currentChannelId] || [];
+      if (state.isJoiningChannel) {
+        nextMap[currentChannelId] = [...state.voiceUsers];
+      } else if (currentUserId && !serverUsers.some(user => user.id === currentUserId)) {
+        const localUser = state.voiceUsers.find(user => user.id === currentUserId) ?? state.currentUser;
+        if (localUser) nextMap[currentChannelId] = [...serverUsers, { ...localUser, currentChannelId }];
       }
     }
     const currentChannelUsers = currentChannelId ? (nextMap[currentChannelId] || []) : [];

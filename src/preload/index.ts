@@ -24,6 +24,7 @@ const windowControls = {
   saveSession: (data: string): Promise<boolean> => ipcRenderer.invoke('save-session', data),
   loadSession: (): Promise<string | null> => ipcRenderer.invoke('load-session'),
   clearSession: (): Promise<boolean> => ipcRenderer.invoke('clear-session'),
+  getClientAttestation: (): Promise<string | null> => ipcRenderer.invoke('get-client-attestation'),
   onBeforeQuit: (callback: () => void) => {
     ipcRenderer.on('before-quit', callback)
     return () => { ipcRenderer.removeAllListeners('before-quit') }

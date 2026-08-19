@@ -42,7 +42,7 @@
       "sayPhraseButton": "Say: \"{{phrase}}\"",
       "checking": "Checking",
       "preparing": "Preparing",
-      "calibrationPhrase": "Today the quiet wind rustles in the leaves."
+      "calibrationPhrase": "The noisy bee buzzed, then quickly brushed a soft fresh leaf."
     },
     "privacy": {
       "newPassword": "NEW PASSWORD",
@@ -98,7 +98,18 @@
     "connection": {
       "noConnection": "No server connection",
       "reconnecting": "No server connection. Reconnecting...",
-      "connecting": "CONNECTING"
+      "connecting": "CONNECTING",
+      "clientRejectedTitle": "The server rejected this build",
+      "clientRejected": {
+        "missing": "This build sent no signature. Only apps from the ZABOR releases page can connect to the official server.",
+        "malformed": "The build signature is malformed. Reinstall the app from the ZABOR releases page.",
+        "unknown_channel": "The build channel was not recognised. Only apps from the ZABOR releases page can connect to the official server.",
+        "invalid_signature": "The build signature is invalid. Only apps from the ZABOR releases page can connect to the official server.",
+        "expired": "The build signature has expired. Check your system date and time, then restart the app.",
+        "replay": "This signature has already been used. Restart the app.",
+        "outdated_version": "This app version is out of date. Install the latest build from the ZABOR releases page.",
+        "unknown": "The server rejected the connection from this build."
+      }
     }
   },
   "modals": {
@@ -293,7 +304,8 @@
     "calibrationNoMic": "The microphone is unavailable. Check the input device and try again.",
     "calibrationTimeout": "The microphone stopped sending audio. Check the device and try again.",
     "calibrationBusy": "Calibration is already running. Please wait for it to finish.",
-    "micUnknownError": "Unknown microphone error"
+    "micUnknownError": "Unknown microphone error",
+    "channelJoinFailed": "Could not join the channel: the server did not respond. Please try again."
   },
   "stream": {
     "pickerTitle": "Select Source",

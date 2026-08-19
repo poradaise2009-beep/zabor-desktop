@@ -1,12 +1,33 @@
 import * as signalR from '@microsoft/signalr';
 import { useAppStore, User, VoiceChannel, ChannelUpdate, IncomingCall, ChannelInvite } from '../store/useAppStore';
 import { webrtc } from './webrtc';
+import i18n from '../i18n';
 import callRingSound from '../assets/sounds/call.mp3';
 import channelJoinSound from '../assets/sounds/join.mp3';
 import channelLeaveSound from '../assets/sounds/leave.mp3';
 import achievementSound from '../assets/sounds/achievement.mp3';
 
 const SERVER_URL = "https://vnkboltik.ru:8080/zabor_v3";
+
+/** Префикс, которым сервер помечает отказ по проверке подписи сборки. */
+const CLIENT_REJECTION_PREFIX = 'ZABOR_CLIENT_REJECTED';
+
+/**
+ * Разбор окна проб. Наружу в UI уходит только `ping`; остальное — диагностика,
+ * по которой видно, почему значение такое (доступна через `getPingStats()`).
+ */
+export interface PingStats {
+  /** Медиана удачных проб окна, мс. −1 — измерений нет. */
+  ping: number;
+  /** Разброс: среднее |проба − медиана| по окну, мс. */
+  jitter: number;
+  /** Доля потерянных проб в окне, проценты. */
+  loss: number;
+  /** Неудачные пробы подряд. */
+  missed: number;
+}
+
+const OFFLINE_PING_STATS: PingStats = { ping: -1, jitter: 0, loss: 0, missed: 0 };
 
 class SignalRService {
   private connection: signalR.HubConnection | null = null;
@@ -15,8 +36,12 @@ class SignalRService {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private isReconnecting = false;
   private intentionalDisconnect = false;
-  private pingInterval: NodeJS.Timeout | null = null;
-  private currentPing = 0;
+  private sessionReady = false;
+  private pingTimer: NodeJS.Timeout | null = null;
+  private pingInFlight = false;
+  /** Окно проб: число — RTT в мс, null — потерянная проба. */
+  private pingWindow: (number | null)[] = [];
+  private currentPingStats: PingStats = OFFLINE_PING_STATS;
   private lastSpeakingState: boolean | null = null;
   private wasInChannel: string | null = null;
   private wasMuted = false;
@@ -29,12 +54,42 @@ class SignalRService {
   
   private isJoiningChannel = false;
   private voiceOperationId = 0;
-  
+  private voiceOperationDone: Promise<void> | null = null;
+  private voiceOperationResolve: (() => void) | null = null;
+  private voiceOperationTimer: NodeJS.Timeout | null = null;
+
   private isStartingCall = false;
   private isAcceptingCall = false;
   private isPreparingToQuit = false;
-  
+
   private static readonly CONNECT_WAIT_TIMEOUT_MS = 15000;
+  /**
+   * Предел ожидания старта соединения. Обязан быть БОЛЬШЕ серверного
+   * HandshakeTimeout (30 с): при меньшем значении клиент сдаётся, пока сервер ещё
+   * доводит рукопожатие, соединение доходит до Connected уже после отказа, и UI
+   * остаётся на экране подключения при живом сокете.
+   */
+  private static readonly CONNECT_START_TIMEOUT_MS = 35000;
+  /**
+   * Предел ожидания ответа хаба. SignalR ждёт ответ на invoke неограниченно
+   * долго, пока соединение живо: без своего предела зависший на блокировке БД
+   * вызов оставляет пользователя во «входе в канал» до перезапуска приложения.
+   */
+  private static readonly INVOKE_TIMEOUT_MS = 20000;
+  /**
+   * Аварийный предел одной голосовой операции — страховка от зависшего await.
+   * Обязан быть больше суммы внутренних пределов операции (захват микрофона +
+   * ответ хаба), иначе снимет защиту у ещё работающего входа в канал.
+   */
+  private static readonly VOICE_OPERATION_TIMEOUT_MS = 75000;
+  private static readonly PING_INTERVAL_MS = 5000;
+  private static readonly PING_TIMEOUT_MS = 10000;
+  /** Глубина окна анализа: 10 проб по 5 с — примерно минута связи. */
+  private static readonly PING_WINDOW_SIZE = 10;
+  /** Сколько потерь подряд считать обрывом, а не всплеском нагрузки. */
+  private static readonly PING_MISSES_BEFORE_OFFLINE = 2;
+  /** Разнос исходящих offer'ов, чтобы N подключений не били в сервер одним пакетом. */
+  private static readonly PEER_CONNECT_STAGGER_MS = 60;
   private static readonly STREAM_DROP_GRACE_MS = 30000;
 
   private playSfx(src: string, volume = 0.5) {
@@ -68,17 +123,24 @@ class SignalRService {
 
   private pingCallbacks: Set<(ping: number) => void> = new Set();
   private connectionCallbacks: Set<(isConnected: boolean) => void> = new Set();
+  private lastNotifiedConnected: boolean | null = null;
 
   public isConnected(): boolean {
     return this.connection?.state === signalR.HubConnectionState.Connected;
   }
 
   public getPing(): number {
-    return this.currentPing;
+    return this.currentPingStats.ping;
+  }
+
+  /** Диагностика последнего измерения: разброс и потери в окне. В UI не выводится. */
+  public getPingStats(): PingStats {
+    return this.currentPingStats;
   }
 
   public onPingUpdate(callback: (ping: number) => void): () => void {
     this.pingCallbacks.add(callback);
+    callback(this.currentPingStats.ping);
     return () => this.pingCallbacks.delete(callback);
   }
 
@@ -88,12 +150,17 @@ class SignalRService {
     return () => this.connectionCallbacks.delete(callback);
   }
 
-  private notifyPingUpdate(ping: number) {
-    this.currentPing = ping;
-    this.pingCallbacks.forEach(cb => cb(ping));
+  private publishPingStats(stats: PingStats) {
+    this.currentPingStats = stats;
+    this.pingCallbacks.forEach(cb => cb(stats.ping));
   }
 
   private notifyConnectionUpdate(isConnected: boolean) {
+    // Уведомление только на смену состояния: подписчики по нему запускают
+    // авто-релогин, а повторное `true` при уже подключённом соединении
+    // порождало бы параллельные попытки входа.
+    if (this.lastNotifiedConnected === isConnected) return;
+    this.lastNotifiedConnected = isConnected;
     this.connectionCallbacks.forEach(cb => cb(isConnected));
   }
 
@@ -118,51 +185,164 @@ class SignalRService {
 
   private missedPings = 0;
 
+  /**
+   * Пинг измеряется цепочкой setTimeout, а не setInterval: интервал накапливал
+   * параллельные вызовы, когда ответ шёл дольше 5 с (у сервера один hub-вызов на
+   * клиента за раз, и Ping ждёт в очереди за SendOffer/SendIceCandidate), а после
+   * разгрузки они завершались пачкой и подряд отдавали в UI устаревшие RTT.
+   * Теперь один вызов за раз, пауза считается от ответа, а наружу идёт медиана
+   * окна — она гасит одиночный выброс, потому что в RTT попадает и блокировка
+   * main thread рендерером (createOffer, загрузка WASM, ререндер).
+   */
   private startPingMeasurement() {
-    if (this.pingInterval) clearInterval(this.pingInterval);
+    this.stopPingMeasurement();
     this.missedPings = 0;
+
+    const scheduleNext = () => {
+      if (this.pingTimer) clearTimeout(this.pingTimer);
+      this.pingTimer = setTimeout(measurePing, SignalRService.PING_INTERVAL_MS);
+    };
+
     const measurePing = async () => {
-      if (!this.isConnected()) { this.notifyPingUpdate(-1); return; }
+      if (this.pingInFlight) { scheduleNext(); return; }
+      if (!this.isConnected()) {
+        this.resetPingStats();
+        scheduleNext();
+        return;
+      }
+      this.pingInFlight = true;
+      const start = performance.now();
       try {
-        const start = performance.now();
-        await this.connection!.invoke("Ping");
+        await this.invokeWithTimeout<number>("Ping", SignalRService.PING_TIMEOUT_MS);
         this.missedPings = 0;
-        this.notifyPingUpdate(Math.round(performance.now() - start));
+        this.recordPingSample(Math.round(performance.now() - start));
       } catch {
         this.missedPings++;
-        this.notifyPingUpdate(-1);
+        this.recordPingSample(null);
         // НЕ вызываем connection.stop() здесь!
         // Это рушило встроенный реконнект SignalR, запуская scheduleReconnect параллельно.
         // Сервер сам разорвёт соединение через serverTimeoutInMilliseconds (45s).
+      } finally {
+        this.pingInFlight = false;
+        scheduleNext();
       }
     };
-    measurePing();
-    this.pingInterval = setInterval(measurePing, 5000);
+
+    void measurePing();
+  }
+
+  private recordPingSample(rtt: number | null) {
+    this.pingWindow.push(rtt);
+    if (this.pingWindow.length > SignalRService.PING_WINDOW_SIZE) this.pingWindow.shift();
+    this.publishPingStats(this.analyzePing());
+  }
+
+  /**
+   * Сводит окно проб в одно значение для индикатора.
+   *
+   * Одиночная потерянная проба больше не выдаётся за офлайн: соединение при этом
+   * обычно живо (сервер разрывает его только через serverTimeoutInMilliseconds),
+   * поэтому до второй потери подряд показывается последнее известное значение.
+   * Иначе индикатор мигал «Офлайн» на каждом всплеске нагрузки, хотя связь
+   * работала.
+   *
+   * Само значение — медиана окна: она гасит одиночный выброс, потому что в RTT
+   * попадает и блокировка main thread рендерером (createOffer, загрузка WASM,
+   * ререндер). Разброс и потери считаются рядом, но только для диагностики.
+   */
+  private analyzePing(): PingStats {
+    const answered = this.pingWindow.filter((value): value is number => value !== null);
+    const loss = this.pingWindow.length
+      ? Math.round(((this.pingWindow.length - answered.length) / this.pingWindow.length) * 100)
+      : 0;
+    const missed = this.missedPings;
+
+    if (answered.length === 0 || missed >= SignalRService.PING_MISSES_BEFORE_OFFLINE) {
+      return { ...OFFLINE_PING_STATS, loss, missed };
+    }
+
+    const sorted = [...answered].sort((a, b) => a - b);
+    const ping = sorted[Math.floor(sorted.length / 2)];
+    const jitter = Math.round(
+      answered.reduce((sum, value) => sum + Math.abs(value - ping), 0) / answered.length
+    );
+
+    return { ping, jitter, loss, missed };
+  }
+
+  /** Сбрасывает накопленное окно: без соединения прежние измерения бессмысленны. */
+  private resetPingStats() {
+    this.pingWindow = [];
+    this.missedPings = 0;
+    this.publishPingStats(OFFLINE_PING_STATS);
   }
 
   private stopPingMeasurement() {
-    if (this.pingInterval) { clearInterval(this.pingInterval); this.pingInterval = null; }
+    if (this.pingTimer) { clearTimeout(this.pingTimer); this.pingTimer = null; }
+    this.pingWindow = [];
   }
 
   public lastConnectionError: string | null = null;
 
+  /**
+   * Причина отказа сервера по подписи сборки. Повтор такой отказ не лечит,
+   * поэтому автопереподключение останавливается до перезапуска приложения.
+   */
+  private clientRejectedReason: string | null = null;
+
+  public get isClientRejected(): boolean {
+    return this.clientRejectedReason !== null;
+  }
+
+  /** Разбирает ошибку сервера вида `ZABOR_CLIENT_REJECTED:<причина>` в локализованный текст. */
+  private parseClientRejection(rawError: string): { reason: string; message: string } | null {
+    const index = rawError.indexOf(CLIENT_REJECTION_PREFIX);
+    if (index === -1) return null;
+    const tail = rawError.slice(index + CLIENT_REJECTION_PREFIX.length + 1);
+    const reason = tail.match(/^[a-z_]+/)?.[0] || 'unknown';
+    const key = `main.connection.clientRejected.${reason}`;
+    return {
+      reason,
+      message: i18n.exists(key) ? i18n.t(key) : i18n.t('main.connection.clientRejected.unknown')
+    };
+  }
+
+  private applyClientRejection(rejection: { reason: string; message: string }) {
+    this.clientRejectedReason = rejection.reason;
+    this.lastConnectionError = rejection.message;
+    this.isReconnecting = false;
+    this.sessionReady = false;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    this.stopPingMeasurement();
+    this.resetPingStats();
+    this.notifyConnectionUpdate(false);
+  }
+
   public async connect(): Promise<boolean> {
-    if (this.isConnected()) return true;
+    if (this.isConnected()) {
+      // Соединение может оказаться живым, хотя об успехе никто не сообщил: старт
+      // завершился уже после того, как мы отменили ожидание своим таймаутом.
+      // Тогда UI навсегда остался бы на экране подключения с пингом −1 при
+      // работающем сокете. Оба уведомления идемпотентны.
+      this.isReconnecting = false;
+      this.reconnectAttempts = 0;
+      if (!this.pingTimer) this.startPingMeasurement();
+      this.notifyConnectionUpdate(true);
+      return true;
+    }
+    if (this.clientRejectedReason) return false;
     if (this.isReconnecting) {
-      
       const deadline = Date.now() + SignalRService.CONNECT_WAIT_TIMEOUT_MS;
       while (this.isReconnecting && Date.now() < deadline) {
         await new Promise<void>(resolve => setTimeout(resolve, 200));
-      }
-      
-      if (this.isReconnecting) {
-        this.isReconnecting = false;
       }
       return this.isConnected();
     }
     this.intentionalDisconnect = false;
     this.isReconnecting = true;
+    this.sessionReady = false;
     this.lastConnectionError = null;
+    let connection: signalR.HubConnection | null = null;
     try {
       if (this.connection) {
         try {
@@ -174,26 +354,41 @@ class SignalRService {
         } catch { }
       }
       this.listenersAttached = false;
-      this.connection = new signalR.HubConnectionBuilder()
+      connection = new signalR.HubConnectionBuilder()
         .withUrl(SERVER_URL, {
           skipNegotiation: false,
-          transport: signalR.HttpTransportType.WebSockets | signalR.HttpTransportType.LongPolling
+          transport: signalR.HttpTransportType.WebSockets | signalR.HttpTransportType.LongPolling,
+
+
+          accessTokenFactory: async () => {
+            try {
+              return (await window.windowControls?.getClientAttestation?.()) ?? '';
+            } catch {
+              return '';
+            }
+          }
         })
         .withAutomaticReconnect([0, 1000, 2000, 5000, 5000, 10000, 10000, 30000, 30000])
         .build();
-      this.connection.serverTimeoutInMilliseconds = 45000;
-      this.connection.keepAliveIntervalInMilliseconds = 8000;
+      this.connection = connection;
+      connection.serverTimeoutInMilliseconds = 45000;
+      connection.keepAliveIntervalInMilliseconds = 8000;
       this.setupListeners();
-      this.setupReconnectionHandlers();
+      this.setupReconnectionHandlers(connection);
 
       
       const startWithTimeout = Promise.race([
-        this.connection.start(),
+        connection.start(),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Connection start timeout')), SignalRService.CONNECT_WAIT_TIMEOUT_MS)
+          setTimeout(() => reject(new Error('Connection start timeout')), SignalRService.CONNECT_START_TIMEOUT_MS)
         )
       ]);
       await startWithTimeout;
+
+      if (this.connection !== connection) {
+        await connection.stop().catch(() => { });
+        return this.isConnected();
+      }
 
       this.reconnectAttempts = 0;
       this.isReconnecting = false;
@@ -203,9 +398,23 @@ class SignalRService {
       this.notifyConnectionUpdate(true);
       return true;
     } catch (err: any) {
+      if (connection && this.connection !== connection) {
+        connection.stop().catch(() => { });
+        return this.isConnected();
+      }
+      if (connection && this.connection === connection) {
+        this.connection = null;
+        connection.stop().catch(() => { });
+      }
       this.isReconnecting = false;
-      this.lastConnectionError = err?.message || String(err);
-      this.notifyPingUpdate(-1);
+      const rawError = err?.message || String(err);
+      const rejection = this.parseClientRejection(rawError);
+      if (rejection) {
+        this.applyClientRejection(rejection);
+        return false;
+      }
+      this.lastConnectionError = rawError;
+      this.resetPingStats();
       this.notifyConnectionUpdate(false);
       this.scheduleReconnect();
       return false;
@@ -225,25 +434,36 @@ class SignalRService {
     }
   }
 
-  private setupReconnectionHandlers() {
-    if (!this.connection) return;
-    this.connection.onreconnecting(() => {
+  private setupReconnectionHandlers(connection: signalR.HubConnection) {
+    connection.onreconnecting(() => {
+      if (this.connection !== connection) return;
       if (this.intentionalDisconnect) return;
       this.isReconnecting = true;
-      this.notifyPingUpdate(-1);
+      this.sessionReady = false;
+      this.resetPingStats();
       this.saveReconnectionState();
       this.notifyConnectionUpdate(false);
     });
-    this.connection.onreconnected(async () => {
+    connection.onreconnected(async () => {
+      if (this.connection !== connection) return;
       this.reconnectAttempts = 0;
       this.isReconnecting = false;
       this.startPingMeasurement();
       this.notifyConnectionUpdate(true);
     });
-    this.connection.onclose(() => {
+    connection.onclose((error) => {
+      if (this.connection !== connection) return;
       this.isReconnecting = false;
-      this.notifyPingUpdate(-1);
+      this.sessionReady = false;
+      this.resetPingStats();
       this.stopPingMeasurement();
+
+      const rejection = error ? this.parseClientRejection(error.message || String(error)) : null;
+      if (rejection) {
+        this.saveReconnectionState();
+        this.applyClientRejection(rejection);
+        return;
+      }
       if (!this.intentionalDisconnect) {
         this.saveReconnectionState();
         this.notifyConnectionUpdate(false);
@@ -253,19 +473,29 @@ class SignalRService {
   }
 
   private scheduleReconnect() {
-    if (this.reconnectTimer || this.intentionalDisconnect) return;
+    if (this.reconnectTimer || this.intentionalDisconnect || this.clientRejectedReason) return;
     this.reconnectAttempts++;
+    // Экспоненциальная пауза с джиттером вместо фиксированных 5 с: при массовом
+    // разрыве все клиенты иначе возвращаются одновременно и дают серверу пик
+    // нагрузки ровно тогда, когда он ещё не разгрузился.
+    const base = Math.min(2000 * 2 ** Math.min(this.reconnectAttempts - 1, 4), 30000);
+    const delay = base + Math.floor(Math.random() * 1000);
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
       await this.connect();
-    }, 5000);
+    }, delay);
   }
 
 
   public disconnect() {
     this.intentionalDisconnect = true;
     this.isReconnecting = false;
+    this.sessionReady = false;
     this.reconnectAttempts = 0;
+    // Умышленный разрыв не уведомляет подписчиков, поэтому сбрасываем и память о
+    // последнем уведомлении: иначе дедупликация проглотила бы `true` при
+    // следующем подключении в этой же сессии приложения.
+    this.lastNotifiedConnected = null;
     this.lastSpeakingState = null;
     this.wasInChannel = null;
     this.wasMuted = false;
@@ -289,32 +519,45 @@ class SignalRService {
 
   private setupListeners() {
     if (!this.connection || this.listenersAttached) return;
+    const connection = this.connection;
     this.listenersAttached = true;
     const store = useAppStore.getState;
+    const on = (methodName: string, handler: (...args: any[]) => void | Promise<void>) => {
+      connection.on(methodName, (...args: any[]) => {
+        if (this.connection !== connection) return;
+        return handler(...args);
+      });
+    };
 
-    this.connection.on("SyncFullChannelState", (stateMap: Record<string, User[]>) => {
+    on("SyncFullChannelState", (stateMap: Record<string, User[]>) => {
       store().setFullChannelState(stateMap);
     });
 
-    this.connection.on("UserJoined", (user: User) => {
+    on("UserJoined", (user: User) => {
       store().updateUserStatus(user.id, { ...user, isOnline: true });
     });
 
-    this.connection.on("UserLeft", (userId: string) => {
+    on("UserLeft", (userId: string) => {
       this.clearStreamDropTimer(userId);
       store().updateUserStatus(userId, { isOnline: false, currentChannelId: null, currentCallUserId: null, isSpeaking: false });
       store().removeUserFromChannelMap('', userId);
       webrtc.disconnectFromPeer(userId);
     });
 
-    this.connection.on("UserUpdated", (user: User) => {
+    on("UserUpdated", (user: User) => {
       if (store().currentUser?.id === user.id) store().setCurrentUser({ ...store().currentUser!, ...user });
       store().updateUserStatus(user.id, user);
     });
 
-    this.connection.on("UserJoinedChannel", (user: User, channelId?: string) => {
+    on("UserJoinedChannel", (user: User, channelId?: string) => {
       if (!channelId) return;
-      if (user.id === store().currentUser?.id && store().isJoiningChannel) return;
+      const state = store();
+      if (user.id === state.currentUser?.id) {
+        if (state.isJoiningChannel) return;
+        // A delayed event from the channel we just left must not move the
+        // local user's metadata back to the old channel.
+        if (state.currentChannelId !== channelId) return;
+      }
       store().removeUserFromChannelMap('', user.id);
       store().updateUserStatus(user.id, { ...user, currentChannelId: channelId, currentCallUserId: null, isOnline: true });
       store().addUserToChannelMap(channelId, { ...user, currentChannelId: channelId, currentCallUserId: null });
@@ -325,10 +568,13 @@ class SignalRService {
       }
     });
 
-    this.connection.on("UserLeftChannel", (userId: string, channelId?: string) => {
+    on("UserLeftChannel", (userId: string, channelId?: string) => {
       if (!channelId) return;
       const state = store();
-      if (userId === state.currentUser?.id && state.isJoiningChannel) return;
+      if (userId === state.currentUser?.id) {
+        if (state.isJoiningChannel) return;
+        if (state.currentChannelId && state.currentChannelId !== channelId) return;
+      }
       const knownChannelId = state.friends.find(user => user.id === userId)?.currentChannelId
         ?? Object.entries(state.channelUsersMap).find(([, users]) => users.some(user => user.id === userId))?.[0];
       state.removeUserFromChannelMap(channelId, userId);
@@ -341,7 +587,7 @@ class SignalRService {
       }
     });
 
-    this.connection.on("ChannelCreated", (channel: VoiceChannel) => {
+    on("ChannelCreated", (channel: VoiceChannel) => {
       const channels = store().channels;
       
       const withoutOptimistic = channels.filter(c => !c.id.startsWith('__opt_') || c.name !== channel.name);
@@ -352,20 +598,20 @@ class SignalRService {
       }
     });
 
-    this.connection.on("ChannelUpdated", (channel: VoiceChannel) => {
+    on("ChannelUpdated", (channel: VoiceChannel) => {
       store().setChannels(store().channels.map(c => c.id === channel.id ? channel : c));
       if (store().selectedChannelForMembers?.id === channel.id) store().setSelectedChannelForMembers(channel);
     });
 
-    this.connection.on("ChannelDeleted", (channelId: string) => {
+    on("ChannelDeleted", (channelId: string) => {
       store().setChannels(store().channels.filter(c => c.id !== channelId));
       if (store().currentChannelId === channelId) this.leaveChannel();
       if (store().selectedChannelForMembers?.id === channelId) store().setModal('channelMembers', false);
     });
 
-    this.connection.on("ForceLeaveVoice", async () => { await this.leaveChannel(); });
+    on("ForceLeaveVoice", async () => { await this.leaveChannel(); });
 
-    this.connection.on("UserStateChanged", (update: any) => {
+    on("UserStateChanged", (update: any) => {
       const uId = update.userId || update.UserId;
       if (!uId) return;
 
@@ -403,16 +649,16 @@ class SignalRService {
       }
     });
 
-    this.connection.on("UserSpeaking", (userId: string, isSpeaking: boolean) => {
+    on("UserSpeaking", (userId: string, isSpeaking: boolean) => {
       if (store().currentUser?.id === userId) store().setSpeakingStatus(userId, isSpeaking);
     });
 
-    this.connection.on("UserStartedStreaming", (userId: string, streamQuality: string) => {
+    on("UserStartedStreaming", (userId: string, streamQuality: string) => {
       this.clearStreamDropTimer(userId);
       store().updateUserStatus(userId, { isStreaming: true, streamQuality });
     });
 
-    this.connection.on("UserStoppedStreaming", (userId: string) => {
+    on("UserStoppedStreaming", (userId: string) => {
       this.clearStreamDropTimer(userId);
       const appStore = store();
       if (appStore.activeStreamId === userId) {
@@ -422,7 +668,7 @@ class SignalRService {
       webrtc.cleanupRemoteStream(userId);
     });
 
-    this.connection.on("StreamDropped", (userId: string) => {
+    on("StreamDropped", (userId: string) => {
       this.clearStreamDropTimer(userId);
       const timer = setTimeout(() => {
         this.streamDropTimers.delete(userId);
@@ -436,27 +682,27 @@ class SignalRService {
       this.streamDropTimers.set(userId, timer);
     });
 
-    this.connection.on("FriendRequestReceived", (user: User) => {
+    on("FriendRequestReceived", (user: User) => {
       if (!store().friendRequests.find((r: User) => r.id === user.id)) {
         store().setFriendRequests([...store().friendRequests, user]);
         this.playNotificationSound();
       }
     });
 
-    this.connection.on("FriendRequestAccepted", (user: User) => {
+    on("FriendRequestAccepted", (user: User) => {
       if (!store().friends.find((f: User) => f.id === user.id)) store().setFriends([...store().friends, user]);
     });
 
-    this.connection.on("FriendAdded", (user: User) => {
+    on("FriendAdded", (user: User) => {
       if (!store().friends.find((f: User) => f.id === user.id)) store().setFriends([...store().friends, user]);
       store().setFriendRequests(store().friendRequests.filter((r: User) => r.id !== user.id));
     });
 
-    this.connection.on("FriendRemoved", (userId: string) => {
+    on("FriendRemoved", (userId: string) => {
       store().setFriends(store().friends.filter((f: User) => f.id !== userId));
     });
 
-    this.connection.on("ReceiveChannelInvite", async (invite: ChannelInvite) => {
+    on("ReceiveChannelInvite", async (invite: ChannelInvite) => {
       const invites = store().channelInvites;
       if (!invites.find(i => i.channelId === invite.channelId)) {
         store().setChannelInvites([...invites, invite]);
@@ -464,13 +710,13 @@ class SignalRService {
       }
     });
 
-    this.connection.on("IncomingChannelCall", (call: IncomingCall, channelId: string, channelName: string) => {
+    on("IncomingChannelCall", (call: IncomingCall, channelId: string, channelName: string) => {
       store().setIncomingChannelInvite({ senderId: call.callerId, senderName: call.callerName, channelId, channelName });
       store().setModal('incomingChannelInvite', true);
       this.playRingtone();
     });
 
-    this.connection.on("IncomingCall", async (call: IncomingCall) => {
+    on("IncomingCall", async (call: IncomingCall) => {
       const state = store();
       if (state.callStatus === 'calling' && state.currentCallUser?.id === call.callerId) {
         await this.acceptCall(call.callerId);
@@ -481,7 +727,7 @@ class SignalRService {
       this.playRingtone();
     });
 
-    this.connection.on("CallAccepted", (user: User) => {
+    on("CallAccepted", (user: User) => {
       store().setCurrentCallUser(user);
       store().setCallStatus('connected');
       store().setIncomingCall(null);
@@ -491,7 +737,7 @@ class SignalRService {
       this.playSfx(channelJoinSound, 0.3);
     });
 
-    this.connection.on("CallDeclined", () => {
+    on("CallDeclined", () => {
       store().setCallStatus('idle');
       store().setIncomingCall(null);
       store().setModal('incomingCall', false);
@@ -500,7 +746,7 @@ class SignalRService {
       webrtc.enterBackgroundMode();
     });
 
-    this.connection.on("CallEnded", () => {
+    on("CallEnded", () => {
       const callStatus = store().callStatus;
       const callUser = store().currentCallUser;
       if (store().currentUser?.isStreaming || webrtc.localVideoStream) {
@@ -524,7 +770,7 @@ class SignalRService {
       webrtc.enterBackgroundMode();
     });
 
-    this.connection.on("CallStarted", (user: User) => {
+    on("CallStarted", (user: User) => {
       
       
       
@@ -538,18 +784,18 @@ class SignalRService {
       this.playSfx(channelJoinSound, 0.3);
     });
 
-    this.connection.on("AchievementUnlocked", (achievementId: string) => {
+    on("AchievementUnlocked", (achievementId: string) => {
       store().setAchievementToast(achievementId);
       setTimeout(() => store().setAchievementToast('__hiding__' + achievementId), 4500);
       setTimeout(() => store().setAchievementToast(null), 5000);
       this.playSfx(achievementSound, 0.4);
     });
 
-    this.connection.on("ReceiveWebRTCOffer", async (sId: string, o: string) => { await webrtc.handleOffer(sId, o); });
-    this.connection.on("ReceiveWebRTCAnswer", async (sId: string, a: string) => { await webrtc.handleAnswer(sId, a); });
-    this.connection.on("ReceiveIceCandidate", async (sId: string, c: string) => { await webrtc.handleIceCandidate(sId, c); });
+    on("ReceiveWebRTCOffer", async (sId: string, o: string) => { await webrtc.handleOffer(sId, o); });
+    on("ReceiveWebRTCAnswer", async (sId: string, a: string) => { await webrtc.handleAnswer(sId, a); });
+    on("ReceiveIceCandidate", async (sId: string, c: string) => { await webrtc.handleIceCandidate(sId, c); });
 
-    this.connection.on("ForceLogout", async () => {
+    on("ForceLogout", async () => {
       try { await window.windowControls.clearSession(); await window.windowControls.wipeAppData(); } catch { }
       const appStore = useAppStore.getState();
       appStore.setCurrentUser(null); appStore.setChannels([]); appStore.setFriends([]);
@@ -593,14 +839,124 @@ class SignalRService {
   
 
   private async ensureConnected(): Promise<boolean> {
-    
-    
-    
+    if (this.isConnected()) return true;
+    if (this.intentionalDisconnect || this.clientRejectedReason) return false;
+
+    if (!this.isReconnecting) {
+      void this.connect();
+    }
+
+    const deadline = Date.now() + SignalRService.CONNECT_WAIT_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (this.isConnected()) return true;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
     return this.isConnected();
   }
 
+  private async ensureSessionReady(): Promise<boolean> {
+    if (this.sessionReady && this.isConnected()) return true;
+    if (!await this.ensureConnected()) return false;
+
+    const deadline = Date.now() + SignalRService.CONNECT_WAIT_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (this.sessionReady && this.isConnected()) return true;
+      if (!this.isConnected() || this.intentionalDisconnect || this.clientRejectedReason) return false;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return this.sessionReady && this.isConnected();
+  }
+
+  private beginVoiceOperation(): number {
+    this.isJoiningChannel = true;
+    const operationId = ++this.voiceOperationId;
+    this.voiceOperationDone = new Promise<void>(resolve => {
+      this.voiceOperationResolve = resolve;
+    });
+    // Страховка от незакрытой операции: пока voiceOperationDone не снят, любой
+    // следующий вход в канал мгновенно возвращает 'network', то есть один
+    // зависший await запирает голос до перезапуска приложения.
+    if (this.voiceOperationTimer) clearTimeout(this.voiceOperationTimer);
+    this.voiceOperationTimer = setTimeout(() => {
+      if (operationId !== this.voiceOperationId) return;
+      console.warn('[SignalR] voice operation watchdog fired, releasing the guard');
+      this.finishVoiceOperation(operationId);
+    }, SignalRService.VOICE_OPERATION_TIMEOUT_MS);
+    useAppStore.getState().setIsJoiningChannel(true);
+    return operationId;
+  }
+
+  private finishVoiceOperation(operationId: number) {
+    if (operationId === this.voiceOperationId) {
+      this.isJoiningChannel = false;
+      useAppStore.getState().setIsJoiningChannel(false);
+      if (this.voiceOperationTimer) { clearTimeout(this.voiceOperationTimer); this.voiceOperationTimer = null; }
+    }
+    this.voiceOperationResolve?.();
+    this.voiceOperationResolve = null;
+    this.voiceOperationDone = null;
+  }
+
+  private async restoreVoiceChannel(channelId: string | null, users: User[], operationId: number): Promise<boolean> {
+    if (!channelId || operationId !== this.voiceOperationId || !await this.ensureSessionReady()) {
+      return false;
+    }
+    try {
+      const update = await this.invokeWithTimeout<ChannelUpdate | null>(
+        "JoinChannel", SignalRService.INVOKE_TIMEOUT_MS, { channelId }
+      );
+      if (operationId !== this.voiceOperationId || !update?.users) return false;
+      const state = useAppStore.getState();
+      webrtc.leaveAll();
+      state.commitVoiceChannel(channelId, update.users.length > 0 ? update.users : users);
+      state.setCallStatus('idle');
+      state.setCurrentCallUser(null);
+      this.connectToPeersStaggered(
+        update.users.filter(user => user.id !== state.currentUser?.id).map(user => user.id),
+        operationId,
+        channelId
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * invoke с собственным пределом ожидания. Штатный invoke висит, пока живо
+   * соединение: если хаб-метод застрял (например, на блокировке SQLite),
+   * вызывающий код не получает ни ответа, ни ошибки, и голосовая операция
+   * остаётся незакрытой до перезапуска приложения.
+   */
+  private invokeWithTimeout<T>(method: string, timeoutMs: number, ...args: any[]): Promise<T> {
+    const connection = this.connection;
+    if (!connection) return Promise.reject(new Error(`${method}: no connection`));
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${method} timeout after ${timeoutMs}ms`)), timeoutMs);
+    });
+    return Promise.race([connection.invoke<T>(method, ...args), timeout])
+      .finally(() => { if (timer) clearTimeout(timer); });
+  }
+
+  /**
+   * Офферы участникам канала расходятся с разносом по времени. Отправка всем
+   * сразу (forEach) означала N одновременных hub-вызовов от каждого входящего:
+   * сервер обрабатывает вызовы одного клиента по одному, поэтому пачка ставила в
+   * общую очередь и чужой Ping — у остальных участников подскакивал пинг.
+   */
+  private connectToPeersStaggered(userIds: string[], operationId: number, channelId: string) {
+    userIds.forEach((userId, index) => {
+      setTimeout(() => {
+        if (operationId !== this.voiceOperationId) return;
+        if (useAppStore.getState().currentChannelId !== channelId) return;
+        webrtc.connectToPeer(userId);
+      }, index * SignalRService.PEER_CONNECT_STAGGER_MS);
+    });
+  }
+
   private async safeInvoke<T>(method: string, ...args: any[]): Promise<T | null> {
-    if (!await this.ensureConnected()) return null;
+    if (!await this.ensureSessionReady()) return null;
     try { return await this.connection!.invoke<T>(method, ...args); }
     catch (error) {
       console.warn(`[SignalR] ${method} failed`, error);
@@ -609,7 +965,7 @@ class SignalRService {
   }
 
   private async invokeCommand(method: string, ...args: any[]): Promise<boolean> {
-    if (!await this.ensureConnected()) return false;
+    if (!await this.ensureSessionReady()) return false;
     try {
       await this.connection!.invoke(method, ...args);
       return true;
@@ -622,14 +978,22 @@ class SignalRService {
   
 
   public async checkUserExists(username: string): Promise<boolean> {
-    return await this.safeInvoke<boolean>("CheckUserExists", username) ?? false;
+    if (!await this.ensureConnected()) return false;
+    try {
+      return await this.connection!.invoke<boolean>("CheckUserExists", username);
+    } catch {
+      return false;
+    }
   }
 
   public async login(username: string, password: string): Promise<'ok' | 'invalid' | 'network'> {
     if (!this.isConnected()) return 'network';
     try {
-      const user = await this.connection!.invoke<User | null>("Login", username, password);
+      const user = await this.invokeWithTimeout<User | null>(
+        "Login", SignalRService.INVOKE_TIMEOUT_MS, username, password
+      );
       if (user) {
+        this.sessionReady = true;
         useAppStore.getState().setCurrentUser(user);
         
         const channelToRejoin = this.wasInChannel;
@@ -669,16 +1033,25 @@ class SignalRService {
 
         return 'ok';
       }
+      this.sessionReady = false;
       return 'invalid';
     } catch (e) {
+      this.sessionReady = false;
       console.error("[SignalR] Login error:", e);
       return 'network';
     }
   }
 
   public async register(username: string, password: string, displayName: string, avatarBase64: string | null, avatarColor: string): Promise<boolean> {
-    const user = await this.safeInvoke<User>("Register", username, password, displayName, avatarBase64, avatarColor);
+    if (!await this.ensureConnected()) return false;
+    let user: User | null = null;
+    try {
+      user = await this.connection!.invoke<User>("Register", username, password, displayName, avatarBase64, avatarColor);
+    } catch {
+      return false;
+    }
     if (user) {
+      this.sessionReady = true;
       useAppStore.getState().setCurrentUser(user);
       if (user.currentChannelId) {
         this.joinChannel(user.currentChannelId).catch(() => { });
@@ -891,22 +1264,17 @@ class SignalRService {
   
 
   public async joinChannel(channelId: string): Promise<'ok' | 'network' | 'mic_failed' | 'full'> {
-    if (this.isJoiningChannel) return 'network';
-    this.isJoiningChannel = true;
-    const operationId = ++this.voiceOperationId;
-    useAppStore.getState().setIsJoiningChannel(true);
+    if (this.isJoiningChannel || this.voiceOperationDone) return 'network';
+    const operationId = this.beginVoiceOperation();
     try {
       return await this._joinChannelImpl(channelId, operationId);
     } finally {
-      if (operationId === this.voiceOperationId) {
-        this.isJoiningChannel = false;
-        useAppStore.getState().setIsJoiningChannel(false);
-      }
+      this.finishVoiceOperation(operationId);
     }
   }
 
   private async _joinChannelImpl(channelId: string, operationId: number): Promise<'ok' | 'network' | 'mic_failed' | 'full'> {
-    if (!await this.ensureConnected()) return 'network';
+    if (!await this.ensureSessionReady()) return 'network';
     const store = useAppStore.getState();
     const currentUser = store.currentUser;
     if (!currentUser) return 'network';
@@ -926,7 +1294,9 @@ class SignalRService {
         return 'mic_failed';
       }
       if (operationId !== this.voiceOperationId) return 'network';
-      const update = await this.connection!.invoke<ChannelUpdate | null>("JoinChannel", { channelId });
+      const update = await this.invokeWithTimeout<ChannelUpdate | null>(
+        "JoinChannel", SignalRService.INVOKE_TIMEOUT_MS, { channelId }
+      );
       if (operationId !== this.voiceOperationId) return 'network';
       if (update?.users) {
         webrtc.leaveAll();
@@ -935,9 +1305,11 @@ class SignalRService {
         store.setCurrentCallUser(null);
         setTimeout(() => {
           if (operationId !== this.voiceOperationId || useAppStore.getState().currentChannelId !== channelId) return;
-          update.users
-            .filter(user => user.id !== currentUser.id)
-            .forEach(user => webrtc.connectToPeer(user.id));
+          this.connectToPeersStaggered(
+            update.users.filter(user => user.id !== currentUser.id).map(user => user.id),
+            operationId,
+            channelId
+          );
         }, 500);
         return 'ok';
       }
@@ -952,17 +1324,14 @@ class SignalRService {
   }
 
   public async switchChannel(channelId: string): Promise<'ok' | 'network' | 'mic_failed' | 'full'> {
-    if (this.isJoiningChannel) return 'network';
-    this.isJoiningChannel = true;
-    const operationId = ++this.voiceOperationId;
+    if (this.isJoiningChannel || this.voiceOperationDone) return 'network';
+    const operationId = this.beginVoiceOperation();
     const sourceChannelId = useAppStore.getState().currentChannelId;
     const sourceUsers = [...useAppStore.getState().voiceUsers];
-    useAppStore.getState().setIsJoiningChannel(true);
     const initialState = useAppStore.getState();
     const initialUser = initialState.currentUser;
     if (!initialUser) {
-      this.isJoiningChannel = false;
-      initialState.setIsJoiningChannel(false);
+      this.finishVoiceOperation(operationId);
       return 'network';
     }
     const optimisticUser: User = { ...initialUser, currentChannelId: channelId, currentCallUserId: null, isSpeaking: false };
@@ -978,7 +1347,6 @@ class SignalRService {
     this.playSfx(channelJoinSound, 0.3);
     // commitVoiceChannel ends the visual loading state; keep the transaction guard active.
     initialState.setIsJoiningChannel(true);
-    let leftSource = false;
     try {
       const micStarted = await webrtc.startLocalStream();
       if (!micStarted) {
@@ -990,19 +1358,27 @@ class SignalRService {
         // LeaveChannel returns no payload, so safeInvoke cannot be used here:
         // null is a valid result for a successful void hub method.
         try {
-          await this.connection!.invoke("LeaveChannel");
-          leftSource = true;
+          await this.invokeWithTimeout("LeaveChannel", SignalRService.INVOKE_TIMEOUT_MS);
         } catch {
+          useAppStore.getState().clearVoiceChannel(channelId);
+          const restored = await this.restoreVoiceChannel(sourceChannelId, sourceUsers, operationId);
+          if (!restored && sourceChannelId) {
+            useAppStore.getState().commitVoiceChannel(sourceChannelId, sourceUsers);
+            await webrtc.enterBackgroundMode();
+          }
           return 'network';
         }
         if (operationId !== this.voiceOperationId) return 'network';
       }
 
-      const update = await this.connection!.invoke<ChannelUpdate | null>("JoinChannel", { channelId });
+      const update = await this.invokeWithTimeout<ChannelUpdate | null>(
+        "JoinChannel", SignalRService.INVOKE_TIMEOUT_MS, { channelId }
+      );
       if (operationId !== this.voiceOperationId) return 'network';
       if (!update?.users) {
-        useAppStore.getState().clearVoiceChannel(sourceChannelId);
-        await webrtc.enterBackgroundMode();
+        useAppStore.getState().clearVoiceChannel(channelId);
+        const restored = await this.restoreVoiceChannel(sourceChannelId, sourceUsers, operationId);
+        if (!restored) await webrtc.enterBackgroundMode();
         return 'full';
       }
       const state = useAppStore.getState();
@@ -1013,26 +1389,34 @@ class SignalRService {
       state.setCurrentCallUser(null);
       setTimeout(() => {
         if (operationId !== this.voiceOperationId || useAppStore.getState().currentChannelId !== channelId) return;
-        update.users.filter(user => user.id !== currentUser?.id).forEach(user => webrtc.connectToPeer(user.id));
+        this.connectToPeersStaggered(
+          update.users.filter(user => user.id !== currentUser?.id).map(user => user.id),
+          operationId,
+          channelId
+        );
       }, 500);
       return 'ok';
     } catch {
       useAppStore.getState().clearVoiceChannel(channelId);
-      if (sourceChannelId && !leftSource) useAppStore.getState().commitVoiceChannel(sourceChannelId, sourceUsers);
-      await webrtc.enterBackgroundMode();
+      const restored = sourceChannelId
+        ? await this.restoreVoiceChannel(sourceChannelId, sourceUsers, operationId)
+        : false;
+      if (!restored) await webrtc.enterBackgroundMode();
       return 'network';
     } finally {
-      if (operationId === this.voiceOperationId) {
-        this.isJoiningChannel = false;
-        useAppStore.getState().setIsJoiningChannel(false);
-      }
+      this.finishVoiceOperation(operationId);
     }
   }
 
   public async leaveChannel(): Promise<void> {
+    const pendingOperation = this.voiceOperationDone;
+    if (pendingOperation) {
+      this.voiceOperationId++;
+      this.isJoiningChannel = false;
+      useAppStore.getState().setIsJoiningChannel(false);
+      await pendingOperation;
+    }
     const operationId = ++this.voiceOperationId;
-    this.isJoiningChannel = false;
-    useAppStore.getState().setIsJoiningChannel(false);
     const prevChannelId = useAppStore.getState().currentChannelId;
     const currentUser = useAppStore.getState().currentUser;
 
@@ -1307,13 +1691,13 @@ class SignalRService {
   }
 
   public sendWebRTCOffer(targetId: string, offer: string): void {
-    if (this.isConnected()) this.connection?.send("SendWebRTCOffer", targetId, offer);
+    if (this.sessionReady && this.isConnected()) this.connection?.send("SendWebRTCOffer", targetId, offer);
   }
   public sendWebRTCAnswer(targetId: string, answer: string): void {
-    if (this.isConnected()) this.connection?.send("SendWebRTCAnswer", targetId, answer);
+    if (this.sessionReady && this.isConnected()) this.connection?.send("SendWebRTCAnswer", targetId, answer);
   }
   public sendIceCandidate(targetId: string, candidate: string): void {
-    if (this.isConnected()) this.connection?.send("SendIceCandidate", targetId, candidate);
+    if (this.sessionReady && this.isConnected()) this.connection?.send("SendIceCandidate", targetId, candidate);
   }
 }
 
