@@ -29,6 +29,48 @@ export interface PingStats {
 
 const OFFLINE_PING_STATS: PingStats = { ping: -1, jitter: 0, loss: 0, missed: 0 };
 
+/** Предел встроенного реконнекта: дальше подключением занимается scheduleReconnect(). */
+const RECONNECT_GIVE_UP_MS = 95000;
+/** Потолок шага backoff'а — до умножения на джиттер. */
+const RECONNECT_MAX_STEP_MS = 30000;
+
+/**
+ * Политика автореконнекта. Массив фиксированных задержек ([0, 1000, 2000, …])
+ * возвращает всех клиентов одновременно: после перезапуска сервера каждый, кто
+ * был онлайн, стучится в t=0, затем ровно через 1 с, 3 с, 8 с — и однопроцессорный
+ * хост получает пик логинов (проверка подписи + чтения SQLite) как раз тогда,
+ * когда он ещё сам не разгрузился. Джиттер размазывает ту же лавину по окну: шаг
+ * растёт экспоненциально, но берётся случайно из 50–150 % его величины.
+ *
+ * Обрыв сигналинга не рвёт медиа — P2P-соединения живут сами, — поэтому лишняя
+ * половина секунды на первой попытке пользователю не видна.
+ */
+const RECONNECT_POLICY: signalR.IRetryPolicy = {
+  nextRetryDelayInMilliseconds(ctx) {
+    // Отказ передаёт эстафету scheduleReconnect(): у того есть то, чего нет у
+    // встроенного реконнекта, — полный проход connect() с логином. Предел взят
+    // равным сумме прежнего массива задержек (93 с), чтобы момент передачи
+    // остался прежним.
+    if (ctx.elapsedMilliseconds > RECONNECT_GIVE_UP_MS) return null;
+    const step = Math.min(1000 * 2 ** ctx.previousRetryCount, RECONNECT_MAX_STEP_MS);
+    return Math.round(step * (0.5 + Math.random()));
+  }
+};
+
+/** Ровно форма RTCIceServer — приходит от хаба и уходит в RTCPeerConnection без переклейки. */
+export interface IceServerConfig {
+  urls: string[];
+  username?: string;
+  credential?: string;
+}
+
+export interface IceConfig {
+  iceServers: IceServerConfig[];
+  /** Момент, после которого креды перестанут приниматься TURN-сервером. */
+  expiresAtUnixMs: number;
+  ttlSeconds: number;
+}
+
 class SignalRService {
   private connection: signalR.HubConnection | null = null;
   private listenersAttached = false;
@@ -43,6 +85,13 @@ class SignalRService {
   private pingWindow: (number | null)[] = [];
   private currentPingStats: PingStats = OFFLINE_PING_STATS;
   private lastSpeakingState: boolean | null = null;
+  /** Последнее смещение пояса, принятое сервером, — чтобы не гонять инвок каждую пробу. */
+  private lastReportedUtcOffset: number | null = null;
+  /**
+   * Сервер этого соединения не знает ReportTimeZone (собран раньше клиента).
+   * Флаг гасит попытки до следующего соединения: см. reportTimeZone().
+   */
+  private timeZoneUnsupported = false;
   private wasInChannel: string | null = null;
   private wasMuted = false;
   private wasDeafened = false;
@@ -225,6 +274,10 @@ class SignalRService {
       } finally {
         this.pingInFlight = false;
         scheduleNext();
+        // Пояс мог смениться на ходу: переход на летнее/зимнее время или ноутбук
+        // увезли в другую страну. Проверка стоит один вызов Date, инвок уходит
+        // только при фактическом изменении.
+        void this.reportTimeZone();
       }
     };
 
@@ -342,6 +395,12 @@ class SignalRService {
     this.isReconnecting = true;
     this.sessionReady = false;
     this.lastConnectionError = null;
+    // Новое соединение — возможно, и новый сервер: обновлённый или
+    // перезапущенный. И «метода нет», и «пояс уже принят» — свойства сервера, а
+    // не клиента, поэтому сбрасываются вместе с соединением: после деплоя пояс
+    // уедет заново без перезапуска приложения.
+    this.timeZoneUnsupported = false;
+    this.lastReportedUtcOffset = null;
     let connection: signalR.HubConnection | null = null;
     try {
       if (this.connection) {
@@ -368,7 +427,7 @@ class SignalRService {
             }
           }
         })
-        .withAutomaticReconnect([0, 1000, 2000, 5000, 5000, 10000, 10000, 30000, 30000])
+        .withAutomaticReconnect(RECONNECT_POLICY)
         .build();
       this.connection = connection;
       connection.serverTimeoutInMilliseconds = 45000;
@@ -448,6 +507,14 @@ class SignalRService {
       if (this.connection !== connection) return;
       this.reconnectAttempts = 0;
       this.isReconnecting = false;
+      // Встроенный реконнект SignalR поднимается сам, минуя connect(), — а за
+      // разрывом мог стоять как раз перезапуск обновлённого сервера. Оба знания
+      // о поясе описывают сервер, а не клиента, поэтому забываем их здесь так
+      // же, как в connect(): иначе «метода нет», выученное на старой сборке,
+      // переживёт её, и force в login() не поможет — он проверяется после этого
+      // флага. Значение уедет заново пробой пинга, как только пройдёт логин.
+      this.timeZoneUnsupported = false;
+      this.lastReportedUtcOffset = null;
       this.startPingMeasurement();
       this.notifyConnectionUpdate(true);
     });
@@ -975,6 +1042,78 @@ class SignalRService {
     }
   }
 
+  /**
+   * Просит у сервера ICE-серверы с короткоживущими кредами. Раньше адрес TURN и
+   * пароль к нему лежали в самой сборке, то есть доставались из любого
+   * установленного клиента и работали бессрочно; теперь их выдаёт хаб на срок
+   * порядка часов и с привязкой к userId.
+   *
+   * С таймаутом, а не через safeInvoke: вызов стоит на пути ответа на оффер, и
+   * зависший хаб иначе задержал бы установку голосового соединения. null здесь
+   * не ошибка — клиент останется на STUN, то есть потеряет только релей-фолбэк.
+   */
+  public async fetchIceServers(): Promise<IceConfig | null> {
+    if (!await this.ensureSessionReady()) return null;
+    try {
+      return await this.invokeWithTimeout<IceConfig>("GetIceServers", 5000);
+    } catch (error) {
+      console.warn("[SignalR] GetIceServers failed", error);
+      return null;
+    }
+  }
+
+  /**
+   * Смещение часового пояса устройства от UTC в минутах в привычном знаке:
+   * UTC+3 → +180. `getTimezoneOffset()` отдаёт обратную величину — сколько
+   * прибавить к местному времени, чтобы получить UTC, — поэтому знак
+   * переворачивается здесь, а не на сервере, где такой аргумент читался бы как
+   * ловушка. Значение уже учитывает летнее время.
+   */
+  private getUtcOffsetMinutes(): number {
+    return -new Date().getTimezoneOffset();
+  }
+
+  /**
+   * Сообщает серверу часовой пояс устройства.
+   *
+   * «Ранняя птица» и «Ночная сова» считаются по местному времени пользователя, а
+   * часы сервера стоят на Europe/Moscow, поэтому без этого вызова окна сверялись
+   * бы по Москве для всех, где бы человек ни находился. Отправляется сразу после логина (force) и затем только при
+   * фактической смене пояса: переход на летнее время или переезд с ноутбуком
+   * иначе оставили бы серверу устаревшее значение на всю сессию.
+   *
+   * Отсутствие метода на сервере (сборка старше клиента) — состояние постоянное,
+   * а не сбой связи, поэтому оно запоминается на всё соединение. Иначе цикл
+   * пинга повторял бы заведомо безнадёжный вызов каждые 5 секунд и заливал
+   * консоль одинаковой ошибкой. Обычный сбой связи флаг не ставит и повторяется
+   * со следующей пробой; после деплоя сервера новое соединение пробует заново.
+   */
+  private async reportTimeZone(force = false): Promise<void> {
+    if (this.timeZoneUnsupported) return;
+    const offset = this.getUtcOffsetMinutes();
+    if (!force && offset === this.lastReportedUtcOffset) return;
+    if (!this.isConnected()) return;
+    // Именно sessionReady, а не ensureSessionReady(): тот ЖДЁТ сессию до 15 с,
+    // опрашивая её каждые 100 мс. Здесь ждать нечего — пояс не срочный, и если
+    // логин ещё не прошёл, отправит следующая проба пинга.
+    if (!this.sessionReady) return;
+    try {
+      await this.connection!.invoke("ReportTimeZone", offset);
+      this.lastReportedUtcOffset = offset;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('Method does not exist')) {
+        this.timeZoneUnsupported = true;
+        console.info(
+          '[SignalR] Сервер не поддерживает ReportTimeZone — достижения по времени' +
+          ' («Ранняя птица», «Ночная сова») считаются по часам сервера. Пройдёт после его обновления.'
+        );
+        return;
+      }
+      console.warn('[SignalR] ReportTimeZone failed', error);
+    }
+  }
+
   
 
   public async checkUserExists(username: string): Promise<boolean> {
@@ -995,7 +1134,12 @@ class SignalRService {
       if (user) {
         this.sessionReady = true;
         useAppStore.getState().setCurrentUser(user);
-        
+
+        // Пояс уходит здесь — до восстановления канала ниже. «Ранняя птица»
+        // проверяется внутри JoinChannel, и если сервер к тому моменту пояса не
+        // знает, окно 05:00–07:00 сверится по его собственным часам.
+        await this.reportTimeZone(true);
+
         const channelToRejoin = this.wasInChannel;
         const streamToRejoin = this.wasStreaming;
         const streamQuality = this.wasStreamQuality;
@@ -1053,6 +1197,8 @@ class SignalRService {
     if (user) {
       this.sessionReady = true;
       useAppStore.getState().setCurrentUser(user);
+      // До joinChannel: см. комментарий в login().
+      await this.reportTimeZone(true);
       if (user.currentChannelId) {
         this.joinChannel(user.currentChannelId).catch(() => { });
       }
@@ -1334,11 +1480,30 @@ class SignalRService {
       this.finishVoiceOperation(operationId);
       return 'network';
     }
-    const optimisticUser: User = { ...initialUser, currentChannelId: channelId, currentCallUserId: null, isSpeaking: false };
+    const optimisticUser: User = {
+      ...initialUser,
+      currentChannelId: channelId,
+      currentCallUserId: null,
+      isSpeaking: false,
+      // Стрим не переезжает за пользователем: в новый канал он входит без вещания.
+      isStreaming: false,
+      streamQuality: undefined
+    };
     const knownTargetUsers = initialState.channelUsersMap[channelId] || [];
     const optimisticUsers = knownTargetUsers.some(user => user.id === initialUser.id)
       ? knownTargetUsers
       : [...knownTargetUsers, optimisticUser];
+
+    // Своё вещание закрываем до перехода (как в leaveChannel), а просмотр чужого
+    // стрима сбрасываем всегда: иначе плитка стрима из покинутого канала
+    // остаётся висеть в новом.
+    if (initialUser.isStreaming || webrtc.localVideoStream) {
+      webrtc.stopScreenShare();
+      this.safeInvoke("StopStream");
+      initialState.updateUserStatus(initialUser.id, { isStreaming: false, streamQuality: undefined });
+    }
+    initialState.setActiveStreamId(null);
+
     initialState.removeUserFromChannelMap('', initialUser.id);
     if (sourceChannelId) {
       this.playSfx(channelLeaveSound, 0.3);

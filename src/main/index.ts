@@ -54,7 +54,17 @@ const nativeScreenShareAudio = require('electron-native-screenshare') as NativeS
 
 
 if (app) {
-  app.disableHardwareAcceleration();
+  // Аппаратное ускорение включено. Раньше здесь безусловно стоял
+  // app.disableHardwareAcceleration(): весь интерфейс растеризовался и
+  // композитился на CPU, поэтому переключатели, слайдеры и ripple тем сильнее
+  // дёргались, чем слабее процессор, — а во время звонка аудиотракт борется за
+  // тот же CPU, и подлагивало у всех. С GPU-композитингом transform/opacity
+  // анимации идут отдельным слоем и не зависят от загрузки основного потока.
+  // Аварийный выход для сломанного драйвера — без пересборки: переменная
+  // окружения ZABOR_DISABLE_GPU=1 (или штатный флаг Chromium --disable-gpu).
+  if (process.env.ZABOR_DISABLE_GPU === '1') {
+    app.disableHardwareAcceleration();
+  }
 
   app.commandLine.appendSwitch('force-color-profile', 'srgb');
   app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');

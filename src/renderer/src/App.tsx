@@ -85,10 +85,13 @@ const CallUserCard = memo(({ currentCallUser, callStatus, cardSize, webrtcConnec
 
   return (
     <div ref={containerRef} className="w-full h-full flex items-center justify-center">
+      {/* transition-all анимировал в том числе width/height, которые заданы
+          инлайном и пересчитываются на каждый ресайз контейнера: карточка
+          тянулась за окном с отставанием и на каждом кадре требовала layout.
+          Переход нужен только рамке говорящего и цвету. */}
       <div
         onContextMenu={e => handleContextMenu(e, 'voiceUser', currentCallUser)}
-        className={`relative flex flex-col items-center justify-center overflow-hidden shrink-0 transition-all duration-200
-          ${callStatus === 'calling' ? 'animate-call-pulse' : ''}
+        className={`relative flex flex-col items-center justify-center overflow-hidden shrink-0 transition-[box-shadow,background-color] duration-200
           ${(isSpeaking && callStatus === 'connected' && isConnected)
             ? 'shadow-[inset_0_0_0_3px_#3BA55C,inset_0_0_0_5px_#181818,0_10px_15px_-3px_rgba(0,0,0,0.5)]'
             : 'shadow-xl'
@@ -437,26 +440,50 @@ export default function App() {
   }, [inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression, language, autoLaunch, minimizeToTray, micThresholdMode, manualThresholdValue]);
 
   useEffect(() => {
+    // Подсветка под курсором ездит за мышью через transform — это работа
+    // композитора, без перекраски (см. #mouse-glow в index.css). Раньше сдвигался
+    // центр градиента прямо в обработчике mousemove, а мышь отдаёт события чаще
+    // кадра: на каждый кадр приходилось несколько перерисовок слоя размером с
+    // окно, и от этого дёргалось всё остальное. Теперь координаты копятся, а в
+    // стиль попадают ровно один раз за кадр, в rAF.
+    let glowElement: HTMLElement | null = null;
+    let frameHandle = 0;
+    let pendingX = 0;
+    let pendingY = 0;
+
+    const resolveGlow = () => {
+      if (!glowElement || !glowElement.isConnected) glowElement = document.getElementById('mouse-glow');
+      return glowElement;
+    };
+
+    const applyPendingPosition = () => {
+      frameHandle = 0;
+      const glow = resolveGlow();
+      if (!glow) return;
+      glow.style.transform = `translate3d(${pendingX}px, ${pendingY}px, 0)`;
+      glow.style.opacity = '1';
+    };
+
     const handleMouseMove = (e: MouseEvent) => {
-      const glow = document.getElementById('mouse-glow');
-      if (glow) {
-        glow.style.setProperty('--mouse-x', `${e.clientX}px`);
-        glow.style.setProperty('--mouse-y', `${e.clientY}px`);
-        glow.style.opacity = '1';
-      }
+      pendingX = e.clientX;
+      pendingY = e.clientY;
+      if (frameHandle === 0) frameHandle = requestAnimationFrame(applyPendingPosition);
     };
 
     const handleMouseLeave = () => {
-      const glow = document.getElementById('mouse-glow');
-      if (glow) {
-        glow.style.opacity = '0';
+      if (frameHandle !== 0) {
+        cancelAnimationFrame(frameHandle);
+        frameHandle = 0;
       }
+      const glow = resolveGlow();
+      if (glow) glow.style.opacity = '0';
     };
 
-    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mousemove', handleMouseMove, { passive: true });
     document.addEventListener('mouseleave', handleMouseLeave);
 
     return () => {
+      if (frameHandle !== 0) cancelAnimationFrame(frameHandle);
       window.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseleave', handleMouseLeave);
     };
@@ -1247,7 +1274,10 @@ export default function App() {
     let interval: ReturnType<typeof setInterval> | null = null;
 
     try {
-      await webrtc.calibrateMic(10000, () => {
+      // The wizard now measures one thing: the room with nobody speaking. The
+      // countdown shows 3 s while the worklet measures 2.5 s, so the prompt is
+      // still on screen when the last frame is recorded.
+      await webrtc.calibrateMic(2500, () => {
         const startedAt = Date.now();
         setCalibrationPhase('silence');
         setCalibrationCountdown(3);
@@ -1256,21 +1286,18 @@ export default function App() {
           if (elapsed < 3) {
             setCalibrationPhase('silence');
             setCalibrationCountdown(3 - elapsed);
-          } else if (elapsed < 8) {
-            setCalibrationPhase('speech');
-            setCalibrationCountdown(8 - elapsed);
           } else {
             setCalibrationPhase('checking');
-            setCalibrationCountdown(Math.max(0, 10 - elapsed));
+            setCalibrationCountdown(0);
+            if (interval) clearInterval(interval);
           }
-          if (elapsed >= 10 && interval) clearInterval(interval);
         }, 200);
       });
       setCalibrationSuccess(true);
     } catch (err) {
       // Every failure cause gets its own message: a single generic toast made
       // machine-specific problems (dead DeepFilter engine, busy or missing
-      // microphone) indistinguishable from "say the phrase again".
+      // microphone) indistinguishable from "stay silent and try again".
       const code = err instanceof CalibrationError ? err.code : null;
       console.error('Manual calibration failed:', {
         code: code ?? (err instanceof Error ? err.message : String(err)),
@@ -1286,10 +1313,8 @@ export default function App() {
             : code === 'CALIBRATION_TIMEOUT'
               ? t('toasts.calibrationTimeout', 'Микрофон перестал отдавать звук. Проверьте устройство и повторите.')
               : code === 'CALIBRATION_NEEDS_SILENCE'
-                ? t('toasts.calibrationNeedSilence', 'Сначала нужна тишина. Повторите.')
-                : code === 'CALIBRATION_NO_SPEECH'
-                  ? t('toasts.calibrationNoSpeech', 'Не услышали фразу. Повторите.')
-                  : t('toasts.calibrationFailedRetry', 'Калибровка не удалась. Повторите.');
+                ? t('toasts.calibrationNeedSilence', 'Нужна тишина: не говорите во время замера. Повторите.')
+                : t('toasts.calibrationFailedRetry', 'Калибровка не удалась. Повторите.');
       store.setSystemToast(message);
       setTimeout(() => {
         const currentStore = useAppStore.getState();
@@ -3520,12 +3545,24 @@ export default function App() {
 
               const categoryOrder: Record<string, number> = { voice: 0, calls: 1, social: 2, hidden: 3 };
 
+              // Три полосы, между которыми ничего не перемешивается:
+              //   0 — полученные скрытые: наверху, с явной меткой «Скрытое»,
+              //   1 — обычные достижения,
+              //   2 — ещё не открытые скрытые: всегда в самом низу.
+              // Раньше сортировка шла только по факту получения, из-за чего
+              // нераскрытые «???» вклинивались между обычными достижениями.
+              const bandOf = (a: typeof ACHIEVEMENTS[number]) =>
+                a.hidden ? (unlocked.includes(a.id) ? 0 : 2) : 1;
+
               const filtered = ACHIEVEMENTS
                 .filter(a => {
                   if (a.hidden && !unlocked.includes(a.id) && !isOwnProfile) return false;
                   return true;
                 })
                 .sort((a, b) => {
+                  const bandDiff = bandOf(a) - bandOf(b);
+                  if (bandDiff !== 0) return bandDiff;
+
                   const aUnlocked = unlocked.includes(a.id) ? 1 : 0;
                   const bUnlocked = unlocked.includes(b.id) ? 1 : 0;
                   if (aUnlocked !== bUnlocked) return bUnlocked - aUnlocked;
@@ -3554,6 +3591,9 @@ export default function App() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
                           <span className="font-bold text-white truncate">{showHidden ? t('achievements.hiddenTitle', 'Скрытое достижение') : t(`achievements.${a.id}.title`, a.title)}</span>
+                          {a.hidden && isUnlocked && (
+                            <span className="text-[10px] font-bold bg-white/10 text-white/80 px-2 py-0.5 rounded-md shrink-0">{t('achievements.hiddenBadge', 'Скрытое')}</span>
+                          )}
                           {isUnlocked && <span className="text-[10px] font-bold bg-[#c70060]/20 text-[#c70060] px-2 py-0.5 rounded-md shrink-0">{t('achievements.unlocked', '✓ Получено')}</span>}
                         </div>
                         <p className="text-textMuted text-sm truncate">{showHidden ? t('achievements.hiddenDesc', '???') : t(`achievements.${a.id}.description`, a.description)}</p>

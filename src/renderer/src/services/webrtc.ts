@@ -13,56 +13,112 @@ const DEEPFILTER_LOCAL_BASE = 'zabor-local://deepfilternet3'
 const DEEPFILTER_CDN_BASE = 'https://cdn.laptrinhai.id.vn/deepfilternet3'
 const DEEPFILTER_ASSETS = new Set(['pkg/df_bg.wasm', 'models/DeepFilterNet3_onnx.tar.gz'])
 
-// DeepFilterNet attenuation limit (dB). Higher = more noise removed. Manual mode
-// keeps denoising minimal (the user's threshold gate does the work); smart mode
-// scales up to an aggressive ceiling for a clean voice, with speech protection.
-const DEEPFILTER_MIN_ATTEN = 5
-const DEEPFILTER_MAX_ATTEN = 25
-// Before the first successful calibration use only the library minimum. A higher
-// value here would be an implicit fallback profile and could sound over-processed.
-const DEEPFILTER_SMART_DEFAULT_ATTEN = DEEPFILTER_MIN_ATTEN
-const OPUS_AUDIO_BITRATE = 128_000
+// DeepFilterNet attenuation limit (dB). In DeepFilterNet this value is a floor
+// under the per-band mask, which makes it two things at once: how much noise is
+// removed, and how deep the mask is allowed to cut into a band it misjudges. The
+// second reading is why it must not simply be maximised - at 35-45 dB the
+// network's per-frame uncertainty becomes audible amplitude modulation of the
+// voice itself, and speech detail that lives near the noise floor (fricatives,
+// breath, word tails) is carried out with the noise. That is heard exactly as
+// reported: a voice that dips in and out and sounds flat.
+//
+// The floor is not a compromise between those two readings, though, because the gate
+// in front of this network already delivers absolute silence between phrases. Whatever
+// the limit is, it is only ever paid for inside a phrase, where the voice masks the
+// texture it costs.
+//
+// It is deliberately low. A floor's only job is to keep a *measured* room from being
+// given absurdly little; it is not a way to add depth, and every dB of it is spent
+// blind. 16 dB was an attempt to fix an under-measuring formula by clamping its output,
+// which is the wrong place: on a genuinely silent room it forced 16 dB nobody asked
+// for, and it hid the fact that the demand below was reading 3.7 dB where it should
+// have read 14. The demand is now computed against the voice instead of against an
+// absolute level (see ASSUMED_SPEECH_LEVEL_DBFS), so it delivers the deeper value on
+// its own and the floor is back to being a floor: 8 dB, which is what a super quiet
+// room actually needs, and which no room ever hits unless it really is that quiet.
+const DEEPFILTER_MIN_ATTEN = 8
+const DEEPFILTER_MAX_ATTEN = 45
+// Past this point every extra dB removes less audible noise than it does speech
+// detail, so the room level is followed one-for-one below the knee and at half
+// rate above it. It doubles as the pre-calibration default: a room nobody has
+// measured yet is assumed to sit exactly on the knee.
+const SUPPRESSION_SOFT_KNEE_DB = 24
+const SUPPRESSION_ABOVE_KNEE_SLOPE = 0.5
+const DEEPFILTER_SMART_DEFAULT_ATTEN = SUPPRESSION_SOFT_KNEE_DB
+// Manual mode has no adaptive gate behind it: the user's own threshold decides when
+// audio passes, and the suppressor's only remaining job is to take the hum and the
+// room out of the phrases that do pass. So it is deliberately light and, unlike
+// smart mode, fixed rather than calibrated - manual mode exists precisely because
+// the user wants the chain to stop deciding things for them. 7 dB is under the
+// library's own floor for the adaptive path (DEEPFILTER_MIN_ATTEN) on purpose: at
+// this depth the network removes steady broadband noise and leaves speech detail
+// untouched, which is exactly the "at least something" the mode was missing.
+const DEEPFILTER_MANUAL_ATTEN = 7
+// How far under the voice the remains of the room have to sit to be inaudible in a
+// call. This is the single knob of the whole chain, and it is a *ratio* rather than an
+// absolute level: what a listener hears is the residual relative to the speech it hides
+// behind, and the worklet's ALC normalises every speaker to the same output level
+// (ALC_TARGET_RMS = 0.1 = -20 dBFS) regardless of how loud they arrived. Writing it as
+// an absolute -75 dBFS said the same thing arithmetically but hid the fact that the ALC
+// applies up to +24 dB of make-up after the denoiser - which lifts the residual along
+// with the voice, so an absolute target is only met at unity gain and is missed by the
+// make-up amount on every quiet microphone. 55 dB is inaudible; move toward 50 for a
+// more natural voice, toward 60 if noise returns.
+const TARGET_SPEECH_TO_NOISE_DB = 55
+// The level the ALC normalises speech to, in dBFS. Mirrors ALC_TARGET_RMS in
+// deepfilter-processor.ts (0.1 linear); kept here so the demand below can be stated in
+// the dBFS the room trackers measure in.
+const ALC_TARGET_DBFS = -20
+const TARGET_RESIDUAL_NOISE_DBFS = ALC_TARGET_DBFS - TARGET_SPEECH_TO_NOISE_DB
+// The one quantity calibration cannot measure and cannot do without. The target above
+// is a ratio between the voice and what is left of the room, so answering it needs both
+// numbers - and 2.5 s of deliberate silence contains only the room. Treating the room
+// level as if it were already at the ALC's output scale was the error behind "sets 8-10
+// when the room needs 14": it made a quiet room look like it had met the target
+// already, when what it actually had was a quiet room *and* a quiet voice in the same
+// proportion.
+//
+// So the speech level is assumed instead of ignored. -30 dBFS is where a consumer
+// microphone at its default capture gain puts an ordinary speaking voice, and the
+// worklet's own ALC bounds bracket it: it normalises to -20 dBFS with up to +24 dB of
+// make-up, so anything it is built to handle sits between -44 and -20 dBFS. -30 dBFS is
+// the middle of that range, and on the measured -71 dBFS room here it yields 14 dB -
+// the value the room was independently judged to need.
+//
+// Being an assumption, it is only ever a seed: the worklet measures the real ratio
+// during the first second of speech and takes the limit from here to wherever it
+// belongs (refreshAttenuationLimit in deepfilter-processor.ts). What this constant buys
+// is starting at roughly the right depth instead of climbing to it at 1 dB/s.
+const ASSUMED_SPEECH_LEVEL_DBFS = -30
+// Playback make-up for the channel mix. The outgoing side is normalised to the
+// standard speech level in the worklet, so this exists for the other direction:
+// senders that predate that normalisation, and the gap between a voice at the
+// telephony nominal and the streaming loudness a listener is used to from every
+// other application. See initOutputMixer for how it pairs with the compressor.
+const PLAYBACK_MAKEUP_GAIN_DB = 6
+// Opus bitrate for the outgoing mono voice stream. Xiph's own guidance puts fullband
+// (48 kHz) mono speech at 28-40 kbps, with 24 kbps already producing full bandwidth -
+// Opus is a speech codec first, and voice stops improving long before music does. The
+// previous 128 kbps was therefore roughly a 4x overspend that bought nothing audible,
+// while costing every participant real upstream on connections that have little of it;
+// 64 kbps keeps a 2x margin over the top of Xiph's range, so there is no measurable
+// quality question, and halves it again. Note that this is a ceiling, not a rate: with
+// cbr=0 the encoder spends what the frame needs and no more.
+const OPUS_AUDIO_BITRATE = 64_000
 /** Предел одной попытки захвата микрофона. */
 const MIC_CAPTURE_TIMEOUT_MS = 10_000
 /** Предел загрузки модели Silero по IPC — вписан в общий бюджет инициализации VAD. */
 const SILERO_MODEL_LOAD_TIMEOUT_MS = 10_000
 /** Предел загрузки ассетов DeepFilter из сети (bundled-путь идёт через IPC). */
 const DEEPFILTER_FETCH_TIMEOUT_MS = 15_000
-const SAFE_VAD_ON_THRESHOLD = 0.10
-const SAFE_VAD_OFF_THRESHOLD = 0.05
-// Suppression strength is driven by the voice-to-noise ratio, not only by the raw
-// noise level: the worklet measures before every gain node, so absolute dBFS also
-// encodes the device's sensitivity. A quiet capture in a noisy room and a loud
-// capture in a quiet room can report the same noise floor, and only the SNR tells
-// them apart. The correction is bounded so a single calibration sample can never
-// swing the profile across the whole range.
-const SNR_CLEAN_DB = 20
-const SNR_CORRECTION_MAX_DB = 4
-const SNR_CORRECTION_SPAN_DB = 10
-// A spoken phrase proves itself with sustained energy, never with one transient.
-// Speech-stage frames are 10 ms: 50 frames is 0.5 s of speech-level energy inside
-// the window and 20 frames is a 0.2 s syllable run. A click, a cough or a keyboard
-// burst cannot reach either number, so a silent user can no longer calibrate.
-const MIN_SPEECH_ACTIVE_FRAMES = 50
-const MIN_SPEECH_RUN_FRAMES = 20
-// Silero windows are 32 ms: 10 confirmed windows is ~0.3 s of neural speech
-// evidence, and at least 3 of them must be consecutive.
-const MIN_CONFIRMED_VAD_FRAMES = 10
-const MIN_CONFIRMED_VAD_RATIO = 0.12
-const MIN_CONFIRMED_VAD_RUN = 3
-const MIN_SPEECH_SNR_DB = 6
-// 24 consecutive Silero windows is 0.77 s of unbroken neural speech. On a
-// low-sensitivity microphone in a live room the voice can sit only 4 dB above the
-// noise floor, where no energy bar can separate the two - but Silero still tracks
-// the phrase, and an unbroken run this long is something no transient produces.
-// It therefore substitutes for the energy-duration measurement, never for the
-// requirement that the level rose at all.
-const MIN_SUSTAINED_VAD_RUN = 24
-// Below this ratio the speech stage is not measurably louder than the room, so
-// nothing in the recording can be attributed to the user rather than to the
-// background, and every derived parameter would describe the room instead of the
-// voice. Calibrating a soft voice is supported; calibrating on noise is not.
-const MIN_MARGINAL_SNR_DB = 3
+// The gate threshold itself is no longer computed here. It is an adaptive tracker
+// inside the worklet, bounded there, and calibration only supplies its starting
+// point. This is the seed used before any profile exists.
+const DEFAULT_VAD_TRACKER_SEED = 0.05
+// A calibration run is 10 ms per frame. Fewer than 20 usable frames means almost
+// everything measured was rejected as the user's own voice, so there is no room
+// profile to store.
+const MIN_CALIBRATION_FRAMES = 20
 
 type SpeakingEntry = {
   timer: NodeJS.Timeout
@@ -80,29 +136,12 @@ type CalibrationResult = {
   spectralTilt: number
   acceptedFrames: number
   rejectedSpeechFrames: number
-  speechRms: number
-  quietSpeechRms: number
-  speechPeak: number
-  speechFrames: number
-  speechWindowFrames: number
-  speechActiveFrames: number
-  speechLongestRunFrames: number
   noiseVadMedian: number
   noiseVadHigh: number
-  speechVadLow: number
-  speechVadMedian: number
-  speechVadFrames: number
-  confirmedSpeechVadFrames: number
-  confirmedSpeechVadRatio: number
-  confirmedSpeechVadRun: number
-  confirmedSpeechVadRunActive: number
-  confirmedSpeechVadLow: number
-  vadOnThreshold: number
-  vadOffThreshold: number
 }
 
 type StoredEnvironmentProfile = {
-  version: 36
+  version: 40
   timestamp: number
   noiseFloor: number
   lowNoise: number
@@ -110,21 +149,8 @@ type StoredEnvironmentProfile = {
   attenuationLimit: number
   zeroCrossingRate: number
   spectralTilt: number
-  preGainDb?: number
-  speechRms?: number
-  quietSpeechRms?: number
-  speechPeak?: number
-  speechFrames?: number
-  snrDb?: number
   noiseVadMedian?: number
   noiseVadHigh?: number
-  speechVadLow?: number
-  speechVadMedian?: number
-  confirmedSpeechVadFrames?: number
-  confirmedSpeechVadRatio?: number
-  confirmedSpeechVadLow?: number
-  vadOnThreshold?: number
-  vadOffThreshold?: number
 }
 
 type AudioDevices = {
@@ -138,7 +164,7 @@ type AudioDeviceChangeResult = AudioDevices & {
 }
 
 // Calibration fails for reasons the user can act on: a denied or busy device, an
-// audio engine that never started on this machine, speaking during the silence
+// audio engine that never started on this machine, speaking during the measuring
 // stage. Report them as codes so the UI can name the actual cause instead of
 // collapsing every failure into one "try again" message.
 export type CalibrationFailureCode =
@@ -146,7 +172,6 @@ export type CalibrationFailureCode =
   | 'CALIBRATION_NO_MIC'
   | 'CALIBRATION_BUSY'
   | 'CALIBRATION_TIMEOUT'
-  | 'CALIBRATION_NO_SPEECH'
   | 'CALIBRATION_NEEDS_SILENCE'
 
 export class CalibrationError extends Error {
@@ -270,8 +295,15 @@ function optimizeSDP(sdp: string): string {
         }
       }
       // TIAS is the exact media bitrate; AS is kept for peers that only honor
-      // the older SDP bandwidth field. The sender parameter below matches it.
-      lines.splice(bandwidthInsertIndex, 0, 'b=AS:128', `b=TIAS:${OPUS_AUDIO_BITRATE}`, 'a=ptime:20')
+      // the older SDP bandwidth field, and is derived from the same constant so the
+      // two lines cannot drift apart when the bitrate changes (it was hardcoded).
+      lines.splice(
+        bandwidthInsertIndex,
+        0,
+        `b=AS:${Math.ceil(OPUS_AUDIO_BITRATE / 1000)}`,
+        `b=TIAS:${OPUS_AUDIO_BITRATE}`,
+        'a=ptime:20'
+      )
     }
   }
 
@@ -351,7 +383,12 @@ function createSilentAudioStream(): MediaStream {
 }
 
 export class WebRTCManager {
-  private static readonly CALIBRATION_SCHEMA_VERSION = 36
+  // Bumped to 39: profiles stored by 38 measured the room's demand against its median
+  // level (p50) and then gave up to 3 dB back as transient relief, so their stored
+  // attenuation limit is several dB under what the same room asks for now. Discarding
+  // them means an existing user gets the deeper suppression on the next call without
+  // having to know that recalibration is what delivers it.
+  private static readonly CALIBRATION_SCHEMA_VERSION = 40
   private static readonly CALIBRATION_SCHEMA_KEY = 'zabor_mic_calibration_schema'
   private static readonly CALIBRATION_PROFILE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000
   private localStream: MediaStream | null = null
@@ -399,6 +436,8 @@ export class WebRTCManager {
 
   private processedContext: AudioContext | null = null
   private processedSource: MediaStreamAudioSourceNode | null = null
+  /** Каскад HPF перед воркл-ом; хранится, чтобы отцепляться вместе с source. */
+  private micRumbleFilters: BiquadFilterNode[] = []
   private calibratedPreGainNode: GainNode | null = null
   private inputGainNode: GainNode | null = null
   private dfNode: AudioWorkletNode | null = null
@@ -414,8 +453,8 @@ export class WebRTCManager {
   private calibratedAttenuationLimit = DEEPFILTER_SMART_DEFAULT_ATTEN
   private calibratedNoiseFloor = 0.003
   private calibratedPreGainDb = 0
-  private calibratedVadOnThreshold = SAFE_VAD_ON_THRESHOLD
-  private calibratedVadOffThreshold = SAFE_VAD_OFF_THRESHOLD
+  // Starting point of the worklet's adaptive threshold tracker, not a threshold.
+  private calibratedVadTrackerSeed = DEFAULT_VAD_TRACKER_SEED
   private hasVoiceCalibration = false
   private calibrationDeviceId = 'default'
   private vadWorkerReady = false
@@ -443,6 +482,7 @@ export class WebRTCManager {
 
   private outputMixContext: AudioContext | null = null
   private outputCompressor: DynamicsCompressorNode | null = null
+  private outputBusGain: GainNode | null = null
   private mixAudioElement: HTMLAudioElement | null = null
   private userGainNodes: Map<string, GainNode> = new Map()
   private userSourceNodes: Map<string, MediaStreamAudioSourceNode> = new Map()
@@ -455,36 +495,101 @@ export class WebRTCManager {
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
       { urls: 'stun:stun.cloudflare.com:3478' },
-      { urls: 'stun:stun.twilio.com:3478' },
-
-      { urls: 'turn:150.241.64.108:3478?transport=udp', username: 'zabor', credential: 'REDACTED-ROTATED-CREDENTIAL_turn' },
-      { urls: 'turn:150.241.64.108:3478?transport=tcp', username: 'zabor', credential: 'REDACTED-ROTATED-CREDENTIAL_turn' }
+      { urls: 'stun:stun.twilio.com:3478' }
     ],
     bundlePolicy: 'max-bundle',
     iceCandidatePoolSize: 4
   }
 
+  /**
+   * TURN-серверов здесь нет намеренно. Раньше рядом со STUN лежала строка
+   * turn:<адрес> с логином и постоянным паролем: она уезжала в каждую сборку, то
+   * есть доставалась из установленного клиента за минуту и позволяла кому угодно
+   * бессрочно гонять трафик через сервер. Теперь адрес и креды выдаёт хаб на
+   * несколько часов и с userId внутри логина, поэтому список склеивается в
+   * рантайме — статический STUN плюс то, что пришло с сервера.
+   *
+   * STUN оставлен в сборке сознательно: он не требует авторизации, и если хаб
+   * недоступен, прямые соединения продолжают устанавливаться как раньше.
+   */
+  private turnServers: RTCIceServer[] = []
+  private turnExpiresAt = 0
+  private turnUserId: string | null = null
+  private turnFetch: Promise<void> | null = null
+  private turnRetryAfter = 0
+
+  /** За сколько до истечения кредов идти за новыми. */
+  private static readonly TURN_REFRESH_MARGIN_MS = 60 * 60 * 1000
+  /** Пауза после неудачи: на старом сервере метода GetIceServers ещё нет, и без
+   *  этой паузы клиент дёргал бы хаб на каждом новом peer-соединении. */
+  private static readonly TURN_RETRY_COOLDOWN_MS = 30_000
+
+  private async ensureIceServers(): Promise<void> {
+    const userId = useAppStore.getState().currentUser?.id ?? null
+    const fresh = this.turnServers.length > 0
+      && this.turnUserId === userId
+      && Date.now() < this.turnExpiresAt - WebRTCManager.TURN_REFRESH_MARGIN_MS
+    if (fresh) return
+    if (this.turnFetch) return this.turnFetch
+    if (Date.now() < this.turnRetryAfter) return
+
+    this.turnFetch = (async () => {
+      try {
+        const config = await signalRService.fetchIceServers()
+        const servers = config?.iceServers?.filter(server => server?.urls?.length) ?? []
+        if (servers.length > 0) {
+          this.turnServers = servers
+          this.turnExpiresAt = config!.expiresAtUnixMs
+          this.turnUserId = userId
+          this.turnRetryAfter = 0
+        } else {
+          this.turnRetryAfter = Date.now() + WebRTCManager.TURN_RETRY_COOLDOWN_MS
+        }
+      } catch {
+        this.turnRetryAfter = Date.now() + WebRTCManager.TURN_RETRY_COOLDOWN_MS
+      } finally {
+        this.turnFetch = null
+      }
+    })()
+    return this.turnFetch
+  }
+
+  /** Конфигурация для нового RTCPeerConnection: статический STUN плюс выданный сервером TURN. */
+  private rtcConfig(): RTCConfiguration {
+    if (this.turnServers.length === 0) return this.config
+    return { ...this.config, iceServers: [...(this.config.iceServers ?? []), ...this.turnServers] }
+  }
+
 
 
   private getThresholdParams(gainFactor: number) {
-    // Manual mode keeps the denoiser minimal and relies on the user's threshold
-    // gate; smart mode uses a calibrated, speech-safe attenuation ceiling.
+    // Manual mode used to be pinned to the library minimum on the theory that the
+    // user's own threshold gate does the work, but the gate only decides when audio
+    // passes - it cannot clean the audio that does pass, so manual mode was left
+    // with audible noise during every phrase. It then followed the calibrated
+    // strength with a floor of its own, which was the opposite mistake: the same
+    // over-suppression that flattens a voice in smart mode flattened it here, in the
+    // one mode whose whole point is that the user is in charge. Now it gets a fixed
+    // light pass instead, and only smart mode follows the measured room.
     const activeAttenuationLimit = this.thresholdMode === 'manual'
-      ? DEEPFILTER_MIN_ATTEN
+      ? DEEPFILTER_MANUAL_ATTEN
       : this.calibratedAttenuationLimit
     return {
       attenuationLimit: activeAttenuationLimit,
       noiseFloor: this.calibratedNoiseFloor,
       thresholdMode: this.thresholdMode,
       manualThresholdValue: this.manualThresholdValue,
-      vadOnThreshold: this.calibratedVadOnThreshold,
-      vadOffThreshold: this.calibratedVadOffThreshold,
+      vadTrackerSeed: this.calibratedVadTrackerSeed,
       // The neural suppressor is already the spectral processor. Its optional
       // post-filter is disabled to keep quiet consonants and breath texture intact.
       postFilterBeta: 0,
       // VAD and calibration run before all gain nodes, so their thresholds must
       // stay independent of the user's microphone volume and calibrated pre-gain.
-      gainFactor: 1
+      gainFactor: 1,
+      // The level control at the end of the worklet needs the opposite: it is
+      // followed by nothing but gain, so it has to know how much, or its -1 dBFS
+      // ceiling is enforced in the wrong place.
+      downstreamGain: gainFactor * Math.pow(10, this.calibratedPreGainDb / 20)
     }
   }
 
@@ -555,145 +660,95 @@ export class WebRTCManager {
       Math.abs(Math.log2(Math.max(0.05, profile.spectralTilt) / Math.max(0.05, spectralTilt))) * 2
   }
 
-  private calculateSpeechPreservingAttenuation(
+  // How much suppression this room needs, in the only terms that mean anything:
+  // how far the measured room level has to fall to become inaudible. Everything
+  // else is a bounded correction on that one subtraction, and the total then passes
+  // through a soft knee - a loud room is deliberately not given everything it asks
+  // for, because the attenuation limit is a floor under the mask and the last few
+  // dB of cleanliness are taken out of the voice. The version before this one
+  // interpolated an abstract "strength" and applied a voice-safety ceiling derived
+  // from the calibration phrase, which was inverted with respect to the need and
+  // settled near 12 dB out of 100 on this class of laptop; the version after it
+  // tracked a -85 dBFS residual one-for-one and overshot into the voice instead.
+  //
+  // What this produces is a starting point, not the answer. It has to predict a whole
+  // call from 2.5 s of silence, and it cannot measure the one quantity that decides
+  // the outcome - how far the user's voice sits above their room - so it necessarily
+  // guesses. The worklet measures that ratio continuously and takes the limit up from
+  // here (see refreshAttenuationLimit in deepfilter-processor.ts). Everything below is
+  // therefore aimed at not starting too low, which was the reported symptom.
+  private calculateAttenuationFromRoom(
     noiseFloor: number,
-    speechRms?: number,
-    quietSpeechRms?: number,
-    stationarityRatio = 1
-  ): { attenuationLimit: number, noiseMarginDb: number, snrCorrectionDb: number, voiceSafetyCeilingDb: number } {
-    const noiseDb = 20 * Math.log10(Math.max(1e-5, noiseFloor))
+    lowNoise: number,
+    peakNoise: number,
+    noiseVadHigh = 0
+  ): {
+    attenuationLimit: number, requiredDb: number, speechLikeBonusDb: number,
+    transientReliefDb: number, demandDb: number, shapedDb: number, roomDbfs: number
+  } {
     const clamp01 = (value: number) => Math.max(0, Math.min(1, value))
+    // The reference is a high percentile of the room, not its median. noiseFloor is
+    // the p50 of the calibration window, and a p50 describes the room's quiet half:
+    // what a listener calls "the noise in this room" is the level it keeps returning
+    // to at its top, which for a fan, a fridge or street traffic is 3-8 dB higher.
+    // Demanding suppression against the median therefore under-delivers by exactly
+    // that margin - the reported "sets 10 when the noise is at 13". peakNoise (p95) is
+    // already measured for the stationarity ratio below; 6 dB under it is a robust
+    // stand-in for p90 that does not chase a single burst, and the max() keeps a
+    // perfectly steady room on its own median.
+    const roomDbfs = Math.max(
+      20 * Math.log10(Math.max(1e-5, noiseFloor)),
+      20 * Math.log10(Math.max(1e-5, peakNoise)) - 6
+    )
+    // Stated as an SNR shortfall, which is what the target actually is: how far the
+    // room sits under an ordinary voice today, and how much of the difference between
+    // that and TARGET_SPEECH_TO_NOISE_DB the denoiser has to make up. The subtraction
+    // it replaces (room minus an absolute residual level) is the same arithmetic with
+    // the voice term dropped, and dropping it is what made a quiet room ask for
+    // nothing: at -71 dBFS it demanded 3.7 dB, where the honest answer against a
+    // -30 dBFS voice is 14 dB. A noisy -55 dBFS room now asks for 30 dB and receives
+    // 27 after the knee, instead of the 20 the old form produced.
+    const measuredSnrDb = ASSUMED_SPEECH_LEVEL_DBFS - roomDbfs
+    const requiredDb = TARGET_SPEECH_TO_NOISE_DB - measuredSnrDb
 
-    // Use the complete 5-25 dB range instead of four coarse steps. A noise floor
-    // at or below -68 dBFS maps to 5 dB, while -38 dBFS or louder maps to 25 dB.
-    // Intermediate rooms receive every integer value between those endpoints.
-    const noiseStrength = clamp01((noiseDb + 68) / 30)
-    let attenuation = DEEPFILTER_MIN_ATTEN +
-      noiseStrength * (DEEPFILTER_MAX_ATTEN - DEEPFILTER_MIN_ATTEN)
+    // Speech-shaped background - a television, a conversation down the corridor -
+    // opens the gate on its own, so it has to be pushed further down than steady
+    // noise the gate already keeps out: 0 dB at noiseVadHigh <= 0.25, +5 dB at 0.70.
+    const speechLikeBonusDb = 5 * clamp01((noiseVadHigh - 0.25) / 0.45)
+    // Impulsive noise (typing, clicks) at maximum attenuation produces pumping
+    // rather than cleanliness, because the network re-estimates on every burst. This
+    // used to be worth up to 3 dB, and on a room with a keyboard in it that was the
+    // difference between a demand of 13 and a delivered 10: a whole session of
+    // shallower suppression to avoid an artefact on the impulses themselves. The
+    // impulses are now rejected upstream, at the gate, by the transient detector in
+    // deepfilter-processor.ts - they never reach the stream at all, so there is
+    // nothing left to pump. 1 dB remains for the burst that arrives inside a phrase,
+    // where the gate is already open and only the network is deciding.
+    const stationarity = peakNoise / Math.max(1e-5, lowNoise)
+    const transientReliefDb = clamp01((stationarity - 6) / 6)
 
-    // Voice is a protection signal, not a second loudness control. Earlier logic
-    // raised attenuation for loud calibration phrases and capped it sharply for
-    // quiet phrases, so the same room could produce 17 dB or 10 dB. Keep the
-    // measured noise level as the primary estimator and allow speech only a small,
-    // one-sided reduction when its quiet tail is genuinely close to the noise.
-    let speechSnrDb: number | null = null
-    let quietSnrDb: number | null = null
-    if (speechRms && speechRms > 0 && quietSpeechRms && quietSpeechRms > 0) {
-      speechSnrDb = 20 * Math.log10(Math.max(1e-5, speechRms)) - noiseDb
-      quietSnrDb = 20 * Math.log10(Math.max(1e-5, quietSpeechRms)) - noiseDb
-      if (speechSnrDb < 6) attenuation -= 1
-      if (quietSnrDb < 6) attenuation -= Math.min(2.5, Math.max(0, (6 - quietSnrDb) * 0.625))
-    }
+    // The knee shapes the demand, because the demand is paid for by the voice. The
+    // transient relief is a safety subtraction rather than a demand, so it applies
+    // in full afterwards.
+    const demandDb = requiredDb + speechLikeBonusDb
+    const shapedDb = demandDb <= SUPPRESSION_SOFT_KNEE_DB
+      ? demandDb
+      : SUPPRESSION_SOFT_KNEE_DB + (demandDb - SUPPRESSION_SOFT_KNEE_DB) * SUPPRESSION_ABOVE_KNEE_SLOPE
 
-    // Penalize transient/unstable noise gradually instead of a sudden mode jump.
-    // Stationary fan/room noise can reach 25 dB; clicks and keyboard bursts cannot
-    // force maximum broadband suppression from a single calibration sample.
-    const transientPenalty = 1 * clamp01((stationarityRatio - 4) / 4)
-    attenuation -= transientPenalty
-
-    // The noise level alone cannot tell a quiet microphone from a quiet room: the
-    // worklet measures ahead of every gain node, so a laptop capture at -62 dBFS
-    // may still carry only 10 dB of voice-to-noise ratio. Raise the estimate when
-    // the measured ratio proves the room is genuinely present, bounded to
-    // SNR_CORRECTION_MAX_DB and always subject to the voice safety ceiling below.
-    let snrCorrectionDb = 0
-    if (speechSnrDb !== null) {
-      snrCorrectionDb = clamp01((SNR_CLEAN_DB - speechSnrDb) / SNR_CORRECTION_SPAN_DB) * SNR_CORRECTION_MAX_DB
-      attenuation += snrCorrectionDb
-    }
-
-    // A confident phrase only authorizes a small safety margin; it never sets the
-    // suppression strength itself. SNR between 8 and 24 dB proves that background
-    // noise is meaningful but speech remains safely distinguishable. Give every
-    // such low-strength profile 1 dB, and 2 dB only for stable noise with at least
-    // 6 dB of quiet-speech separation. Fade the margin out between 9 and 11 dB
-    // instead of switching it off at 11: a hard cut made the result non-monotonic,
-    // so a louder room could receive ~2 dB less suppression than a quieter one.
-    let noiseMarginDb = 0
-    const hasMeaningfulNoise = speechSnrDb !== null && speechSnrDb >= 8 && speechSnrDb <= 24
-    if (hasMeaningfulNoise) {
-      const authorizedMarginDb = quietSnrDb !== null && quietSnrDb >= 6 && stationarityRatio <= 5 ? 2 : 1
-      noiseMarginDb = authorizedMarginDb * clamp01((11 - attenuation) / 2)
-      attenuation = Math.max(attenuation + noiseMarginDb, DEEPFILTER_MIN_ATTEN + noiseMarginDb)
-    }
-
-    // Protect the quiet tail of speech with a continuous ceiling instead of the
-    // former binary 6 dB low-SNR mode. At <=2 dB quiet-speech separation Silero
-    // carries most of the speech/no-speech decision, so neural attenuation stays
-    // near the minimum. The full range is released only from 10 dB of quiet-speech
-    // separation, where the network can still tell a consonant from room tone:
-    // below that, aggressive attenuation is exactly what produces smeared endings
-    // and dropped fricatives, so the ceiling - not the noise level - decides.
-    let voiceSafetyCeilingDb = DEEPFILTER_MAX_ATTEN
-    if (quietSnrDb !== null) {
-      const transition = clamp01((quietSnrDb - 2) / 8)
-      const smoothTransition = transition * transition * (3 - 2 * transition)
-      voiceSafetyCeilingDb = DEEPFILTER_MIN_ATTEN + 1 +
-        smoothTransition * (DEEPFILTER_MAX_ATTEN - DEEPFILTER_MIN_ATTEN - 1)
-      attenuation = Math.min(attenuation, voiceSafetyCeilingDb)
-    }
-
-    // Round inside the ceiling, never through it. Rounding after the clamp
-    // delivered 8 dB under a 7.7 dB ceiling, and it erred upward on exactly the
-    // low-separation devices the ceiling exists to protect - the guarantee has to
-    // hold on the integer that reaches the network, not on an intermediate value.
-    const roundedAttenuation = Math.min(Math.round(attenuation), Math.floor(voiceSafetyCeilingDb))
-    return {
-      attenuationLimit: Math.max(DEEPFILTER_MIN_ATTEN, Math.min(DEEPFILTER_MAX_ATTEN, roundedAttenuation)),
-      noiseMarginDb,
-      snrCorrectionDb,
-      voiceSafetyCeilingDb
-    }
-  }
-
-  // The opening threshold is a voice-to-noise decision: the boundary sits inside
-  // the measured gap between the 95th noise percentile and the lowest confirmed
-  // speech probability. Where the ratio is poor, stay close to the noise edge so
-  // quiet consonants still open the gate - a gate that clips speech is a far worse
-  // artifact than a gate that lets some room tone through, which the denoiser then
-  // removes anyway. Where the ratio is good, move further into the gap and reject
-  // more noise. The boundary can never fall inside the noise distribution itself.
-  private calculateVadThresholds(
-    noiseVadHigh: number,
-    speechVadAnchor: number,
-    speechVadMedian: number,
-    snrDb = 0
-  ) {
-    const safeNoiseHigh = Math.max(0, Math.min(0.5, noiseVadHigh))
-    const safeSpeechAnchor = Math.max(0, Math.min(1, speechVadAnchor))
-    const safeSpeechMedian = Math.max(0, Math.min(1, speechVadMedian))
-    const separation = safeSpeechAnchor - safeNoiseHigh
-    const medianSeparation = safeSpeechMedian - safeNoiseHigh
-    // 0.15 of the gap at 8 dB SNR (maximum speech recall) up to 0.5 at 22 dB.
-    const gapWeight = 0.15 + 0.35 * Math.max(0, Math.min(1, (snrDb - 8) / 14))
-    let vadOnThreshold: number
-    let vadOffThreshold: number
-    if (separation >= 0.004) {
-      vadOnThreshold = safeNoiseHigh + separation * gapWeight
-      vadOffThreshold = safeNoiseHigh + separation * gapWeight * 0.3
-    } else if (medianSeparation >= 0.012) {
-      // Quiet speech and noise can overlap in the lower tail. The median remains a
-      // stable speech measurement in that case, so derive a cautious boundary near
-      // the measured noise distribution instead of reverting to a global threshold
-      // that may sit above every probability produced by a quiet microphone.
-      vadOnThreshold = safeNoiseHigh + medianSeparation * gapWeight * 0.5
-      vadOffThreshold = safeNoiseHigh + medianSeparation * gapWeight * 0.15
-    } else {
-      // Do not derive a gate threshold from noise when calibration did not measure
-      // a real Silero speech/noise gap. That can place the opening threshold above
-      // every speech probability and mute the outgoing stream completely.
-      vadOnThreshold = SAFE_VAD_ON_THRESHOLD
-      vadOffThreshold = SAFE_VAD_OFF_THRESHOLD
-    }
-    // Never open the gate inside the measured noise distribution: without this the
-    // derived threshold could land below the 95th noise percentile in a loud room
-    // and hold the gate permanently open.
-    vadOnThreshold = Math.max(vadOnThreshold, safeNoiseHigh + 0.004)
-    // Calibration may lower Silero thresholds for a quiet microphone, but must
-    // never raise them above the known audible defaults and mute the whole stream.
-    vadOnThreshold = Math.max(0.018, Math.min(SAFE_VAD_ON_THRESHOLD, vadOnThreshold))
-    vadOffThreshold = Math.max(0.008, Math.min(SAFE_VAD_OFF_THRESHOLD, vadOnThreshold - 0.006, vadOffThreshold))
-    return { vadOnThreshold, vadOffThreshold }
+    // The seed is bounded on both sides, and the upper bound is the knee rather than
+    // DEEPFILTER_MAX_ATTEN on purpose. Being a guess about the voice, this number can be
+    // wrong in either direction, and the two errors do not cost the same: the worklet
+    // raises the limit when it measures a worse ratio than assumed, but it never lowers
+    // it, so an over-generous seed is paid for by the voice for the rest of the session
+    // while a modest one is corrected within seconds. Capping it at the knee - which is
+    // also the value used for a room nobody has measured at all
+    // (DEEPFILTER_SMART_DEFAULT_ATTEN) - means measuring a room can lower the starting
+    // point or confirm it, and only a *measured* ratio ever takes it above the knee.
+    const attenuationLimit = Math.max(DEEPFILTER_MIN_ATTEN, Math.min(
+      SUPPRESSION_SOFT_KNEE_DB,
+      Math.round(shapedDb - transientReliefDb)
+    ))
+    return { attenuationLimit, requiredDb, speechLikeBonusDb, transientReliefDb, demandDb, shapedDb, roomDbfs }
   }
 
   private loadCalibration(deviceId: string, deviceLabel = '') {
@@ -705,8 +760,7 @@ export class WebRTCManager {
     this.calibratedNoiseFloor = 0.003
     this.calibratedAttenuationLimit = DEEPFILTER_SMART_DEFAULT_ATTEN
     this.calibratedPreGainDb = 0
-    this.calibratedVadOnThreshold = SAFE_VAD_ON_THRESHOLD
-    this.calibratedVadOffThreshold = SAFE_VAD_OFF_THRESHOLD
+    this.calibratedVadTrackerSeed = DEFAULT_VAD_TRACKER_SEED
     this.hasVoiceCalibration = false
 
     // Apply the most recent stored profile for this device immediately. No
@@ -719,21 +773,12 @@ export class WebRTCManager {
         this.calibratedNoiseFloor = Math.max(0.0001, Math.min(0.03, latest.noiseFloor))
       }
       this.calibratedAttenuationLimit = Math.max(DEEPFILTER_MIN_ATTEN, Math.min(DEEPFILTER_MAX_ATTEN, latest.attenuationLimit))
-      this.calibratedPreGainDb = Number.isFinite(latest.preGainDb) ? Math.max(0, Math.min(6, latest.preGainDb!)) : 0
-      const vadThresholds = Number.isFinite(latest.vadOnThreshold) && Number.isFinite(latest.vadOffThreshold)
-        ? { vadOnThreshold: latest.vadOnThreshold!, vadOffThreshold: latest.vadOffThreshold! }
-        : Number.isFinite(latest.speechVadMedian) && Number.isFinite(latest.noiseVadHigh)
-        ? this.calculateVadThresholds(
-          latest.noiseVadHigh!,
-          // Prefer the confirmed-speech anchor; older profiles only carry the raw
-          // 10th percentile of every active window, which sits near zero.
-          Number.isFinite(latest.confirmedSpeechVadLow) ? latest.confirmedSpeechVadLow! : (latest.speechVadLow ?? 0),
-          latest.speechVadMedian!,
-          Number.isFinite(latest.snrDb) ? latest.snrDb! : 0
-        )
-        : null
-      this.calibratedVadOnThreshold = vadThresholds?.vadOnThreshold ?? SAFE_VAD_ON_THRESHOLD
-      this.calibratedVadOffThreshold = vadThresholds?.vadOffThreshold ?? SAFE_VAD_OFF_THRESHOLD
+      // The room's own 95th Silero percentile is where the worklet's tracker would
+      // have converged anyway. Handing it over means the first second after joining
+      // is already calibrated instead of climbing from the floor.
+      this.calibratedVadTrackerSeed = Number.isFinite(latest.noiseVadHigh)
+        ? Math.max(0, Math.min(1, latest.noiseVadHigh!))
+        : DEFAULT_VAD_TRACKER_SEED
       if (this.calibratedPreGainNode) {
         this.calibratedPreGainNode.gain.value = Math.pow(10, this.calibratedPreGainDb / 20)
       }
@@ -745,8 +790,7 @@ export class WebRTCManager {
     this.calibratedNoiseFloor = 0.003
     this.calibratedAttenuationLimit = DEEPFILTER_SMART_DEFAULT_ATTEN
     this.calibratedPreGainDb = 0
-    this.calibratedVadOnThreshold = SAFE_VAD_ON_THRESHOLD
-    this.calibratedVadOffThreshold = SAFE_VAD_OFF_THRESHOLD
+    this.calibratedVadTrackerSeed = DEFAULT_VAD_TRACKER_SEED
     this.hasVoiceCalibration = false
     try {
       for (let i = localStorage.length - 1; i >= 0; i--) {
@@ -953,7 +997,7 @@ export class WebRTCManager {
             resolveVadReady?.()
             resolveVadReady = null
             rejectVadReady = null
-            console.log('[WebRTC] Silero VAD Worker is ready')
+            console.log('[WebRTC] Silero VAD Worker is ready', workerEvent.data.io ?? '')
             if (this.dfNode) {
               this.dfNode.port.postMessage({
                 type: 'setConfig',
@@ -992,6 +1036,26 @@ export class WebRTCManager {
     highpass1.type = 'highpass'
     highpass1.frequency.value = 60
     highpass1.Q.value = 0.707
+
+    // Rumble has to be removed *before* the worklet, not after it, because the worklet
+    // is where every decision about this audio is made. The 60 Hz filter above sits
+    // after dfNode, so the pitch detector, Silero, the room trackers and calibration
+    // all see low-frequency energy in full - and the pitch detector searches lags
+    // 40-229 at 16 kHz, i.e. 70-400 Hz, which is precisely where a desk thump, a
+    // footstep or a table knock lives. Such a thump is *genuinely periodic* in that
+    // band, so it scores as voiced and opens the gate: the reported "claps and clicks
+    // go into the stream". Two cascaded 90 Hz sections (24 dB/oct) put a knock 20+ dB
+    // down before anything looks at it, while the lowest male F0 (~85 Hz, with its
+    // harmonics carrying the periodicity) survives - telephony has band-limited voice
+    // at 300 Hz for a century without hurting intelligibility, so 90 Hz is
+    // conservative. highpass1 stays as belt-and-braces on the output.
+    const rumbleGuards = [ctx.createBiquadFilter(), ctx.createBiquadFilter()]
+    for (const guard of rumbleGuards) {
+      guard.type = 'highpass'
+      guard.frequency.value = 90
+      guard.Q.value = 0.707
+    }
+    this.micRumbleFilters = rumbleGuards
 
     // Do not use a broadband compressor on the microphone path. It performs
     // automatic gain riding: sustained vowels are pushed down and recover when
@@ -1051,7 +1115,9 @@ export class WebRTCManager {
         type: 'setCalibratedParams',
         ...this.getThresholdParams(gainFactor),
       })
-      source.connect(this.dfNode)
+      source.connect(rumbleGuards[0])
+      rumbleGuards[0].connect(rumbleGuards[1])
+      rumbleGuards[1].connect(this.dfNode)
       this.dfNode.connect(highpass1)
       highpass1.connect(calibratedPreGain)
       calibratedPreGain.connect(inputGain)
@@ -1083,6 +1149,10 @@ export class WebRTCManager {
       try { this.processedSource.disconnect() } catch { }
       this.processedSource = null
     }
+    for (const guard of this.micRumbleFilters) {
+      try { guard.disconnect() } catch { }
+    }
+    this.micRumbleFilters = []
     if (this.rawAnalyserNode) {
       try { this.rawAnalyserNode.disconnect() } catch { }
       this.rawAnalyserNode = null
@@ -1482,10 +1552,25 @@ export class WebRTCManager {
     }, 50)
   }
 
-  private buildMicConstraints(deviceId?: string): MediaTrackConstraints {
+  private buildMicConstraints(deviceId?: string, echoCancellation = true): MediaTrackConstraints {
     const constraints: MediaTrackConstraints = {
       channelCount: 1,
-      echoCancellation: false,
+      // Echo cancellation is the one Chromium capture processor this pipeline wants,
+      // and it is a different kind of thing from the other two. AEC subtracts a model
+      // of what the speakers are playing from what the microphone hears; it does not
+      // ride the gain and does not decide what is noise, so it takes nothing away from
+      // the voice. Without it a user on laptop speakers sends every other participant
+      // their own voice back, which no amount of denoising downstream can undo -
+      // DeepFilterNet correctly classifies far-end speech as speech.
+      //
+      // AGC and Chromium's own noise suppression stay off, as they were: AGC fights
+      // the worklet's ALC and produces exactly the breathing this pipeline exists to
+      // avoid, and a second suppressor ahead of DeepFilterNet damages what the network
+      // is trained to receive. Some Windows audio paths implement all three as one
+      // unit and switch the others on alongside AEC - captureRawMicStream checks the
+      // settings actually delivered and recaptures without AEC when that happens, so
+      // the trade is only ever taken when it costs nothing.
+      echoCancellation,
       noiseSuppression: false,
       autoGainControl: false,
       sampleRate: { ideal: 48000 },
@@ -1498,8 +1583,8 @@ export class WebRTCManager {
       googNoiseSuppression2: false,
       googTypingNoiseDetection: false,
       googHighpassFilter: false,
-      googEchoCancellation: false,
-      googEchoCancellation2: false,
+      googEchoCancellation: echoCancellation,
+      googEchoCancellation2: echoCancellation,
       googAudioMirroring: false
     }
     // Omitting deviceId is deliberate for "default": Chromium then follows the
@@ -1509,22 +1594,65 @@ export class WebRTCManager {
   }
 
   /**
+   * Один заход захвата с самопроверкой AEC. Если драйвер включил вместе с ним AGC
+   * или собственный шумодав, трек останавливается и та же попытка повторяется с
+   * `echoCancellation: false` — эхоподавление берётся только тогда, когда оно не
+   * тянет за собой обработку, портящую голос.
+   */
+  private async captureMicAttempt(
+    label: string,
+    run: (echoCancellation: boolean) => Promise<MediaStream>
+  ): Promise<MediaStream> {
+    const capture = (echoCancellation: boolean) => withTimeout(
+      run(echoCancellation),
+      MIC_CAPTURE_TIMEOUT_MS,
+      `MIC_CAPTURE_TIMEOUT: ${label}`,
+      late => late.getTracks().forEach(track => track.stop())
+    )
+
+    const stream = await capture(true)
+    const settings = stream.getAudioTracks()[0]?.getSettings() ?? {}
+    const hitchhikers: string[] = []
+    if (settings.autoGainControl === true) hitchhikers.push('AGC')
+    if (settings.noiseSuppression === true) hitchhikers.push('noise suppression')
+
+    if (hitchhikers.length === 0) {
+      if (settings.echoCancellation !== true) {
+        console.log(`[WebRTC] Echo cancellation unavailable on ${label}; capturing without it`)
+      }
+      return stream
+    }
+
+    console.warn(
+      `[WebRTC] ${label} switched on ${hitchhikers.join(' + ')} together with echo ` +
+      `cancellation; recapturing with AEC off so the voice stays unprocessed`
+    )
+    stream.getTracks().forEach(track => track.stop())
+    return capture(false)
+  }
+
+  /**
    * The single microphone capture path for both the foreground and the background
-   * graph. Never falls back to `audio: true`: Chromium would silently enable AGC,
-   * echo cancellation and its own noise suppression, producing the exact level
-   * pumping this pipeline exists to avoid. The first DOMException is preserved
-   * (name included) so the UI can tell "no permission" from "busy" and "missing".
+   * graph. Never falls back to `audio: true`: Chromium would silently enable AGC
+   * and its own noise suppression, producing the exact level pumping this pipeline
+   * exists to avoid. Echo cancellation is requested deliberately and verified per
+   * attempt (see captureMicAttempt). The first DOMException is preserved (name
+   * included) so the UI can tell "no permission" from "busy" and "missing".
    */
   private async captureRawMicStream(): Promise<MediaStream> {
     const requestedDeviceId = this.currentDeviceId
-    const attempts: Array<{ label: string, keepsSelection: boolean, run: () => Promise<MediaStream> }> = []
+    const attempts: Array<{
+      label: string,
+      keepsSelection: boolean,
+      run: (echoCancellation: boolean) => Promise<MediaStream>
+    }> = []
 
     if (requestedDeviceId && requestedDeviceId !== 'default') {
       attempts.push({
         label: `selected device ${requestedDeviceId}`,
         keepsSelection: true,
-        run: () => navigator.mediaDevices.getUserMedia({
-          audio: this.buildMicConstraints(requestedDeviceId),
+        run: echoCancellation => navigator.mediaDevices.getUserMedia({
+          audio: this.buildMicConstraints(requestedDeviceId, echoCancellation),
           video: false
         })
       })
@@ -1532,19 +1660,22 @@ export class WebRTCManager {
     attempts.push({
       label: 'system default',
       keepsSelection: requestedDeviceId === 'default',
-      run: () => navigator.mediaDevices.getUserMedia({ audio: this.buildMicConstraints(), video: false })
+      run: echoCancellation => navigator.mediaDevices.getUserMedia({
+        audio: this.buildMicConstraints(undefined, echoCancellation),
+        video: false
+      })
     })
     attempts.push({
       label: 'first available input',
       keepsSelection: false,
-      run: async () => {
+      run: async echoCancellation => {
         const devices = await navigator.mediaDevices.enumerateDevices()
         const inputs = devices.filter(device => device.kind === 'audioinput' && device.deviceId)
         const input = inputs.find(device => device.deviceId !== 'default' && device.deviceId !== 'communications')
           ?? inputs[0]
         if (!input) throw new DOMException('No audio input devices found', 'NotFoundError')
         return navigator.mediaDevices.getUserMedia({
-          audio: this.buildMicConstraints(input.deviceId),
+          audio: this.buildMicConstraints(input.deviceId, echoCancellation),
           video: false
         })
       }
@@ -1553,12 +1684,7 @@ export class WebRTCManager {
     let firstError: unknown = null
     for (const attempt of attempts) {
       try {
-        const stream = await withTimeout(
-          attempt.run(),
-          MIC_CAPTURE_TIMEOUT_MS,
-          `MIC_CAPTURE_TIMEOUT: ${attempt.label}`,
-          late => late.getTracks().forEach(track => track.stop())
-        )
+        const stream = await this.captureMicAttempt(attempt.label, attempt.run)
         if (!attempt.keepsSelection) {
           // The stored selection is gone. Follow the system default from now on
           // instead of failing the same constraint on every restart.
@@ -1742,6 +1868,13 @@ export class WebRTCManager {
       capturedDeviceId: rawSettings?.deviceId ?? null,
       capturedSampleRate: rawSettings?.sampleRate ?? null,
       capturedChannelCount: rawSettings?.channelCount ?? null,
+      // What the driver actually delivered, not what was asked for. AEC is requested;
+      // the other two must read false, and if AGC or noise suppression is true here
+      // the recapture in captureMicAttempt failed to take effect - that is the case
+      // where Chromium is processing the voice before this pipeline sees it.
+      capturedEchoCancellation: rawSettings?.echoCancellation ?? null,
+      capturedAutoGainControl: rawSettings?.autoGainControl ?? null,
+      capturedNoiseSuppression: rawSettings?.noiseSuppression ?? null,
       rawTrackLabel: rawTrack?.label ?? null,
       rawTrackState: rawTrack?.readyState ?? null,
       rawTrackEnabled: rawTrack?.enabled ?? null,
@@ -1750,7 +1883,7 @@ export class WebRTCManager {
     }
   }
 
-  public async calibrateMic(durationMs = 10000, onStarted?: () => void): Promise<CalibrationResult> {
+  public async calibrateMic(durationMs = 2500, onStarted?: () => void): Promise<CalibrationResult> {
     const wasInActiveSession = Boolean(useAppStore.getState().currentChannelId || useAppStore.getState().currentCallUser)
 
     // A live localStream is not proof of a working graph: the worklet or the
@@ -1829,7 +1962,10 @@ export class WebRTCManager {
     }
   }
 
-  private calibrateActiveMic(durationMs = 10000): Promise<CalibrationResult> {
+  // durationMs is the worklet's measuring window, not the UI countdown: it has to
+  // match the time the user is actually asked to stay silent, or the run keeps
+  // recording after the prompt has already gone away.
+  private calibrateActiveMic(durationMs = 2500): Promise<CalibrationResult> {
     return new Promise((resolve, reject) => {
       if (!this.dfNode || !this.dfNodeReady) {
         reject(new CalibrationError('CALIBRATION_ENGINE_UNAVAILABLE', this.dfEngineError || 'Audio processors are not ready'))
@@ -1848,8 +1984,7 @@ export class WebRTCManager {
         noiseFloor: this.calibratedNoiseFloor,
         attenuationLimit: this.calibratedAttenuationLimit,
         preGainDb: this.calibratedPreGainDb,
-        vadOnThreshold: this.calibratedVadOnThreshold,
-        vadOffThreshold: this.calibratedVadOffThreshold,
+        vadTrackerSeed: this.calibratedVadTrackerSeed,
         hasVoiceCalibration: this.hasVoiceCalibration
       }
       const previousInputGain = this.inputGainNode?.gain.value ?? this.inputVolumeToGain(this.inputVolume)
@@ -1861,8 +1996,7 @@ export class WebRTCManager {
         this.calibratedNoiseFloor = previousProfile.noiseFloor
         this.calibratedAttenuationLimit = previousProfile.attenuationLimit
         this.calibratedPreGainDb = previousProfile.preGainDb
-        this.calibratedVadOnThreshold = previousProfile.vadOnThreshold
-        this.calibratedVadOffThreshold = previousProfile.vadOffThreshold
+        this.calibratedVadTrackerSeed = previousProfile.vadTrackerSeed
         this.hasVoiceCalibration = previousProfile.hasVoiceCalibration
         if (this.calibratedPreGainNode) {
           this.calibratedPreGainNode.gain.value = Math.pow(10, previousProfile.preGainDb / 20)
@@ -1902,15 +2036,16 @@ export class WebRTCManager {
 
           if (!Number.isFinite(noiseFloor) || noiseFloor <= 0 || !Number.isFinite(lowNoise) || lowNoise <= 0 ||
             !Number.isFinite(peakNoise) || peakNoise <= 0 || !Number.isFinite(zeroCrossingRate) ||
-            !Number.isFinite(spectralTilt) || acceptedFrames < 20) {
+            !Number.isFinite(spectralTilt) || acceptedFrames < MIN_CALIBRATION_FRAMES) {
             const silenceReference = Number(e.data.silenceReference) || 0
             console.warn('[WebRTC] Calibration rejected: insufficient noise samples', {
               acceptedFrames,
               rejectedSpeechFrames,
               totalFrames,
+              requiredFrames: MIN_CALIBRATION_FRAMES,
               // Only near-field speech is rejected now, so a high count here means
-              // the user was talking during the silence stage - not that a distant
-              // television or a conversation in another room was audible.
+              // the user was talking during the run - not that a distant television
+              // or a conversation in another room was audible.
               silenceReferenceDbfs: Number((20 * Math.log10(Math.max(1e-5, silenceReference))).toFixed(1)),
               nearFieldFloorDbfs: Number((20 * Math.log10(Math.max(1e-5, Math.max(silenceReference * 8, 0.0008)))).toFixed(1))
             })
@@ -1922,217 +2057,68 @@ export class WebRTCManager {
 
           const dbNoise = 20 * Math.log10(Math.max(1e-5, noiseFloor))
           const stationarityRatio = peakNoise / Math.max(1e-5, lowNoise)
-          const speechRms = Number(e.data.speechRms)
-          const quietSpeechRms = Number(e.data.quietSpeechRms)
-          const speechPeak = Number(e.data.speechPeak)
-          const noiseVadMedian = Number(e.data.noiseVadMedian)
-          const noiseVadHigh = Number(e.data.noiseVadHigh)
-          const speechVadLow = Number(e.data.speechVadLow)
-          const speechVadMedian = Number(e.data.speechVadMedian)
-          const speechVadFrames = Number(e.data.speechVadFrames) || 0
-          const confirmedSpeechVadFrames = Number(e.data.confirmedSpeechVadFrames) || 0
-          const confirmedSpeechVadRatio = Number(e.data.confirmedSpeechVadRatio) || 0
-          const confirmedSpeechVadLow = Number(e.data.confirmedSpeechVadLow) || 0
-          const confirmedSpeechVadRun = Number(e.data.confirmedSpeechVadRun) || 0
-          // Same run restricted to windows that also rose above the room level.
-          // Diagnostic only: it explains why a run far longer than the confirmed
-          // frame count is normal, and shows how much of the stretch was near-field.
-          const confirmedSpeechVadRunActive = Number(e.data.confirmedSpeechVadRunActive) || 0
-          const speechEvidenceThreshold = Number(e.data.speechEvidenceThreshold) || 0
-          const speechFrames = Number(e.data.speechFrames) || 0
-          const speechWindowFrames = Number(e.data.speechWindowFrames) || 0
-          const speechActiveFrames = Number(e.data.speechActiveFrames) || 0
-          const speechLongestRunFrames = Number(e.data.speechLongestRunFrames) || 0
-          // A transient peak in the room must not invalidate a spoken phrase, so
-          // speech is compared with the robust noise floor rather than peakNoise.
-          // The former 1.01 factor demanded 0.09 dB above that floor, which plain
-          // room tone satisfies; 2x is a real 6 dB of separation.
-          const minimumSpeechPeak = Math.max(noiseFloor * 2, 0.0004)
-          if (!Number.isFinite(speechRms) || !Number.isFinite(quietSpeechRms) || !Number.isFinite(speechPeak) ||
-            !Number.isFinite(noiseVadMedian) || !Number.isFinite(noiseVadHigh) ||
-            !Number.isFinite(speechVadLow) || !Number.isFinite(speechVadMedian) ||
-            !Number.isFinite(confirmedSpeechVadRatio) ||
-            speechRms <= 0 || speechPeak < minimumSpeechPeak || speechFrames < 1) {
-            restorePreviousProfile()
-            reject(new CalibrationError('CALIBRATION_NO_SPEECH',
-              `speech frames ${speechFrames}, peak ${speechPeak.toFixed(5)}, required ${minimumSpeechPeak.toFixed(5)}`))
-            return
-          }
+          const noiseVadMedian = Number(e.data.noiseVadMedian) || 0
+          const noiseVadHigh = Number(e.data.noiseVadHigh) || 0
 
-          const speechDb = 20 * Math.log10(Math.max(1e-5, speechRms))
-          const snrDb = speechDb - dbNoise
-          // A cough, a click or a chair creak produces a handful of loud frames; a
-          // spoken phrase produces hundreds of them in long contiguous runs. Every
-          // percentile of the speech stage looks the same for both cases, which is
-          // why calibration used to report success when nobody had spoken. Duration
-          // is the only measurement that separates them, so it is mandatory here -
-          // but it may be measured either acoustically or neurally. The energy bar
-          // sits above the room's own loud edge, and on a low-sensitivity capture
-          // whose voice rises 4 dB above that room no bar can clear it, while a
-          // 0.77 s unbroken Silero run proves the same sustained voicing.
-          const hasSustainedEnergy = speechActiveFrames >= MIN_SPEECH_ACTIVE_FRAMES &&
-            speechLongestRunFrames >= MIN_SPEECH_RUN_FRAMES
-          const hasSustainedSileroRun = confirmedSpeechVadRun >= MIN_SUSTAINED_VAD_RUN &&
-            confirmedSpeechVadFrames >= MIN_CONFIRMED_VAD_FRAMES
-          const hasSustainedSpeech = hasSustainedEnergy || hasSustainedSileroRun
-          const hasAcousticSpeech = snrDb >= MIN_SPEECH_SNR_DB
-          const hasSileroSpeech = confirmedSpeechVadFrames >= MIN_CONFIRMED_VAD_FRAMES &&
-            confirmedSpeechVadRatio >= MIN_CONFIRMED_VAD_RATIO &&
-            confirmedSpeechVadRun >= MIN_CONFIRMED_VAD_RUN
-          const hasStrongSileroSpeech = confirmedSpeechVadFrames >= MIN_CONFIRMED_VAD_FRAMES * 2 &&
-            confirmedSpeechVadRatio >= MIN_CONFIRMED_VAD_RATIO * 2 &&
-            confirmedSpeechVadRun >= MIN_CONFIRMED_VAD_RUN * 2 &&
-            speechVadMedian >= noiseVadMedian + 0.01
-          // Silero may deliver no usable evidence on this run: no windows at all
-          // (model still loading, worker starved), or probabilities that stay below
-          // a real speech level on an insensitive microphone. Sustained acoustic
-          // evidence then has to carry the decision alone, which is only allowed at
-          // clearly doubled duration and a voice-to-noise ratio no transient
-          // reaches: one second of continuous energy 6 dB above the measured floor
-          // is a spoken phrase, never a cough, a click or a chair creak.
-          const sileroEvidenceUnusable = speechVadFrames < MIN_CONFIRMED_VAD_FRAMES || !hasSileroSpeech
-          const hasAcousticOnlyEvidence = sileroEvidenceUnusable && snrDb >= MIN_SPEECH_SNR_DB + 4 &&
-            speechActiveFrames >= MIN_SPEECH_ACTIVE_FRAMES * 2 &&
-            speechLongestRunFrames >= MIN_SPEECH_RUN_FRAMES * 2
-          const sileroDominantCalibration = !hasAcousticSpeech && hasStrongSileroSpeech
-          // Whatever proves the phrase, the level still has to rise above the room.
-          // Without that rise the speech percentiles describe the background, and
-          // the stored profile would derive both the gate threshold and the
-          // suppression strength from noise the user never produced.
-          const hasMeasurableVoiceRise = snrDb >= MIN_MARGINAL_SNR_DB
-          // Normal calibration requires sustained speech plus both acoustic
-          // separation and Silero. In a genuinely noisy room a stronger, longer
-          // Silero result may replace the acoustic SNR requirement only.
-          const speechConfirmed = hasSustainedSpeech && hasMeasurableVoiceRise &&
-            (hasAcousticOnlyEvidence || (hasSileroSpeech && (hasAcousticSpeech || hasStrongSileroSpeech)))
-          if (!speechConfirmed) {
-            // Speech during the silence stage inflates the noise floor instead of
-            // the speech level, so the run fails on ratio rather than on evidence.
-            // Name that cause instead of claiming the phrase was never heard: the
-            // user has to remove the sound source or move closer to the microphone,
-            // which is the same action either way.
-            const noiseWasSpeechDominated = noiseVadMedian >= 0.5 && snrDb < MIN_SPEECH_SNR_DB &&
-              (hasSustainedSpeech || confirmedSpeechVadFrames >= MIN_CONFIRMED_VAD_FRAMES)
-            console.warn('[WebRTC] Calibration rejected: no confirmed speech', {
-              snrDb: Number(snrDb.toFixed(1)),
-              speechActiveFrames,
-              speechWindowFrames,
-              speechLongestRunFrames,
-              requiredActiveFrames: MIN_SPEECH_ACTIVE_FRAMES,
-              requiredRunFrames: MIN_SPEECH_RUN_FRAMES,
-              requiredSileroRun: MIN_SUSTAINED_VAD_RUN,
-              voicedFloorDbfs: Number((20 * Math.log10(Math.max(1e-5, Number(e.data.voicedFloor) || 1e-5))).toFixed(1)),
-              noiseFloorDbfs: Number(dbNoise.toFixed(1)),
-              noiseVadMedian: Number(noiseVadMedian.toFixed(4)),
-              speechVadMedian: Number(speechVadMedian.toFixed(4)),
-              speechEvidenceThreshold: Number(speechEvidenceThreshold.toFixed(4)),
-              confirmedSpeechVadFrames,
-              confirmedSpeechVadRatio: Number(confirmedSpeechVadRatio.toFixed(3)),
-              confirmedSpeechVadRun,
-              confirmedSpeechVadRunActive,
-              hasSustainedSpeech,
-              hasSustainedEnergy,
-              hasSustainedSileroRun,
-              hasMeasurableVoiceRise,
-              hasAcousticSpeech,
-              hasSileroSpeech,
-              hasStrongSileroSpeech,
-              sileroEvidenceUnusable,
-              noiseWasSpeechDominated
-            })
-            restorePreviousProfile()
-            reject(new CalibrationError(
-              noiseWasSpeechDominated ? 'CALIBRATION_NEEDS_SILENCE' : 'CALIBRATION_NO_SPEECH',
-              `snr ${snrDb.toFixed(1)}dB, voiced ${speechActiveFrames * 10}ms (longest run ${speechLongestRunFrames * 10}ms), ` +
-              `confirmed Silero frames ${confirmedSpeechVadFrames}, run ${confirmedSpeechVadRun}`))
-            return
-          }
-
-          // Both the gate threshold and the suppression strength come from the same
-          // voice-to-noise measurement. The worklet no longer proposes thresholds:
-          // its own estimate used the 10th percentile of every active window, which
-          // sits at zero for real speech and always collapsed onto the lower clamp.
-          const vadThresholds = this.calculateVadThresholds(
-            noiseVadHigh,
-            confirmedSpeechVadLow,
-            speechVadMedian,
-            snrDb
-          )
-
-          const suppressionCalibration = this.calculateSpeechPreservingAttenuation(
+          // The room is now the only measurement, and it fully determines the
+          // suppression strength. There is nothing left to accept or reject beyond
+          // "did we get enough frames": the wizard no longer asks for a phrase, so
+          // it can no longer fail on one.
+          const suppressionCalibration = this.calculateAttenuationFromRoom(
             noiseFloor,
-            speechRms,
-            quietSpeechRms,
-            stationarityRatio
+            lowNoise,
+            peakNoise,
+            noiseVadHigh
           )
           const attenuationLimit = suppressionCalibration.attenuationLimit
-          const quietSpeechDb = 20 * Math.log10(Math.max(1e-5, quietSpeechRms))
-          const quietSnrDb = quietSpeechDb - dbNoise
-          console.info('[WebRTC] Calibration suppression profile', {
-            noiseDbfs: Number(dbNoise.toFixed(1)),
-            speechDbfs: Number(speechDb.toFixed(1)),
-            quietSpeechDbfs: Number(quietSpeechDb.toFixed(1)),
-            snrDb: Number(snrDb.toFixed(1)),
-            quietSnrDb: Number(quietSnrDb.toFixed(1)),
-            stationarityRatio: Number(stationarityRatio.toFixed(2)),
-            speechVadFrames,
-            speechActiveFrames,
-            speechLongestRunFrames,
-            confirmedSpeechVadFrames,
-            confirmedSpeechVadRatio: Number(confirmedSpeechVadRatio.toFixed(3)),
-            confirmedSpeechVadRun,
-            confirmedSpeechVadRunActive,
-            confirmedSpeechVadLow: Number(confirmedSpeechVadLow.toFixed(4)),
-            durationEvidence: hasSustainedEnergy
-              ? (hasSustainedSileroRun ? 'energy-and-silero' : 'energy')
-              : 'silero-run',
-            validationMode: sileroDominantCalibration
-              ? 'silero-dominant'
-              : sileroEvidenceUnusable ? 'acoustic-only' : 'acoustic-and-silero',
-            attenuationLimitDb: attenuationLimit,
-            snrCorrectionDb: Number(suppressionCalibration.snrCorrectionDb.toFixed(2)),
-            noiseMarginDb: Number(suppressionCalibration.noiseMarginDb.toFixed(2)),
-            voiceSafetyCeilingDb: Number(suppressionCalibration.voiceSafetyCeilingDb.toFixed(1)),
-            vadOnThreshold: Number(vadThresholds.vadOnThreshold.toFixed(4)),
-            vadOffThreshold: Number(vadThresholds.vadOffThreshold.toFixed(4)),
-            availableRangeDb: `${DEEPFILTER_MIN_ATTEN}-${DEEPFILTER_MAX_ATTEN}`
-          })
-          console.info(
-            `[WebRTC] Calibration result: noise=${dbNoise.toFixed(1)}dBFS, ` +
-            `speech=${speechDb.toFixed(1)}dBFS, quietSpeech=${quietSpeechDb.toFixed(1)}dBFS, ` +
-            `SNR=${snrDb.toFixed(1)}dB, quietSNR=${quietSnrDb.toFixed(1)}dB, ` +
-            `stationarity=${stationarityRatio.toFixed(2)}, voiced=${speechActiveFrames * 10}ms, ` +
-            `longestRun=${speechLongestRunFrames * 10}ms, SileroFrames=${speechVadFrames}, ` +
-            `confirmedSilero=${confirmedSpeechVadFrames}, ` +
-            `sileroRun=${confirmedSpeechVadRun * 32}ms (near-field ${confirmedSpeechVadRunActive * 32}ms), ` +
-            `attenuation=${attenuationLimit}dB (ceiling ${suppressionCalibration.voiceSafetyCeilingDb.toFixed(1)}dB), ` +
-            `vadOn=${vadThresholds.vadOnThreshold.toFixed(4)}, ` +
-            `vadOff=${vadThresholds.vadOffThreshold.toFixed(4)}`
-          )
-          const peakDb = 20 * Math.log10(Math.max(1e-5, speechPeak))
-          const desiredPreGainDb = -24 - speechDb
-          const peakLimitedGainDb = -12 - peakDb
-          // Calibration may lift a quiet microphone, but must never turn the user
-          // down because the prompted phrase happened to be louder than normal.
-          const preGainDb = Math.max(0, Math.min(3, Math.min(desiredPreGainDb, peakLimitedGainDb)))
 
           restoreInputGain()
           this.calibratedNoiseFloor = noiseFloor
           this.calibratedAttenuationLimit = attenuationLimit
-          this.calibratedPreGainDb = preGainDb
-          this.calibratedVadOnThreshold = vadThresholds.vadOnThreshold
-          this.calibratedVadOffThreshold = vadThresholds.vadOffThreshold
+          // Pre-gain came from the calibration phrase and left with it. The user's
+          // own input volume (0-200 %) is the remaining loudness control.
+          this.calibratedPreGainDb = 0
+          this.calibratedVadTrackerSeed = Math.max(0, Math.min(1, noiseVadHigh))
           this.hasVoiceCalibration = true
-          if (this.calibratedPreGainNode) this.calibratedPreGainNode.gain.value = Math.pow(10, preGainDb / 20)
+          if (this.calibratedPreGainNode) this.calibratedPreGainNode.gain.value = 1
           this.updateThresholds()
-          console.info('[WebRTC] DeepFilter calibrated params requested', {
-            attenuationLimitDb: this.getThresholdParams(1).attenuationLimit,
-            postFilterBeta: 0,
+          console.info('[WebRTC] Calibration suppression profile', {
+            noiseDbfs: Number(dbNoise.toFixed(1)),
+            // Median vs. the high percentile the demand is actually measured against;
+            // roomDbfs above noiseDbfs means the p95-6dB branch won.
+            roomDbfs: Number(suppressionCalibration.roomDbfs.toFixed(1)),
+            stationarityRatio: Number(stationarityRatio.toFixed(2)),
+            noiseVadMedian: Number(noiseVadMedian.toFixed(4)),
+            noiseVadHigh: Number(noiseVadHigh.toFixed(4)),
+            requiredDb: Number(suppressionCalibration.requiredDb.toFixed(1)),
+            speechLikeBonusDb: Number(suppressionCalibration.speechLikeBonusDb.toFixed(2)),
+            demandDb: Number(suppressionCalibration.demandDb.toFixed(1)),
+            shapedDb: Number(suppressionCalibration.shapedDb.toFixed(1)),
+            transientReliefDb: Number(suppressionCalibration.transientReliefDb.toFixed(2)),
+            attenuationLimitDb: attenuationLimit,
+            assumedSpeechDbfs: ASSUMED_SPEECH_LEVEL_DBFS,
+            assumedSnrDb: Number((ASSUMED_SPEECH_LEVEL_DBFS - suppressionCalibration.roomDbfs).toFixed(1)),
+            targetSpeechToNoiseDb: TARGET_SPEECH_TO_NOISE_DB,
+            targetResidualDbfs: TARGET_RESIDUAL_NOISE_DBFS,
+            softKneeDb: SUPPRESSION_SOFT_KNEE_DB,
+            vadTrackerSeed: Number(this.calibratedVadTrackerSeed.toFixed(4)),
+            appliedAttenuationDb: this.getThresholdParams(1).attenuationLimit,
             thresholdMode: this.thresholdMode,
-            vadOnThreshold: Number(this.calibratedVadOnThreshold.toFixed(4)),
-            vadOffThreshold: Number(this.calibratedVadOffThreshold.toFixed(4)),
-            preGainDb: Number(preGainDb.toFixed(2))
+            availableRangeDb: `${DEEPFILTER_MIN_ATTEN}-${DEEPFILTER_MAX_ATTEN}`
           })
+          console.info(
+            `[WebRTC] Calibration result: noise=${dbNoise.toFixed(1)}dBFS ` +
+            `(room reference ${suppressionCalibration.roomDbfs.toFixed(1)}dBFS), ` +
+            `stationarity=${stationarityRatio.toFixed(2)}, ` +
+            `noiseVadHigh=${noiseVadHigh.toFixed(4)}, ` +
+            `frames=${acceptedFrames} (rejected ${rejectedSpeechFrames}), ` +
+            `attenuation=${attenuationLimit}dB of ${DEEPFILTER_MAX_ATTEN}dB ` +
+            `(demand ${suppressionCalibration.demandDb.toFixed(1)}dB to lift a ` +
+            `${(ASSUMED_SPEECH_LEVEL_DBFS - suppressionCalibration.roomDbfs).toFixed(1)}dB room SNR to ` +
+            `${TARGET_SPEECH_TO_NOISE_DB}dB speech-to-noise, ` +
+            `softened to ${suppressionCalibration.shapedDb.toFixed(1)}dB above the ` +
+            `${SUPPRESSION_SOFT_KNEE_DB}dB knee)`
+          )
 
           try {
             const profile: StoredEnvironmentProfile = {
@@ -2142,21 +2128,8 @@ export class WebRTCManager {
               lowNoise,
               peakNoise,
               attenuationLimit,
-              speechRms,
-              quietSpeechRms,
-              speechPeak,
-              speechFrames,
-              snrDb,
               noiseVadMedian,
               noiseVadHigh,
-              speechVadLow,
-              speechVadMedian,
-              confirmedSpeechVadFrames,
-              confirmedSpeechVadRatio,
-              confirmedSpeechVadLow,
-              vadOnThreshold: vadThresholds.vadOnThreshold,
-              vadOffThreshold: vadThresholds.vadOffThreshold,
-              preGainDb,
               zeroCrossingRate,
               spectralTilt
             }
@@ -2185,25 +2158,8 @@ export class WebRTCManager {
             lowNoise,
             peakNoise,
             attenuationLimit,
-            speechRms,
-            quietSpeechRms,
-            speechPeak,
-            speechFrames,
-            speechWindowFrames,
-            speechActiveFrames,
-            speechLongestRunFrames,
             noiseVadMedian,
             noiseVadHigh,
-            speechVadLow,
-            speechVadMedian,
-            confirmedSpeechVadFrames,
-            confirmedSpeechVadRatio,
-            confirmedSpeechVadRun,
-            confirmedSpeechVadRunActive,
-            confirmedSpeechVadLow,
-            vadOnThreshold: vadThresholds.vadOnThreshold,
-            vadOffThreshold: vadThresholds.vadOffThreshold,
-            speechVadFrames,
             zeroCrossingRate,
             spectralTilt,
             acceptedFrames,
@@ -2481,12 +2437,27 @@ export class WebRTCManager {
     }
     this.outputCompressor = this.outputMixContext.createDynamicsCompressor()
 
+    // Make-up gain for everything arriving from the channel - voices and shared
+    // stream audio alike. In-app sound effects are deliberately not here: they run
+    // on their own AudioContext in signalr.ts and keep the level they were mixed at.
+    //
+    // The bus used to sit at unity with the compressor as a distant safety net at
+    // -3 dB, so nothing in the chain ever applied gain: a quiet sender stayed quiet
+    // no matter how far the sliders were pushed, which is the reported problem. With
+    // the make-up ahead of the compressor the pair behaves as a mix leveller: a
+    // sender that is already at the standard level is peak-limited back to roughly
+    // +4.5 dB, while a quiet or legacy sender receives the full +6 dB.
+    this.outputBusGain = this.outputMixContext.createGain()
+    this.outputBusGain.gain.value = Math.pow(10, PLAYBACK_MAKEUP_GAIN_DB / 20)
+    this.outputBusGain.connect(this.outputCompressor)
 
-    this.outputCompressor.threshold.value = -3
+    // Threshold lowered from -3 dB so the compressor actually catches what the
+    // make-up adds; the slower release keeps it from pumping between syllables.
+    this.outputCompressor.threshold.value = -8
     this.outputCompressor.knee.value = 6
     this.outputCompressor.ratio.value = 4
-    this.outputCompressor.attack.value = 0.005
-    this.outputCompressor.release.value = 0.120
+    this.outputCompressor.attack.value = 0.004
+    this.outputCompressor.release.value = 0.180
 
     const dest = this.outputMixContext.createMediaStreamDestination()
     this.outputCompressor.connect(dest)
@@ -2536,7 +2507,7 @@ export class WebRTCManager {
         const source = this.outputMixContext!.createMediaStreamSource(new MediaStream([event.track]))
         const gain = this.outputMixContext!.createGain()
         source.connect(gain)
-        gain.connect(this.outputCompressor!)
+        gain.connect(this.outputBusGain!)
 
         this.streamSourceNodes.set(userId, source)
         this.streamGainNodes.set(userId, gain)
@@ -2562,7 +2533,7 @@ export class WebRTCManager {
         const source = this.outputMixContext!.createMediaStreamSource(new MediaStream([event.track]))
         const gain = this.outputMixContext!.createGain()
         source.connect(gain)
-        gain.connect(this.outputCompressor!)
+        gain.connect(this.outputBusGain!)
 
         this.userSourceNodes.set(userId, source)
         this.userGainNodes.set(userId, gain)
@@ -3018,9 +2989,10 @@ export class WebRTCManager {
     if (!this.localStream) {
       await this.startLocalStream().catch(() => { })
     }
+    await this.ensureIceServers()
     if (!this.isPeerRelevant(userId)) return
 
-    const pc = new RTCPeerConnection(this.config)
+    const pc = new RTCPeerConnection(this.rtcConfig())
     this.peerConnections.set(userId, pc)
 
     if (this.localStream) {
@@ -3085,8 +3057,9 @@ export class WebRTCManager {
       if (!this.localStream) {
         await this.startLocalStream().catch(() => { })
       }
+      await this.ensureIceServers()
       if (!this.isPeerRelevant(senderId)) return
-      pc = new RTCPeerConnection(this.config)
+      pc = new RTCPeerConnection(this.rtcConfig())
       this.peerConnections.set(senderId, pc)
 
       if (this.localStream) {

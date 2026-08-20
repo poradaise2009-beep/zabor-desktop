@@ -25,12 +25,12 @@
       "micFallback": "Микрофон",
       "speakerFallback": "Динамики",
       "calibrateSensitivity": "Калибровка шумоподавления",
-      "calibrateDesc": "Оценка постоянного шума для бережной очистки голоса",
+      "calibrateDesc": "Замер постоянного шума комнаты в тишине",
       "calibrateButton": "Определить шум",
       "calibrating": "Определение шума...",
       "calibrationComplete": "Успешно",
       "calibrationSuccess": "Успешно",
-      "doNotSpeak": "Молчите",
+      "doNotSpeak": "Молчите, идёт замер шума",
       "micThresholdAuto": "Автоматическая сила шумоподавления",
       "micThresholdLabel": "МАКСИМАЛЬНОЕ ШУМОПОДАВЛЕНИЕ, ДБ",
       "noiseSuppressionMode": "Режим шумоподавления",
@@ -38,11 +38,8 @@
       "manualMode": "Вручную",
       "threshold": "Порог",
       "thresholdLabel": "Порог срабатывания микрофона",
-      "sayPhrase": "Скажите фразу",
-      "sayPhraseButton": "Скажи: \"{{phrase}}\"",
       "checking": "Проверяем",
-      "preparing": "Подготовка",
-      "calibrationPhrase": "Шумный шмель жужжал, кружил и тихо сел на цветок."
+      "preparing": "Подготовка"
     },
     "privacy": {
       "newPassword": "НОВЫЙ ПАРОЛЬ",
@@ -187,6 +184,7 @@
     "hiddenTitle": "Скрытое достижение",
     "hiddenDesc": "???",
     "unlocked": "✓ Получено",
+    "hiddenBadge": "Скрытое",
     "hoursUnit": " ч",
     "summary": "{{unlocked}} / {{total}} получено",
     "first_channel": {
@@ -213,10 +211,6 @@
       "title": "Коллекционер",
       "description": "Побывать в 10 разных каналах"
     },
-    "marathon": {
-      "title": "Тюлень",
-      "description": "Сидеть в канале 5 часов"
-    },
     "modnik": {
       "title": "Модник",
       "description": "Загрузить GIF-аватарку"
@@ -231,7 +225,7 @@
     },
     "same_wave": {
       "title": "Переговорщики",
-      "description": "Звонок длительностью 2+ часа"
+      "description": "Звонок длительностью 5+ часов"
     },
     "gossip": {
       "title": "Мошенник",
@@ -239,7 +233,7 @@
     },
     "busy": {
       "title": "Занят",
-      "description": "Отклонить более 5 звонков"
+      "description": "Отклонить 5 звонков"
     },
     "first_friend": {
       "title": "Первый друг",
@@ -295,10 +289,9 @@
     "audioError": "Ошибка аудио: {{message}}",
     "incomingCall": "Входящий звонок...",
     "incomingChannelInvite": "Вас зовут в канал",
-    "startupCalibration": "Калибровка микрофона... Пожалуйста, помолчите 2 сек.",
+    "startupCalibration": "Калибровка микрофона... Пожалуйста, помолчите 3 сек.",
     "calibrationComplete": "Микрофон успешно откалиброван!",
-    "calibrationNoSpeech": "Не услышали фразу. Повторите.",
-    "calibrationNeedSilence": "Сначала нужна тишина. Повторите.",
+    "calibrationNeedSilence": "Нужна тишина: не говорите во время замера. Повторите.",
     "calibrationFailedRetry": "Калибровка не удалась. Повторите.",
     "calibrationEngineUnavailable": "Шумоподавление не запустилось на этом устройстве. Перезапустите приложение.",
     "calibrationNoMic": "Микрофон недоступен. Проверьте устройство ввода и повторите.",

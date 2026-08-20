@@ -25,12 +25,12 @@
       "micFallback": "Microphone",
       "speakerFallback": "Speakers",
       "calibrateSensitivity": "Noise Suppression Calibration",
-      "calibrateDesc": "Measures steady noise for speech-preserving cleanup",
+      "calibrateDesc": "Measures the room's steady noise while you stay silent",
       "calibrateButton": "Detect Noise",
       "calibrating": "Detecting noise...",
       "calibrationComplete": "Success",
       "calibrationSuccess": "Success",
-      "doNotSpeak": "Silence",
+      "doNotSpeak": "Stay silent, measuring noise",
       "micThresholdAuto": "Automatic noise suppression strength",
       "micThresholdLabel": "MAXIMUM NOISE SUPPRESSION, DB",
       "noiseSuppressionMode": "Noise suppression mode",
@@ -38,11 +38,8 @@
       "manualMode": "Manual",
       "threshold": "Threshold",
       "thresholdLabel": "Microphone activation threshold",
-      "sayPhrase": "Say the phrase",
-      "sayPhraseButton": "Say: \"{{phrase}}\"",
       "checking": "Checking",
-      "preparing": "Preparing",
-      "calibrationPhrase": "The noisy bee buzzed, then quickly brushed a soft fresh leaf."
+      "preparing": "Preparing"
     },
     "privacy": {
       "newPassword": "NEW PASSWORD",
@@ -187,6 +184,7 @@
     "hiddenTitle": "Hidden Achievement",
     "hiddenDesc": "???",
     "unlocked": "✓ Unlocked",
+    "hiddenBadge": "Hidden",
     "hoursUnit": " h",
     "summary": "{{unlocked}} / {{total}} unlocked",
     "first_channel": {
@@ -213,10 +211,6 @@
       "title": "Collector",
       "description": "Visit 10 different channels"
     },
-    "marathon": {
-      "title": "Seal",
-      "description": "Stay in a channel for 5 hours"
-    },
     "modnik": {
       "title": "Fashionista",
       "description": "Upload a GIF avatar"
@@ -231,7 +225,7 @@
     },
     "same_wave": {
       "title": "Negotiators",
-      "description": "Call duration of 2+ hours"
+      "description": "Call duration of 5+ hours"
     },
     "gossip": {
       "title": "Scammer",
@@ -239,7 +233,7 @@
     },
     "busy": {
       "title": "Busy",
-      "description": "Decline more than 5 calls"
+      "description": "Decline 5 calls"
     },
     "first_friend": {
       "title": "First Friend",
@@ -295,10 +289,9 @@
     "audioError": "Audio error: {{message}}",
     "incomingCall": "Incoming call...",
     "incomingChannelInvite": "You are invited to a channel",
-    "startupCalibration": "Microphone calibration... Please remain silent for 2s.",
+    "startupCalibration": "Microphone calibration... Please remain silent for 3s.",
     "calibrationComplete": "Microphone successfully calibrated!",
-    "calibrationNoSpeech": "Didn't hear the phrase. Please try again.",
-    "calibrationNeedSilence": "Silence is required first. Please try again.",
+    "calibrationNeedSilence": "Silence is required: don't speak while measuring. Please try again.",
     "calibrationFailedRetry": "Calibration failed. Please try again.",
     "calibrationEngineUnavailable": "Noise suppression failed to start on this device. Please restart the app.",
     "calibrationNoMic": "The microphone is unavailable. Check the input device and try again.",

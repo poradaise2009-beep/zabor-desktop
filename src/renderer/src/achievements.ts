@@ -130,7 +130,7 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   {
     id: 'busy',
     title: 'Занят',
-    description: 'Отклонить более 5 звонков',
+    description: 'Отклонить 5 звонков',
     icon: '🚫',
     maxValue: 5,
     statKey: 'declinedCalls',

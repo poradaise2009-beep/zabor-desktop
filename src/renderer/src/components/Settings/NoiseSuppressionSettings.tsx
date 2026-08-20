@@ -5,7 +5,7 @@ import { Md3Switch } from '../Shared/Md3Switch';
 import { webrtc } from '../../services/webrtc';
 
 export type NoiseSuppressionMode = 'smart' | 'manual';
-export type CalibrationPhase = 'idle' | 'preparing' | 'silence' | 'speech' | 'checking';
+export type CalibrationPhase = 'idle' | 'preparing' | 'silence' | 'checking';
 
 export interface NoiseSuppressionSettingsProps {
   isEnabled: boolean;
@@ -50,16 +50,13 @@ export function NoiseSuppressionSettings({
 
   const micLevelDb = Math.max(-100, Math.min(0, externalMicLevel ?? internalMicLevelDb));
   const threshold = Math.max(MIN_THRESHOLD_DB, Math.min(MAX_THRESHOLD_DB, manualThreshold));
-  const phrase = t('settings.audio.calibrationPhrase', 'Шумный шмель жужжал, кружил и тихо сел на цветок.');
   const calibrationText = calibrationPhase === 'silence'
     ? t('settings.audio.doNotSpeak', 'Молчите')
-    : calibrationPhase === 'speech'
-      ? t('settings.audio.sayPhraseButton', 'Скажи: "{{phrase}}"', { phrase })
-      : calibrationPhase === 'checking'
-        ? t('settings.audio.checking', 'Проверяем')
-        : calibrationPhase === 'preparing'
-          ? t('settings.audio.preparing', 'Подготовка')
-          : t('settings.audio.calibrateButton', 'Определить шум');
+    : calibrationPhase === 'checking'
+      ? t('settings.audio.checking', 'Проверяем')
+      : calibrationPhase === 'preparing'
+        ? t('settings.audio.preparing', 'Подготовка')
+        : t('settings.audio.calibrateButton', 'Определить шум');
   const meterPosition = Math.max(0, Math.min(100, ((micLevelDb - MIN_THRESHOLD_DB) / (MAX_THRESHOLD_DB - MIN_THRESHOLD_DB)) * 100));
 
   return (

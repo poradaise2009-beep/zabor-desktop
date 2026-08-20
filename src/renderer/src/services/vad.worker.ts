@@ -21,6 +21,40 @@ const pendingFrames: ProcessMessage[] = []
 const MAX_PENDING_FRAMES = 4
 let lastProcessedSequence = -1
 
+// The graph's own tensor names, resolved from the loaded model instead of assumed.
+// Silero keeps the *contract* stable across releases - 512 samples at 16 kHz, an LSTM
+// state of [2, 1, 128], one probability out - but not the names it hangs them on: v5
+// returns `output` and `stateN`, and the reference code for it is written positionally
+// (`out, state = session.run(None, ...)`), so a rename between releases is not a thing
+// upstream would consider breaking. Reading them off the session makes dropping in a
+// newer silero_vad.onnx a file replacement rather than a code change, and turns a
+// rename from a silent stream of zero probabilities - a permanently closed gate - into
+// nothing at all.
+let audioInputName = 'input'
+let stateInputName = 'state'
+let sampleRateInputName: string | null = 'sr'
+let probabilityOutputName = 'output'
+let stateOutputName = 'stateN'
+
+// Only three inputs and two outputs exist, and each has a distinguishing substring, so
+// matching on those is unambiguous. The audio input is whatever is left once the state
+// and the sample rate are identified - that ordering matters, because "input" is also a
+// plausible substring of the others.
+function resolveTensorNames(loaded: InferenceSession): void {
+  const inputs = loaded.inputNames
+  const outputs = loaded.outputNames
+  const has = (name: string, needle: string) => name.toLowerCase().includes(needle)
+
+  stateInputName = inputs.find(name => has(name, 'state')) ?? stateInputName
+  // A 16 kHz-only export has no sample rate input at all; feeding one would be rejected.
+  sampleRateInputName = inputs.find(name => has(name, 'sr') || has(name, 'sample')) ?? null
+  audioInputName = inputs.find(name =>
+    name !== stateInputName && name !== sampleRateInputName) ?? audioInputName
+
+  stateOutputName = outputs.find(name => has(name, 'state')) ?? stateOutputName
+  probabilityOutputName = outputs.find(name => name !== stateOutputName) ?? probabilityOutputName
+}
+
 interface ProcessMessage {
   type: 'process'
   audioFrame: Float32Array
@@ -48,16 +82,18 @@ async function processFrame(message: ProcessMessage): Promise<void> {
     modelInput.set(context, 0)
     modelInput.set(message.audioFrame, CONTEXT_SIZE)
 
-    const results = await session.run({
-      input: new Tensor('float32', modelInput, [1, modelInput.length]),
-      state: new Tensor('float32', state, [2, 1, 128]),
-      sr: sampleRateTensor
-    })
+    const feeds: Record<string, Tensor> = {
+      [audioInputName]: new Tensor('float32', modelInput, [1, modelInput.length]),
+      [stateInputName]: new Tensor('float32', state, [2, 1, 128])
+    }
+    if (sampleRateInputName) feeds[sampleRateInputName] = sampleRateTensor
 
-    const rawProb = Number(results.output.data[0])
+    const results = await session.run(feeds)
+
+    const rawProb = Number(results[probabilityOutputName].data[0])
     const probability = Number.isFinite(rawProb) ? Math.max(0, Math.min(1, rawProb)) : 0
 
-    const newStateData = results.stateN.data as Float32Array
+    const newStateData = results[stateOutputName].data as Float32Array
     state.set(newStateData)
     context.set(message.audioFrame.subarray(FRAME_SIZE - CONTEXT_SIZE))
 
@@ -102,8 +138,22 @@ self.onmessage = (event: MessageEvent) => {
       graphOptimizationLevel: 'all'
     }).then(createdSession => {
       session = createdSession
+      resolveTensorNames(createdSession)
       resetModelState()
-      self.postMessage({ type: 'ready' })
+      // Reported so a model swap is diagnosable from the renderer console rather than
+      // from the absence of speech.
+      self.postMessage({
+        type: 'ready',
+        io: {
+          inputs: createdSession.inputNames,
+          outputs: createdSession.outputNames,
+          audioInput: audioInputName,
+          stateInput: stateInputName,
+          sampleRateInput: sampleRateInputName,
+          probabilityOutput: probabilityOutputName,
+          stateOutput: stateOutputName
+        }
+      })
     }).catch(error => self.postMessage({ type: 'error', phase: 'initialization', error: String(error) }))
   } else if (message.type === 'process') {
     const frame = message as ProcessMessage
