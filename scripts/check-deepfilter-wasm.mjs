@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
+import { createHash } from 'node:crypto'
 
 const repo = 'C:/Users/porad/Documents/zabor/Frontend/zabor-desktop'
 const gluePath = `${repo}/node_modules/deepfilter-standalone/dist/df3/df.js`
@@ -52,6 +53,7 @@ const cases = [
 
 let phase = 0
 let nonFinite = 0
+const outputDigest = createHash('sha256')
 
 for (const c of cases) {
   let inSum = 0
@@ -76,6 +78,7 @@ for (const c of cases) {
       const a = Math.abs(output[i])
       if (a > peakOut) peakOut = a
     }
+    outputDigest.update(Buffer.from(output.buffer, output.byteOffset, output.byteLength))
     if (f >= measureFrom) {
       inSum += rms(input)
       outSum += rms(output)
@@ -98,4 +101,5 @@ if (nonFinite > 0) {
   process.exit(1)
 }
 
+console.log(`output sha256: ${outputDigest.digest('hex')}`)
 console.log('OK: engine initialized, frame length 480, output finite')
