@@ -55,22 +55,44 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Resolve wasm-bindgen version
+      - name: Trim the workspace to libDF
         working-directory: upstream
         run: |
           set -euo pipefail
-          if [ ! -f Cargo.lock ]; then
-            cargo generate-lockfile
-          fi
+          node - <<'JS'
+          const fs = require('fs')
+          let text = fs.readFileSync('Cargo.toml', 'utf8')
+          for (const member of ['pyDF-data', 'pyDF', 'ladspa', 'demo']) {
+            const needle = '  "' + member + '",\n'
+            if (!text.includes(needle)) {
+              console.error('workspace member ' + member + ' not found, refusing to guess')
+              process.exit(1)
+            }
+            text = text.split(needle).join('')
+          }
+          if (!text.includes('  "libDF",\n')) {
+            console.error('libDF is not a workspace member')
+            process.exit(1)
+          }
+          fs.writeFileSync('Cargo.toml', text)
+          JS
+          git --no-pager diff -- Cargo.toml
+
+      - name: Resolve dependencies
+        working-directory: upstream
+        run: |
+          set -euo pipefail
+          cargo fetch --target wasm32-unknown-unknown
+          git --no-pager diff --stat -- Cargo.lock || true
+
+      - name: Read the locked wasm-bindgen version
+        working-directory: upstream
+        run: |
+          set -euo pipefail
           VER="$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/[",]/, "", $3); print $3; exit}' Cargo.lock)"
-          if [ -z "$VER" ]; then
-            echo "wasm-bindgen is not in Cargo.lock; enabling the wasm feature to resolve it"
-            cargo metadata --format-version 1 --features wasm --manifest-path libDF/Cargo.toml > /dev/null
-            VER="$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/[",]/, "", $3); print $3; exit}' Cargo.lock)"
-          fi
           test -n "$VER"
           echo "WASM_BINDGEN_VERSION=$VER" >> "$GITHUB_ENV"
-          echo "wasm-bindgen resolved to $VER"
+          echo "wasm-bindgen is locked at $VER"
 
       - name: Install wasm-bindgen-cli
         run: cargo install wasm-bindgen-cli --version "${WASM_BINDGEN_VERSION}" --locked
@@ -137,6 +159,10 @@ jobs:
           set -euo pipefail
           SIZE="$(stat -c %s out/pkg/df_bg.wasm)"
           DIGEST="$(sha256sum out/pkg/df_bg.wasm | cut -d' ' -f1)"
+          cp upstream/Cargo.lock out/pkg/Cargo.lock
+          crate_version() {
+            awk -v want="name = \"$1\"" '$0 == want {getline; gsub(/[",]/, "", $3); print $3; exit}' upstream/Cargo.lock
+          }
           {
             echo "upstream_repo=https://github.com/Rikorose/DeepFilterNet"
             echo "upstream_ref=${{ inputs.upstream_ref }}"
@@ -145,7 +171,11 @@ jobs:
             echo "wasm_bindgen=${WASM_BINDGEN_VERSION}"
             echo "rustflags=${RUSTFLAGS}"
             echo "cargo_features=wasm (no default features)"
+            echo "cargo_profile=release (opt-level 3, lto thin)"
             echo "wasm_opt=${{ inputs.wasm_opt }}"
+            for crate in deep_filter tract-core tract-onnx tract-pulse tract-hir rustfft realfft ndarray flate2 tar; do
+              echo "locked.${crate}=$(crate_version "$crate")"
+            done
             echo "df_bg.wasm.bytes=${SIZE}"
             echo "df_bg.wasm.sha256=${DIGEST}"
             echo "vendored.bytes=${VENDORED_BYTES}"
