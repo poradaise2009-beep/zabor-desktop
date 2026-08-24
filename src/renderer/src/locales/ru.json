@@ -24,13 +24,14 @@
       "default": "По умолчанию",
       "micFallback": "Микрофон",
       "speakerFallback": "Динамики",
-      "calibrateSensitivity": "Калибровка шумоподавления",
-      "calibrateDesc": "Замер постоянного шума комнаты в тишине",
-      "calibrateButton": "Определить шум",
-      "calibrating": "Определение шума...",
+      "calibrateSensitivity": "Калибровка микрофона",
+      "calibrateDesc": "Подбор уверенности Silero под ваш голос",
+      "calibrateButton": "Калибровка",
+      "calibrating": "Анализ голоса...",
       "calibrationComplete": "Успешно",
       "calibrationSuccess": "Успешно",
-      "doNotSpeak": "Молчите, идёт замер шума",
+      "doNotSpeak": "Говорите обычным голосом",
+      "speakNormally": "Говорите обычным голосом",
       "micThresholdAuto": "Автоматическая сила шумоподавления",
       "micThresholdLabel": "МАКСИМАЛЬНОЕ ШУМОПОДАВЛЕНИЕ, ДБ",
       "noiseSuppressionMode": "Режим шумоподавления",
@@ -39,7 +40,21 @@
       "threshold": "Порог",
       "thresholdLabel": "Порог срабатывания микрофона",
       "checking": "Проверяем",
-      "preparing": "Подготовка"
+      "preparing": "Подготовка",
+      "noiseModel": "Модель шумоподавления",
+      "model1": "Модель 1",
+      "model2": "Модель 2",
+      "suppressionStrength": "Сила подавления",
+      "micTestListen": "Послушать себя",
+      "micTestArming": "Подготовка…",
+      "micTestTalk": "Болтайте",
+      "micTestRetake": "Перезаписать?",
+      "micTestPlay": "Воспроизвести",
+      "micTestPause": "Пауза",
+      "micTestSeek": "Позиция воспроизведения",
+      "micTestSilent": "Микрофон молчит",
+      "micTestFailed": "Не удалось записать",
+      "calibrationPhrase": "«Съешь ещё этих мягких французских булок»"
     },
     "privacy": {
       "newPassword": "НОВЫЙ ПАРОЛЬ",
@@ -47,7 +62,10 @@
       "changePassword": "Сменить пароль",
       "changePasswordTitle": "Сменить пароль",
       "logout": "Выйти из аккаунта",
-      "changePasswordFailed": "Не удалось сменить пароль"
+      "changePasswordFailed": "Не удалось сменить пароль",
+      "network": "СЕТЬ",
+      "hideIp": "Скрывать мой IP-адрес",
+      "hideIpDesc": "Весь голос идёт через сервер ретрансляции, собеседники не видят ваш IP. Задержка чуть выше. Применяется к новым подключениям."
     }
   },
   "auth": {
@@ -289,21 +307,25 @@
     "audioError": "Ошибка аудио: {{message}}",
     "incomingCall": "Входящий звонок...",
     "incomingChannelInvite": "Вас зовут в канал",
-    "startupCalibration": "Калибровка микрофона... Пожалуйста, помолчите 3 сек.",
+    "startupCalibration": "Калибровка микрофона... Говорите обычным голосом.",
     "calibrationComplete": "Микрофон успешно откалиброван!",
-    "calibrationNeedSilence": "Нужна тишина: не говорите во время замера. Повторите.",
+    "calibrationNeedSilence": "Говорите обычным голосом во время калибровки.",
+    "calibrationNeedVoice": "Говорите обычным голосом на протяжении всей калибровки и повторите.",
     "calibrationFailedRetry": "Калибровка не удалась. Повторите.",
     "calibrationEngineUnavailable": "Шумоподавление не запустилось на этом устройстве. Перезапустите приложение.",
     "calibrationNoMic": "Микрофон недоступен. Проверьте устройство ввода и повторите.",
     "calibrationTimeout": "Микрофон перестал отдавать звук. Проверьте устройство и повторите.",
     "calibrationBusy": "Калибровка уже идёт. Дождитесь её окончания.",
     "micUnknownError": "Неизвестная ошибка микрофона",
-    "channelJoinFailed": "Не удалось войти в канал: сервер не ответил. Попробуйте снова."
+    "channelJoinFailed": "Не удалось войти в канал: сервер не ответил. Попробуйте снова.",
+    "relayUnavailable": "Скрытие IP включено, но сервер ретрансляции недоступен — соединение не будет установлено."
   },
   "stream": {
     "minimizeHint": "Свернуть трансляцию в миниатюру",
     "fullscreenHint": "Развернуть на весь экран (F)",
-    "exitFullscreenHint": "Вернуться в режим фокуса (F)"
+    "exitFullscreenHint": "Вернуться в режим фокуса (F)",
+    "broadcastOf": "Трансляция {{name}}",
+    "loading": "Загрузка трансляции"
   },
   "joke": {
     "title": "ШУТЕЙКА:",
@@ -319,6 +341,7 @@
     "invalidPassword": "Неверный пароль!",
     "networkError": "Ошибка сети, попробуйте ещё раз",
     "registerError": "Ошибка регистрации",
-    "connectError": "Ошибка подключения"
+    "connectError": "Ошибка подключения",
+    "authThrottled": "Слишком много попыток входа. Попробуйте снова через {{minutes}} мин."
   }
 }

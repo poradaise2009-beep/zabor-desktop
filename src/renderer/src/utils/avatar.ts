@@ -58,7 +58,7 @@ export async function getStaticFrame(src: string): Promise<string> {
       const canvas = document.createElement('canvas');
       canvas.width = 200;
       canvas.height = 200;
-      const ctx = canvas.getContext('2d')!;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
 
       if (packed) {
         const ratio = Math.min(200 / img.naturalWidth, 200 / img.naturalHeight);

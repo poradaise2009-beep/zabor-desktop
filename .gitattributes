@@ -1,0 +1,8 @@
+*.wasm binary
+*.onnx binary
+*.tar.gz binary
+*.gz binary
+*.node binary
+*.ico binary
+*.icns binary
+*.png binary

@@ -1,20 +1,8 @@
-import { app, shell, BrowserWindow, ipcMain, Tray, Menu, nativeImage, dialog } from 'electron';
+import { app, shell, BrowserWindow, ipcMain, Tray, Menu, nativeImage, dialog, safeStorage } from 'electron';
 import { join } from 'path';
 import { existsSync, rmSync, readFileSync, writeFileSync, promises as fsPromises } from 'fs';
 import { createHmac, randomBytes } from 'crypto';
 
-/**
- * Подпись сборки для сервера ZABOR.
- *
- * Секрет внедряется на этапе сборки только в main-бандл (см. electron.vite.config.ts)
- * и в репозиторий не попадает: на CI он берётся из GitHub Actions secrets. Сборка,
- * собранная без секрета, подпись не отправляет и считается неофициальной.
- *
- * Это НЕ криптографический барьер: клиент распространяется по GPL-3.0, поэтому секрет
- * извлекаем из установленного приложения. Задача механизма — отличать официальные сборки
- * от посторонних, задавать норму и делать нарушение TERMS.md доказуемым.
- * Подробности и порядок ротации: docs/client-attestation.md
- */
 declare const __ZABOR_CLIENT_SECRET__: string;
 declare const __ZABOR_CLIENT_CHANNEL__: string;
 
@@ -52,28 +40,84 @@ interface NativeScreenShareAudio {
 
 const nativeScreenShareAudio = require('electron-native-screenshare') as NativeScreenShareAudio;
 
+const MAX_GPU_FALLBACK_TIER = 2;
+
+let gpuFallbackTier = 0;
+let gpuFallbackEscalated = false;
+
+function gpuFallbackPath(): string {
+  return join(app.getPath('userData'), 'gpu-fallback.json');
+}
+
+function clampGpuTier(value: unknown): number {
+  const tier = Number(value);
+  if (!Number.isFinite(tier)) return 0;
+  return Math.max(0, Math.min(MAX_GPU_FALLBACK_TIER, Math.trunc(tier)));
+}
+
+function readGpuFallbackTier(): number {
+  if (process.env.ZABOR_GPU_TIER !== undefined) return clampGpuTier(process.env.ZABOR_GPU_TIER);
+  try {
+    const state = JSON.parse(readFileSync(gpuFallbackPath(), 'utf-8'));
+    if (state?.version !== app.getVersion()) return 0;
+    return clampGpuTier(state?.tier);
+  } catch {
+    return 0;
+  }
+}
+
+function writeGpuFallbackTier(tier: number, reason: string) {
+  try {
+    writeFileSync(
+      gpuFallbackPath(),
+      JSON.stringify({ tier, reason, version: app.getVersion(), updatedAt: new Date().toISOString() }, null, 2)
+    );
+  } catch (error) {
+    console.warn('[GPU] Could not persist the acceleration tier:', error);
+  }
+}
+
+function reportGpuStatus() {
+  try {
+    const status = app.getGPUFeatureStatus() as unknown as Record<string, string>;
+    const compositing = status?.gpu_compositing ?? 'unknown';
+    const canvas = status?.['2d_canvas'] ?? 'unknown';
+    const video = status?.video_decode ?? 'unknown';
+    console.log(`[GPU] tier=${gpuFallbackTier} compositing=${compositing} canvas=${canvas} video=${video}`);
+  } catch (error) {
+    console.warn('[GPU] Could not read the feature status:', error);
+  }
+}
 
 if (app) {
-  // Аппаратное ускорение включено. Раньше здесь безусловно стоял
-  // app.disableHardwareAcceleration(): весь интерфейс растеризовался и
-  // композитился на CPU, поэтому переключатели, слайдеры и ripple тем сильнее
-  // дёргались, чем слабее процессор, — а во время звонка аудиотракт борется за
-  // тот же CPU, и подлагивало у всех. С GPU-композитингом transform/opacity
-  // анимации идут отдельным слоем и не зависят от загрузки основного потока.
-  // Аварийный выход для сломанного драйвера — без пересборки: переменная
-  // окружения ZABOR_DISABLE_GPU=1 (или штатный флаг Chromium --disable-gpu).
-  if (process.env.ZABOR_DISABLE_GPU === '1') {
-    app.disableHardwareAcceleration();
-  }
+  gpuFallbackTier = process.env.ZABOR_DISABLE_GPU === '1' ? MAX_GPU_FALLBACK_TIER : readGpuFallbackTier();
 
   app.commandLine.appendSwitch('force-color-profile', 'srgb');
   app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
   app.commandLine.appendSwitch('disable-renderer-backgrounding');
   app.commandLine.appendSwitch('disable-background-timer-throttling');
-  app.commandLine.appendSwitch('ignore-certificate-errors');
 
+  if (gpuFallbackTier >= 1) {
+    app.commandLine.appendSwitch('disable-accelerated-2d-canvas');
+    app.commandLine.appendSwitch('disable-accelerated-video-decode');
+    app.commandLine.appendSwitch('disable-gpu-rasterization');
+  }
 
-  app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns');
+  if (gpuFallbackTier >= MAX_GPU_FALLBACK_TIER) {
+    app.commandLine.appendSwitch('disable-gpu-compositing');
+    app.disableHardwareAcceleration();
+  }
+
+  app.on('child-process-gone', (_event, details) => {
+    if (details.type !== 'GPU') return;
+    console.warn(`[GPU] GPU process gone: ${details.reason} (exit ${details.exitCode})`);
+    if (details.reason === 'clean-exit') return;
+    if (gpuFallbackEscalated || gpuFallbackTier >= MAX_GPU_FALLBACK_TIER) return;
+    gpuFallbackEscalated = true;
+    const nextTier = gpuFallbackTier + 1;
+    writeGpuFallbackTier(nextTier, `gpu-${details.reason}`);
+    console.warn(`[GPU] Acceleration tier ${nextTier} will be used on the next launch`);
+  });
 
   if (!app.isPackaged) {
     const port = process.env.REMOTE_DEBUGGING_PORT || '9222';
@@ -82,6 +126,52 @@ if (app) {
 }
 
 const isDev = !app.isPackaged;
+
+const DEEPFILTER_ASSETS = new Set(['pkg/df_bg.wasm', 'models/DeepFilterNet3_onnx.tar.gz']);
+const MIN_DEEPFILTER_ASSET_BYTES = 100 * 1024;
+const MAX_DEEPFILTER_ASSET_BYTES = 64 * 1024 * 1024;
+
+function deepFilterCacheDir(): string {
+  return join(app.getPath('userData'), 'model-cache', app.getVersion());
+}
+
+let bundledAssetBase: string | null = null;
+
+function bundledAssetBases(): string[] {
+  return [
+    join(__dirname, '../renderer'),
+    join(app.getAppPath(), 'out/renderer'),
+    join(app.getAppPath(), 'src/renderer/public'),
+    deepFilterCacheDir(),
+    join(process.resourcesPath || '', 'renderer'),
+    process.resourcesPath || ''
+  ];
+}
+
+async function readBundledAsset(relativePath: string): Promise<Uint8Array | null> {
+  const candidates = bundledAssetBase
+    ? [bundledAssetBase, ...bundledAssetBases()]
+    : bundledAssetBases();
+
+  const tried: string[] = [];
+  for (const base of candidates) {
+    if (!base) continue;
+    const full = join(base, relativePath);
+    if (tried.includes(full)) continue;
+    tried.push(full);
+    try {
+      if (!existsSync(full)) continue;
+      const bytes = await fsPromises.readFile(full);
+      if (bytes.byteLength < MIN_DEEPFILTER_ASSET_BYTES) continue;
+      bundledAssetBase = base;
+      return bytes;
+    } catch {
+    }
+  }
+
+  console.warn(`[Assets] ${relativePath} not found. Tried:\n  ${tried.join('\n  ')}`);
+  return null;
+}
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -131,9 +221,6 @@ function requestQuit(): void {
   app.quit();
 }
 
-
-
-
 const gotLock = app.requestSingleInstanceLock();
 
 if (!gotLock) {
@@ -147,9 +234,6 @@ if (!gotLock) {
     }
   });
 }
-
-
-
 
 interface AppSettings {
   openAtLogin: boolean;
@@ -195,9 +279,6 @@ function applyAutoLaunch(enabled: boolean): void {
     args: enabled ? ['--autostart'] : [],
   });
 }
-
-
-
 
 interface WindowState {
   x?: number;
@@ -245,9 +326,6 @@ function scheduleWindowStateSave() {
     } catch {}
   }, 500);
 }
-
-
-
 
 function createTray(): void {
   const iconPath = isDev
@@ -300,9 +378,6 @@ function createTray(): void {
     }
   });
 }
-
-
-
 
 function createWindow(): void {
   const isAutoStart = process.argv.includes('--autostart');
@@ -369,7 +444,6 @@ function createWindow(): void {
     mainWindow.maximize();
   }
 
-
   const showMainWindow = () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     if (mainWindow.isMinimized()) mainWindow.restore();
@@ -388,7 +462,6 @@ function createWindow(): void {
       }
     } catch {}
   });
-
 
   const showFallbackTimer = setTimeout(showMainWindow, 3000);
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
@@ -437,7 +510,10 @@ function createWindow(): void {
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    try {
+      const scheme = new URL(url).protocol;
+      if (scheme === 'https:' || scheme === 'http:') shell.openExternal(url);
+    } catch {}
     return { action: 'deny' };
   });
 
@@ -451,17 +527,14 @@ function createWindow(): void {
   });
 }
 
-
-
-
 app.whenReady().then(() => {
   try {
     const os = require('os');
     os.setPriority(os.constants.priority.PRIORITY_HIGH);
   } catch {}
+  reportGpuStatus();
   const settings = loadAppSettings();
   applyAutoLaunch(settings.openAtLogin);
-
 
   ipcMain.on('window-minimize', () => {
     BrowserWindow.getFocusedWindow()?.minimize();
@@ -488,7 +561,6 @@ app.whenReady().then(() => {
   ipcMain.on('app-quit', () => {
     requestQuit();
   });
-
 
   ipcMain.handle('wipe-app-data', async () => {
     const userDataPath = app.getPath('userData');
@@ -520,22 +592,45 @@ app.whenReady().then(() => {
     return true;
   });
 
-
   const SESSION_PATH = join(app.getPath('userData'), 'session.json');
+  const SESSION_ENC_PATH = join(app.getPath('userData'), 'session.enc');
 
   ipcMain.handle('save-session', async (_event, data: string) => {
-    try { await fsPromises.writeFile(SESSION_PATH, data, 'utf-8'); return true; } catch { return false; }
+    try {
+      if (safeStorage.isEncryptionAvailable()) {
+        await fsPromises.writeFile(SESSION_ENC_PATH, safeStorage.encryptString(data));
+        if (existsSync(SESSION_PATH)) await fsPromises.rm(SESSION_PATH, { force: true });
+        return true;
+      }
+      await fsPromises.writeFile(SESSION_PATH, data, 'utf-8');
+      return true;
+    } catch { return false; }
   });
 
   ipcMain.handle('load-session', async () => {
     try {
-      if (existsSync(SESSION_PATH)) return await fsPromises.readFile(SESSION_PATH, 'utf-8');
+      if (existsSync(SESSION_ENC_PATH) && safeStorage.isEncryptionAvailable()) {
+        return safeStorage.decryptString(await fsPromises.readFile(SESSION_ENC_PATH));
+      }
+    } catch {}
+    try {
+      if (existsSync(SESSION_PATH)) {
+        const legacy = await fsPromises.readFile(SESSION_PATH, 'utf-8');
+        if (safeStorage.isEncryptionAvailable()) {
+          try {
+            await fsPromises.writeFile(SESSION_ENC_PATH, safeStorage.encryptString(legacy));
+            await fsPromises.rm(SESSION_PATH, { force: true });
+          } catch {}
+        }
+        return legacy;
+      }
     } catch {}
     return null;
   });
 
   ipcMain.handle('clear-session', async () => {
     try { if (existsSync(SESSION_PATH)) await fsPromises.rm(SESSION_PATH, { force: true }); } catch {}
+    try { if (existsSync(SESSION_ENC_PATH)) await fsPromises.rm(SESSION_ENC_PATH, { force: true }); } catch {}
     return true;
   });
 
@@ -548,24 +643,31 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('load-silero-model', async () => {
-    const modelPath = join(__dirname, '../renderer/silero_vad.onnx');
-    const model = await fsPromises.readFile(modelPath);
-    return new Uint8Array(model.buffer, model.byteOffset, model.byteLength);
+    const model = await readBundledAsset('silero_vad.onnx');
+    if (!model) throw new Error('silero_vad.onnx not found in any known location');
+    return model;
   });
 
-  // DeepFilterNet3 assets are bundled under renderer/deepfilternet3 (fetched at
-  // build time). Serve them from the main process so the worklet can load them
-  // offline and inside the packaged file:// app, where fetch() cannot read local
-  // files. Only the two known assets are allowed to prevent path traversal.
   ipcMain.handle('load-deepfilter-asset', async (_event, assetPath: unknown) => {
-    const allowed = new Set(['pkg/df_bg.wasm', 'models/DeepFilterNet3_onnx.tar.gz']);
-    if (typeof assetPath !== 'string' || !allowed.has(assetPath)) return null;
+    if (typeof assetPath !== 'string' || !DEEPFILTER_ASSETS.has(assetPath)) return null;
+    return readBundledAsset(join('deepfilternet3', ...assetPath.split('/')));
+  });
+
+  ipcMain.handle('save-deepfilter-asset', async (_event, assetPath: unknown, bytes: unknown) => {
+    if (typeof assetPath !== 'string' || !DEEPFILTER_ASSETS.has(assetPath)) return false;
+    if (!(bytes instanceof Uint8Array) || bytes.byteLength < MIN_DEEPFILTER_ASSET_BYTES) return false;
+    if (bytes.byteLength > MAX_DEEPFILTER_ASSET_BYTES) return false;
     try {
-      const filePath = join(__dirname, '../renderer/deepfilternet3', ...assetPath.split('/'));
-      const data = await fsPromises.readFile(filePath);
-      return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    } catch {
-      return null;
+      const target = join(deepFilterCacheDir(), 'deepfilternet3', ...assetPath.split('/'));
+      await fsPromises.mkdir(join(target, '..'), { recursive: true });
+      const temporary = `${target}.partial`;
+      await fsPromises.writeFile(temporary, bytes);
+      await fsPromises.rename(temporary, target);
+      console.log(`[DeepFilter] cached ${assetPath} in ${deepFilterCacheDir()}`);
+      return true;
+    } catch (error) {
+      console.warn(`[DeepFilter] failed to cache ${assetPath}:`, error);
+      return false;
     }
   });
 
@@ -583,7 +685,6 @@ app.whenReady().then(() => {
     applyAutoLaunch(enabled);
     return true;
   });
-
 
   ipcMain.handle('get-minimize-to-tray', () => {
     return loadAppSettings().minimizeToTray;

@@ -1,124 +1,65 @@
 import { signalRService } from './signalr'
 import { useAppStore } from '../store/useAppStore'
 import i18n from '../i18n'
-import processorUrl from './deepfilter-processor?worker&url'
-import streamAudioProcessorUrl from './stream-audio-processor?worker&url'
-import VadWorker from './vad.worker?worker'
+import manualGateProcessorUrl from './manual-gate-processor?worker&url'
+import micPipelineDeepFilterUrl from './mic-pipeline-deepfilter?worker&url'
+import micPipelineRnnoiseUrl from './mic-pipeline-rnnoise?worker&url'
+import micTestCaptureProcessorUrl from './mic-test-capture-processor?worker&url'
+import playbackBufferProcessorUrl from './playback-buffer-processor?worker&url'
+import VadWorker from './silero-vad.worker?worker'
+import {
+  getDeepFilterAsset,
+  getDeepFilterPayload,
+  getSileroModel,
+  preloadNoiseAssets,
+  type DeepFilterPayload
+} from './audio-assets'
 
-// DeepFilter requests its runtime assets through this sentinel base. The worklet
-// has no real network stack (fetch is proxied to this thread), so we intercept
-// these URLs and serve the bundled files via IPC, falling back to the CDN when
-// the build-time download did not run and the machine is online.
+const DEFAULT_SILERO_THRESHOLD = 0.18
+const MIN_VOICE_CALIBRATION_WINDOWS = 12
+
+export type SmartNoiseModel = 'deepfilter' | 'rnnoise'
+const SMART_MODEL_STORAGE_KEY = 'zabor_smart_noise_model'
+const SUPPRESSION_STRENGTH_STORAGE_KEY = 'zabor_suppression_strength_db'
+const RELAY_ONLY_STORAGE_KEY = 'zabor_relay_only_ice'
+
+export const MIN_SUPPRESSION_STRENGTH_DB = 5
+export const MAX_SUPPRESSION_STRENGTH_DB = 30
+
 const DEEPFILTER_LOCAL_BASE = 'zabor-local://deepfilternet3'
-const DEEPFILTER_CDN_BASE = 'https://cdn.laptrinhai.id.vn/deepfilternet3'
 const DEEPFILTER_ASSETS = new Set(['pkg/df_bg.wasm', 'models/DeepFilterNet3_onnx.tar.gz'])
-
-// DeepFilterNet attenuation limit (dB). In DeepFilterNet this value is a floor
-// under the per-band mask, which makes it two things at once: how much noise is
-// removed, and how deep the mask is allowed to cut into a band it misjudges. The
-// second reading is why it must not simply be maximised - at 35-45 dB the
-// network's per-frame uncertainty becomes audible amplitude modulation of the
-// voice itself, and speech detail that lives near the noise floor (fricatives,
-// breath, word tails) is carried out with the noise. That is heard exactly as
-// reported: a voice that dips in and out and sounds flat.
-//
-// The floor is not a compromise between those two readings, though, because the gate
-// in front of this network already delivers absolute silence between phrases. Whatever
-// the limit is, it is only ever paid for inside a phrase, where the voice masks the
-// texture it costs.
-//
-// It is deliberately low. A floor's only job is to keep a *measured* room from being
-// given absurdly little; it is not a way to add depth, and every dB of it is spent
-// blind. 16 dB was an attempt to fix an under-measuring formula by clamping its output,
-// which is the wrong place: on a genuinely silent room it forced 16 dB nobody asked
-// for, and it hid the fact that the demand below was reading 3.7 dB where it should
-// have read 14. The demand is now computed against the voice instead of against an
-// absolute level (see ASSUMED_SPEECH_LEVEL_DBFS), so it delivers the deeper value on
-// its own and the floor is back to being a floor: 8 dB, which is what a super quiet
-// room actually needs, and which no room ever hits unless it really is that quiet.
-const DEEPFILTER_MIN_ATTEN = 8
-const DEEPFILTER_MAX_ATTEN = 45
-// Past this point every extra dB removes less audible noise than it does speech
-// detail, so the room level is followed one-for-one below the knee and at half
-// rate above it. It doubles as the pre-calibration default: a room nobody has
-// measured yet is assumed to sit exactly on the knee.
+const DEEPFILTER_MIN_ATTEN = MIN_SUPPRESSION_STRENGTH_DB
+const DEEPFILTER_MAX_ATTEN = MAX_SUPPRESSION_STRENGTH_DB
 const SUPPRESSION_SOFT_KNEE_DB = 24
 const SUPPRESSION_ABOVE_KNEE_SLOPE = 0.5
-const DEEPFILTER_SMART_DEFAULT_ATTEN = SUPPRESSION_SOFT_KNEE_DB
-// Manual mode has no adaptive gate behind it: the user's own threshold decides when
-// audio passes, and the suppressor's only remaining job is to take the hum and the
-// room out of the phrases that do pass. So it is deliberately light and, unlike
-// smart mode, fixed rather than calibrated - manual mode exists precisely because
-// the user wants the chain to stop deciding things for them. 7 dB is under the
-// library's own floor for the adaptive path (DEEPFILTER_MIN_ATTEN) on purpose: at
-// this depth the network removes steady broadband noise and leaves speech detail
-// untouched, which is exactly the "at least something" the mode was missing.
+const DEEPFILTER_SMART_DEFAULT_ATTEN = 15
 const DEEPFILTER_MANUAL_ATTEN = 7
-// How far under the voice the remains of the room have to sit to be inaudible in a
-// call. This is the single knob of the whole chain, and it is a *ratio* rather than an
-// absolute level: what a listener hears is the residual relative to the speech it hides
-// behind, and the worklet's ALC normalises every speaker to the same output level
-// (ALC_TARGET_RMS = 0.1 = -20 dBFS) regardless of how loud they arrived. Writing it as
-// an absolute -75 dBFS said the same thing arithmetically but hid the fact that the ALC
-// applies up to +24 dB of make-up after the denoiser - which lifts the residual along
-// with the voice, so an absolute target is only met at unity gain and is missed by the
-// make-up amount on every quiet microphone. 55 dB is inaudible; move toward 50 for a
-// more natural voice, toward 60 if noise returns.
+const DEEPFILTER_POST_FILTER_BETA = 0.02
 const TARGET_SPEECH_TO_NOISE_DB = 55
-// The level the ALC normalises speech to, in dBFS. Mirrors ALC_TARGET_RMS in
-// deepfilter-processor.ts (0.1 linear); kept here so the demand below can be stated in
-// the dBFS the room trackers measure in.
 const ALC_TARGET_DBFS = -20
 const TARGET_RESIDUAL_NOISE_DBFS = ALC_TARGET_DBFS - TARGET_SPEECH_TO_NOISE_DB
-// The one quantity calibration cannot measure and cannot do without. The target above
-// is a ratio between the voice and what is left of the room, so answering it needs both
-// numbers - and 2.5 s of deliberate silence contains only the room. Treating the room
-// level as if it were already at the ALC's output scale was the error behind "sets 8-10
-// when the room needs 14": it made a quiet room look like it had met the target
-// already, when what it actually had was a quiet room *and* a quiet voice in the same
-// proportion.
-//
-// So the speech level is assumed instead of ignored. -30 dBFS is where a consumer
-// microphone at its default capture gain puts an ordinary speaking voice, and the
-// worklet's own ALC bounds bracket it: it normalises to -20 dBFS with up to +24 dB of
-// make-up, so anything it is built to handle sits between -44 and -20 dBFS. -30 dBFS is
-// the middle of that range, and on the measured -71 dBFS room here it yields 14 dB -
-// the value the room was independently judged to need.
-//
-// Being an assumption, it is only ever a seed: the worklet measures the real ratio
-// during the first second of speech and takes the limit from here to wherever it
-// belongs (refreshAttenuationLimit in deepfilter-processor.ts). What this constant buys
-// is starting at roughly the right depth instead of climbing to it at 1 dB/s.
 const ASSUMED_SPEECH_LEVEL_DBFS = -30
-// Playback make-up for the channel mix. The outgoing side is normalised to the
-// standard speech level in the worklet, so this exists for the other direction:
-// senders that predate that normalisation, and the gap between a voice at the
-// telephony nominal and the streaming loudness a listener is used to from every
-// other application. See initOutputMixer for how it pairs with the compressor.
-const PLAYBACK_MAKEUP_GAIN_DB = 6
-// Opus bitrate for the outgoing mono voice stream. Xiph's own guidance puts fullband
-// (48 kHz) mono speech at 28-40 kbps, with 24 kbps already producing full bandwidth -
-// Opus is a speech codec first, and voice stops improving long before music does. The
-// previous 128 kbps was therefore roughly a 4x overspend that bought nothing audible,
-// while costing every participant real upstream on connections that have little of it;
-// 64 kbps keeps a 2x margin over the top of Xiph's range, so there is no measurable
-// quality question, and halves it again. Note that this is a ceiling, not a rate: with
-// cbr=0 the encoder spends what the frame needs and no more.
-const OPUS_AUDIO_BITRATE = 64_000
-/** Предел одной попытки захвата микрофона. */
-const MIC_CAPTURE_TIMEOUT_MS = 10_000
-/** Предел загрузки модели Silero по IPC — вписан в общий бюджет инициализации VAD. */
-const SILERO_MODEL_LOAD_TIMEOUT_MS = 10_000
-/** Предел загрузки ассетов DeepFilter из сети (bundled-путь идёт через IPC). */
-const DEEPFILTER_FETCH_TIMEOUT_MS = 15_000
-// The gate threshold itself is no longer computed here. It is an adaptive tracker
-// inside the worklet, bounded there, and calibration only supplies its starting
-// point. This is the seed used before any profile exists.
 const DEFAULT_VAD_TRACKER_SEED = 0.05
-// A calibration run is 10 ms per frame. Fewer than 20 usable frames means almost
-// everything measured was rejected as the user's own voice, so there is no room
-// profile to store.
 const MIN_CALIBRATION_FRAMES = 20
+const PLAYBACK_MAKEUP_GAIN_DB = 6
+const OPUS_AUDIO_BITRATE = 64_000
+const MIC_CAPTURE_TIMEOUT_MS = 10_000
+const SILERO_MODEL_LOAD_TIMEOUT_MS = 10_000
+const VAD_WORKER_READY_TIMEOUT_MS = 15_000
+const CALIBRATION_PREPARE_TIMEOUT_MS = 20_000
+const CALIBRATION_CLEANUP_TIMEOUT_MS = 5_000
+const RUMBLE_GUARD_HZ = 70
+const RUMBLE_GUARD_QS = [0.5177, 0.7071, 1.9319]
+const MIC_TEST_DURATION_MS = 5_000
+const MIC_TEST_CAPTURE_GRACE_MS = 4_000
+const MIC_TEST_SEEK_TAIL_S = 0.05
+
+export const MIC_TEST_SILENCE_DBFS = -70
+
+export type MicTestClip = {
+  durationSeconds: number
+  peakDb: number
+}
 
 type SpeakingEntry = {
   timer: NodeJS.Timeout
@@ -128,20 +69,35 @@ type SpeakingEntry = {
 }
 
 type CalibrationResult = {
-  noiseFloor: number
-  lowNoise: number
-  peakNoise: number
-  attenuationLimit: number
-  zeroCrossingRate: number
-  spectralTilt: number
-  acceptedFrames: number
-  rejectedSpeechFrames: number
-  noiseVadMedian: number
-  noiseVadHigh: number
+  vadThreshold?: number
+  voiceLow?: number
+  voiceMedian?: number
+  voiceHigh?: number
+  peakProbability?: number
+  acceptedVoiceWindows?: number
+  noiseFloor?: number
+  lowNoise?: number
+  peakNoise?: number
+  attenuationLimit?: number
+  zeroCrossingRate?: number
+  spectralTilt?: number
+  acceptedFrames?: number
+  rejectedSpeechFrames?: number
+  noiseVadMedian?: number
+  noiseVadHigh?: number
+}
+
+type StoredVoiceProfile = {
+  version: 41
+  timestamp: number
+  vadThreshold: number
+  voiceLow: number
+  voiceMedian: number
+  voiceHigh: number
 }
 
 type StoredEnvironmentProfile = {
-  version: 40
+  version: number
   timestamp: number
   noiseFloor: number
   lowNoise: number
@@ -163,15 +119,12 @@ type AudioDeviceChangeResult = AudioDevices & {
   outputDeviceId: string
 }
 
-// Calibration fails for reasons the user can act on: a denied or busy device, an
-// audio engine that never started on this machine, speaking during the measuring
-// stage. Report them as codes so the UI can name the actual cause instead of
-// collapsing every failure into one "try again" message.
 export type CalibrationFailureCode =
   | 'CALIBRATION_ENGINE_UNAVAILABLE'
   | 'CALIBRATION_NO_MIC'
   | 'CALIBRATION_BUSY'
   | 'CALIBRATION_TIMEOUT'
+  | 'CALIBRATION_NEEDS_VOICE'
   | 'CALIBRATION_NEEDS_SILENCE'
 
 export class CalibrationError extends Error {
@@ -181,8 +134,6 @@ export class CalibrationError extends Error {
   }
 }
 
-// getUserMedia rejects with a DOMException whose `name` carries the diagnosis;
-// `message` alone loses it. Keep both so the cause survives every wrapper.
 export function describeMediaError(error: unknown): string {
   if (error && typeof error === 'object' && 'name' in error) {
     const named = error as { name?: string, message?: string }
@@ -193,9 +144,6 @@ export function describeMediaError(error: unknown): string {
 
 export type MicrophoneErrorKind = 'micNoAccess' | 'micBusy' | 'micNotFound' | 'unknown'
 
-// Order matters: check the specific device states before the generic
-// MIC_ACCESS_FAILED wrapper, otherwise a busy or missing microphone is always
-// reported as a permission problem.
 export function classifyMicrophoneError(detail: string): MicrophoneErrorKind {
   if (/NotReadableError|TrackStartError|AbortError/i.test(detail)) return 'micBusy'
   if (/NotFoundError|DevicesNotFoundError|OverconstrainedError/i.test(detail)) return 'micNotFound'
@@ -203,14 +151,6 @@ export function classifyMicrophoneError(detail: string): MicrophoneErrorKind {
   return 'unknown'
 }
 
-/**
- * Ограничивает ожидание промиса, у которого нет своего предела. Нужно прежде
- * всего для getUserMedia: при занятом или зависшем аудиодрайвере он не
- * отклоняется вовсе, а вызов ждёт его внутри общего startLocalStream — то есть
- * один зависший захват микрофона запирает вход в канал до перезапуска
- * приложения. Опоздавший результат отдаётся в `onLate`, чтобы пришедший после
- * отказа поток не остался держать устройство.
- */
 function withTimeout<T>(
   operation: Promise<T>,
   timeoutMs: number,
@@ -240,7 +180,7 @@ function optimizeSDP(sdp: string): string {
   const audioMatch = sdp.match(opusRegex)
   if (audioMatch) {
     const pt = audioMatch[1]
-    const opusFmtp = `useinbandfec=1;usedtx=0;maxaveragebitrate=${OPUS_AUDIO_BITRATE};maxplaybackrate=48000;sprop-maxcapturerate=48000;stereo=0;sprop-stereo=0;cbr=0;minptime=10`
+    const opusFmtp = `useinbandfec=1;usedtx=1;maxaveragebitrate=${OPUS_AUDIO_BITRATE};maxplaybackrate=48000;sprop-maxcapturerate=48000;stereo=0;sprop-stereo=0;cbr=0;minptime=10`
     let fmtpFound = false
     for (let i = 0; i < lines.length; i++) {
       if (lines[i].startsWith(`a=fmtp:${pt}`)) {
@@ -265,7 +205,6 @@ function optimizeSDP(sdp: string): string {
       }
     }
     if (audioSectionIdx !== -1) {
-      // Put Opus first even if Chromium advertises legacy codecs ahead of it.
       const mediaParts = lines[audioSectionIdx].split(' ')
       const payloads = mediaParts.slice(3)
       lines[audioSectionIdx] = [...mediaParts.slice(0, 3), pt, ...payloads.filter(payload => payload !== pt)].join(' ')
@@ -294,9 +233,6 @@ function optimizeSDP(sdp: string): string {
           break
         }
       }
-      // TIAS is the exact media bitrate; AS is kept for peers that only honor
-      // the older SDP bandwidth field, and is derived from the same constant so the
-      // two lines cannot drift apart when the bitrate changes (it was hardcoded).
       lines.splice(
         bandwidthInsertIndex,
         0,
@@ -316,33 +252,44 @@ function optimizeSDP(sdp: string): string {
   }
 
   if (videoSectionIdx !== -1) {
-    let h264Payloads: string[] = []
-    let h264Fmtps: Record<string, string> = {}
-    let h264RtpMaps: Record<string, string> = {}
+    const h264Payloads: string[] = []
+    const fecPayloads: string[] = []
+    const rtxCandidates: string[] = []
+    const aptByPayload: Record<string, string> = {}
 
     for (let i = videoSectionIdx + 1; i < lines.length; i++) {
       if (lines[i].startsWith('m=')) break
-      const rtpmapMatch = lines[i].match(/^a=rtpmap:(\d+)\s+H264\/90000/i)
+      const rtpmapMatch = lines[i].match(/^a=rtpmap:(\d+)\s+([A-Za-z0-9-]+)\/90000/i)
       if (rtpmapMatch) {
         const pt = rtpmapMatch[1]
-        h264Payloads.push(pt)
-        h264RtpMaps[pt] = lines[i]
+        const codec = rtpmapMatch[2].toLowerCase()
+        if (codec === 'h264') h264Payloads.push(pt)
+        else if (codec === 'rtx') rtxCandidates.push(pt)
+        else if (codec === 'red' || codec === 'ulpfec') fecPayloads.push(pt)
       }
-      const fmtpMatch = lines[i].match(/^a=fmtp:(\d+)\s+(.+)/i)
-      if (fmtpMatch) {
-        const pt = fmtpMatch[1]
-        h264Fmtps[pt] = lines[i]
-      }
+      const aptMatch = lines[i].match(/^a=fmtp:(\d+)\s+apt=(\d+)/i)
+      if (aptMatch) aptByPayload[aptMatch[1]] = aptMatch[2]
     }
 
     if (h264Payloads.length > 0) {
-      let filteredLines: string[] = []
+      const keptPayloads = new Set([...h264Payloads, ...fecPayloads])
+      const rtxPayloads: string[] = []
+      for (const pt of rtxCandidates) {
+        const apt = aptByPayload[pt]
+        if (apt && keptPayloads.has(apt)) {
+          rtxPayloads.push(pt)
+          keptPayloads.add(pt)
+        }
+      }
+      const orderedPayloads = [...h264Payloads, ...rtxPayloads, ...fecPayloads]
+
+      const filteredLines: string[] = []
       let skipVideoTracks = false
 
       for (let i = 0; i < lines.length; i++) {
         if (i === videoSectionIdx) {
           const parts = lines[i].split(' ')
-          const newVideoLine = `${parts[0]} ${parts[1]} ${parts[2]} ${h264Payloads.join(' ')}`
+          const newVideoLine = `${parts[0]} ${parts[1]} ${parts[2]} ${orderedPayloads.join(' ')}`
           filteredLines.push(newVideoLine)
           skipVideoTracks = true
           continue
@@ -353,7 +300,7 @@ function optimizeSDP(sdp: string): string {
         if (skipVideoTracks) {
           if (lines[i].startsWith('a=rtpmap:') || lines[i].startsWith('a=fmtp:') || lines[i].startsWith('a=rtcp-fb:')) {
             const ptMatch = lines[i].match(/^a=(?:rtpmap|fmtp|rtcp-fb):(\d+)/i)
-            if (ptMatch && h264Payloads.includes(ptMatch[1])) {
+            if (ptMatch && keptPayloads.has(ptMatch[1])) {
               filteredLines.push(lines[i])
             }
           } else {
@@ -383,12 +330,7 @@ function createSilentAudioStream(): MediaStream {
 }
 
 export class WebRTCManager {
-  // Bumped to 39: profiles stored by 38 measured the room's demand against its median
-  // level (p50) and then gave up to 3 dB back as transient relief, so their stored
-  // attenuation limit is several dB under what the same room asks for now. Discarding
-  // them means an existing user gets the deeper suppression on the next call without
-  // having to know that recalibration is what delivers it.
-  private static readonly CALIBRATION_SCHEMA_VERSION = 40
+  private static readonly CALIBRATION_SCHEMA_VERSION = 41
   private static readonly CALIBRATION_SCHEMA_KEY = 'zabor_mic_calibration_schema'
   private static readonly CALIBRATION_PROFILE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000
   private localStream: MediaStream | null = null
@@ -397,15 +339,28 @@ export class WebRTCManager {
   private statsInterval: NodeJS.Timeout | null = null
   private streamGainNodes: Map<string, GainNode> = new Map()
   private streamSourceNodes: Map<string, MediaStreamAudioSourceNode> = new Map()
+  private streamDelayNodes: Map<string, DelayNode> = new Map()
   private streamAudioElements: Map<string, HTMLAudioElement> = new Map()
   private streamCaptureContext: AudioContext | null = null
   private streamCaptureNode: AudioWorkletNode | null = null
   private streamCaptureDestination: MediaStreamAudioDestinationNode | null = null
   private removeStreamAudioListener: (() => void) | null = null
 
+  private streamSyncInterval: NodeJS.Timeout | null = null
+  private streamSyncOffsetEma: Map<string, number> = new Map()
+  private streamSyncSkew: Map<string, number> = new Map()
+  private viewerStates: Map<string, 'watching' | 'preview'> = new Map()
+  private viewInterestTimer: NodeJS.Timeout | null = null
+  private reportedViewStates: Map<string, 'watching' | 'preview'> = new Map()
+
   private peerConnections: Map<string, RTCPeerConnection> = new Map()
   private audioElements: Map<string, HTMLAudioElement> = new Map()
   private lastPacketsLost: Map<string, number> = new Map()
+  private lastPacketsSent: Map<string, number> = new Map()
+  private lossLadderStep: Map<string, number> = new Map()
+  private lossBreachCount: Map<string, number> = new Map()
+  private lossCleanCount: Map<string, number> = new Map()
+  private appliedVideoProfiles: Map<string, string> = new Map()
 
   private pendingCandidates: Map<string, RTCIceCandidateInit[]> = new Map()
 
@@ -422,8 +377,9 @@ export class WebRTCManager {
   private static readonly MAX_ICE_RETRIES = 4
 
   private static readonly ICE_TIMEOUT_MS = 15000
-
   private static readonly DISCONNECTED_GRACE_MS = 10000
+  private static readonly PEER_RELEVANCE_WAIT_MS = 5000
+  private static readonly PENDING_CANDIDATES_PER_PEER = 64
 
   private currentDeviceId = 'default'
   private currentStreamQuality: 'high' | 'low' | 'camera' = 'low'
@@ -436,40 +392,64 @@ export class WebRTCManager {
 
   private processedContext: AudioContext | null = null
   private processedSource: MediaStreamAudioSourceNode | null = null
-  /** Каскад HPF перед воркл-ом; хранится, чтобы отцепляться вместе с source. */
   private micRumbleFilters: BiquadFilterNode[] = []
-  private calibratedPreGainNode: GainNode | null = null
+  private micOutputTap: AudioNode | null = null
+  private micTestCaptureModules = new WeakSet<AudioContext>()
+  private micTestRun: Promise<MicTestClip> | null = null
+  private micTestBuffer: AudioBuffer | null = null
+  private micTestContext: AudioContext | null = null
+  private micTestGain: GainNode | null = null
+  private micTestSource: AudioBufferSourceNode | null = null
+  private micTestPlaying = false
+  private micTestOffset = 0
+  private micTestStartedAt = 0
+  private micTestGeneration = 0
+  private micTestEndedListener: (() => void) | null = null
+  private readonly peerConnectStartedAt = new Map<string, number>()
   private inputGainNode: GainNode | null = null
-  private dfNode: AudioWorkletNode | null = null
-  private dfNodeReady = false
-  // Why the DeepFilter graph is unusable on this machine (worklet module, WASM /
-  // ONNX runtime or a non-48 kHz context). Surfaced with the calibration error.
-  private dfEngineError: string | null = null
+  private manualGateNode: AudioWorkletNode | null = null
+  private audioProcessorError: string | null = null
+  private calibratedPreGainNode: GainNode | null = null
+  private micNode: AudioWorkletNode | null = null
+  private micNodeReady = false
+  private micEngineError: string | null = null
   private lastMicCaptureError: string | null = null
   private lastReportedMicError: string | null = null
   private vadWorker: Worker | null = null
+  private vadProbabilityHandler: ((data: {
+    probability: number
+    sequence?: number
+    endFrameId?: number
+    windowRms?: number
+  }) => void) | null = null
+  private vadWorkerInitPromise: Promise<void> | null = null
+  private vadEpoch = 0
+  private voiceProbeCollector: ((probability: number, windowRms: number) => void) | null = null
 
-
-  private calibratedAttenuationLimit = DEEPFILTER_SMART_DEFAULT_ATTEN
+  private calibratedVadThreshold = DEFAULT_SILERO_THRESHOLD
   private calibratedNoiseFloor = 0.003
   private calibratedPreGainDb = 0
-  // Starting point of the worklet's adaptive threshold tracker, not a threshold.
   private calibratedVadTrackerSeed = DEFAULT_VAD_TRACKER_SEED
   private hasVoiceCalibration = false
   private calibrationDeviceId = 'default'
   private vadWorkerReady = false
   private calibrationInProgress = false
-  // Set while calibration runs with the worklet mute lifted, so a muted user is
-  // never broadcast as speaking during the run.
   private calibrationSuppressesSpeaking = false
   private localSpeakingState = false
   private thresholdMode = localStorage.getItem('zabor_threshold_mode') || 'auto'
   private manualThresholdValue = this.normalizeManualThreshold(parseFloat(localStorage.getItem('zabor_manual_threshold_value') || '-42'))
+  private smartModel: SmartNoiseModel = localStorage.getItem(SMART_MODEL_STORAGE_KEY) === 'deepfilter'
+    ? 'deepfilter'
+    : 'rnnoise'
+  private suppressionStrengthDb = this.normalizeSuppressionStrength(
+    parseFloat(localStorage.getItem(SUPPRESSION_STRENGTH_STORAGE_KEY) || String(DEEPFILTER_SMART_DEFAULT_ATTEN))
+  )
   private activeStartPromise: Promise<boolean> | null = null
 
   private backgroundContext: AudioContext | null = null
   private backgroundSource: MediaStreamAudioSourceNode | null = null
   private backgroundAnalyser: AnalyserNode | null = null
+  private backgroundMeterGain: GainNode | null = null
   private micMeterInterval: NodeJS.Timeout | null = null
   private micLevelDb = -100
   private micLevelListeners = new Set<(db: number) => void>()
@@ -494,35 +474,40 @@ export class WebRTCManager {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun.cloudflare.com:3478' },
-      { urls: 'stun:stun.twilio.com:3478' }
+      { urls: 'stun:stun.cloudflare.com:3478' }
     ],
     bundlePolicy: 'max-bundle',
     iceCandidatePoolSize: 4
   }
 
-  /**
-   * TURN-серверов здесь нет намеренно. Раньше рядом со STUN лежала строка
-   * turn:<адрес> с логином и постоянным паролем: она уезжала в каждую сборку, то
-   * есть доставалась из установленного клиента за минуту и позволяла кому угодно
-   * бессрочно гонять трафик через сервер. Теперь адрес и креды выдаёт хаб на
-   * несколько часов и с userId внутри логина, поэтому список склеивается в
-   * рантайме — статический STUN плюс то, что пришло с сервера.
-   *
-   * STUN оставлен в сборке сознательно: он не требует авторизации, и если хаб
-   * недоступен, прямые соединения продолжают устанавливаться как раньше.
-   */
   private turnServers: RTCIceServer[] = []
+  private ownStunServers: RTCIceServer[] = []
+  private relayOnlyIce = localStorage.getItem(RELAY_ONLY_STORAGE_KEY) === 'true'
+  private relayWarningShownAt = 0
   private turnExpiresAt = 0
   private turnUserId: string | null = null
   private turnFetch: Promise<void> | null = null
   private turnRetryAfter = 0
 
-  /** За сколько до истечения кредов идти за новыми. */
   private static readonly TURN_REFRESH_MARGIN_MS = 60 * 60 * 1000
-  /** Пауза после неудачи: на старом сервере метода GetIceServers ещё нет, и без
-   *  этой паузы клиент дёргал бы хаб на каждом новом peer-соединении. */
   private static readonly TURN_RETRY_COOLDOWN_MS = 30_000
+  private static readonly FALLBACK_STUN_URL = 'stun:stun.cloudflare.com:3478'
+
+  private deriveStunServers(servers: RTCIceServer[]): RTCIceServer[] {
+    const derived = new Set<string>()
+    for (const server of servers) {
+      const urls = Array.isArray(server.urls) ? server.urls : [server.urls]
+      for (const url of urls) {
+        if (typeof url !== 'string') continue
+        const match = url.match(/^turn:([^?]+?)(?:\?transport=(\w+))?$/i)
+        if (!match) continue
+        const transport = match[2]?.toLowerCase()
+        if (transport && transport !== 'udp') continue
+        derived.add(`stun:${match[1]}`)
+      }
+    }
+    return [...derived].map(urls => ({ urls }))
+  }
 
   private async ensureIceServers(): Promise<void> {
     const userId = useAppStore.getState().currentUser?.id ?? null
@@ -539,6 +524,7 @@ export class WebRTCManager {
         const servers = config?.iceServers?.filter(server => server?.urls?.length) ?? []
         if (servers.length > 0) {
           this.turnServers = servers
+          this.ownStunServers = this.deriveStunServers(servers)
           this.turnExpiresAt = config!.expiresAtUnixMs
           this.turnUserId = userId
           this.turnRetryAfter = 0
@@ -554,43 +540,72 @@ export class WebRTCManager {
     return this.turnFetch
   }
 
-  /** Конфигурация для нового RTCPeerConnection: статический STUN плюс выданный сервером TURN. */
   private rtcConfig(): RTCConfiguration {
+    if (this.relayOnlyIce) {
+      if (this.turnServers.length === 0) this.warnRelayUnavailable()
+      return {
+        ...this.config,
+        iceServers: [...this.turnServers],
+        iceTransportPolicy: 'relay',
+        iceCandidatePoolSize: 0
+      }
+    }
     if (this.turnServers.length === 0) return this.config
-    return { ...this.config, iceServers: [...(this.config.iceServers ?? []), ...this.turnServers] }
+    if (this.ownStunServers.length === 0) {
+      return { ...this.config, iceServers: [...(this.config.iceServers ?? []), ...this.turnServers] }
+    }
+    return {
+      ...this.config,
+      iceServers: [
+        ...this.ownStunServers,
+        { urls: WebRTCManager.FALLBACK_STUN_URL },
+        ...this.turnServers
+      ]
+    }
   }
 
+  private warnRelayUnavailable() {
+    console.error('[WebRTC] relay-only mode is enabled but no TURN server is available, direct candidates stay disabled')
+    if (Date.now() - this.relayWarningShownAt < 30_000) return
+    this.relayWarningShownAt = Date.now()
+    const message = i18n.t(
+      'toasts.relayUnavailable',
+      'Скрытие IP включено, но сервер ретрансляции недоступен — соединение не будет установлено.'
+    )
+    useAppStore.getState().setSystemToast(message)
+    setTimeout(() => {
+      const store = useAppStore.getState()
+      if (store.systemToast === message) store.setSystemToast(null)
+    }, 6000)
+  }
 
+  public isRelayOnlyIce(): boolean {
+    return this.relayOnlyIce
+  }
 
-  private getThresholdParams(gainFactor: number) {
-    // Manual mode used to be pinned to the library minimum on the theory that the
-    // user's own threshold gate does the work, but the gate only decides when audio
-    // passes - it cannot clean the audio that does pass, so manual mode was left
-    // with audible noise during every phrase. It then followed the calibrated
-    // strength with a floor of its own, which was the opposite mistake: the same
-    // over-suppression that flattens a voice in smart mode flattened it here, in the
-    // one mode whose whole point is that the user is in charge. Now it gets a fixed
-    // light pass instead, and only smart mode follows the measured room.
-    const activeAttenuationLimit = this.thresholdMode === 'manual'
-      ? DEEPFILTER_MANUAL_ATTEN
-      : this.calibratedAttenuationLimit
+  public setRelayOnlyIce(enabled: boolean) {
+    if (this.relayOnlyIce === enabled) return
+    this.relayOnlyIce = enabled
+    localStorage.setItem(RELAY_ONLY_STORAGE_KEY, enabled ? 'true' : 'false')
+    if (enabled) void this.ensureIceServers()
+  }
+
+  private getSmartGateParams(gainFactor: number) {
     return {
-      attenuationLimit: activeAttenuationLimit,
-      noiseFloor: this.calibratedNoiseFloor,
-      thresholdMode: this.thresholdMode,
-      manualThresholdValue: this.manualThresholdValue,
+      thresholdMode: 'auto',
+      vadThreshold: this.calibratedVadThreshold,
       vadTrackerSeed: this.calibratedVadTrackerSeed,
-      // The neural suppressor is already the spectral processor. Its optional
-      // post-filter is disabled to keep quiet consonants and breath texture intact.
-      postFilterBeta: 0,
-      // VAD and calibration run before all gain nodes, so their thresholds must
-      // stay independent of the user's microphone volume and calibrated pre-gain.
-      gainFactor: 1,
-      // The level control at the end of the worklet needs the opposite: it is
-      // followed by nothing but gain, so it has to know how much, or its -1 dBFS
-      // ceiling is enforced in the wrong place.
-      downstreamGain: gainFactor * Math.pow(10, this.calibratedPreGainDb / 20)
+      attenuationLimit: this.suppressionStrengthDb,
+      adaptiveAttenuation: false,
+      postFilterBeta: DEEPFILTER_POST_FILTER_BETA,
+      noiseFloor: this.calibratedNoiseFloor,
+      gainFactor,
+      downstreamGain: gainFactor
     }
+  }
+
+  private getManualGateParams() {
+    return { manualThresholdValue: this.manualThresholdValue }
   }
 
   private inputVolumeToGain(volume: number): number {
@@ -599,9 +614,21 @@ export class WebRTCManager {
   }
 
   private normalizeManualThreshold(value: number): number {
-    // Values from the previous UI represented denoiser attenuation, not dBFS.
     if (value >= 0) return -42
     return Math.max(-60, Math.min(-12, Number.isFinite(value) ? value : -42))
+  }
+
+  private normalizeSuppressionStrength(value: number): number {
+    if (!Number.isFinite(value)) return DEEPFILTER_SMART_DEFAULT_ATTEN
+    return Math.round(Math.max(MIN_SUPPRESSION_STRENGTH_DB, Math.min(MAX_SUPPRESSION_STRENGTH_DB, value)))
+  }
+
+  private isSmartMode(): boolean {
+    return this.noiseSuppression && this.thresholdMode === 'auto'
+  }
+
+  private hasSpeakingWorklet(): boolean {
+    return Boolean(this.micNode || this.manualGateNode)
   }
 
   private calibrationStorageKey(deviceId: string): string {
@@ -660,23 +687,6 @@ export class WebRTCManager {
       Math.abs(Math.log2(Math.max(0.05, profile.spectralTilt) / Math.max(0.05, spectralTilt))) * 2
   }
 
-  // How much suppression this room needs, in the only terms that mean anything:
-  // how far the measured room level has to fall to become inaudible. Everything
-  // else is a bounded correction on that one subtraction, and the total then passes
-  // through a soft knee - a loud room is deliberately not given everything it asks
-  // for, because the attenuation limit is a floor under the mask and the last few
-  // dB of cleanliness are taken out of the voice. The version before this one
-  // interpolated an abstract "strength" and applied a voice-safety ceiling derived
-  // from the calibration phrase, which was inverted with respect to the need and
-  // settled near 12 dB out of 100 on this class of laptop; the version after it
-  // tracked a -85 dBFS residual one-for-one and overshot into the voice instead.
-  //
-  // What this produces is a starting point, not the answer. It has to predict a whole
-  // call from 2.5 s of silence, and it cannot measure the one quantity that decides
-  // the outcome - how far the user's voice sits above their room - so it necessarily
-  // guesses. The worklet measures that ratio continuously and takes the limit up from
-  // here (see refreshAttenuationLimit in deepfilter-processor.ts). Everything below is
-  // therefore aimed at not starting too low, which was the reported symptom.
   private calculateAttenuationFromRoom(
     noiseFloor: number,
     lowNoise: number,
@@ -687,63 +697,22 @@ export class WebRTCManager {
     transientReliefDb: number, demandDb: number, shapedDb: number, roomDbfs: number
   } {
     const clamp01 = (value: number) => Math.max(0, Math.min(1, value))
-    // The reference is a high percentile of the room, not its median. noiseFloor is
-    // the p50 of the calibration window, and a p50 describes the room's quiet half:
-    // what a listener calls "the noise in this room" is the level it keeps returning
-    // to at its top, which for a fan, a fridge or street traffic is 3-8 dB higher.
-    // Demanding suppression against the median therefore under-delivers by exactly
-    // that margin - the reported "sets 10 when the noise is at 13". peakNoise (p95) is
-    // already measured for the stationarity ratio below; 6 dB under it is a robust
-    // stand-in for p90 that does not chase a single burst, and the max() keeps a
-    // perfectly steady room on its own median.
     const roomDbfs = Math.max(
       20 * Math.log10(Math.max(1e-5, noiseFloor)),
       20 * Math.log10(Math.max(1e-5, peakNoise)) - 6
     )
-    // Stated as an SNR shortfall, which is what the target actually is: how far the
-    // room sits under an ordinary voice today, and how much of the difference between
-    // that and TARGET_SPEECH_TO_NOISE_DB the denoiser has to make up. The subtraction
-    // it replaces (room minus an absolute residual level) is the same arithmetic with
-    // the voice term dropped, and dropping it is what made a quiet room ask for
-    // nothing: at -71 dBFS it demanded 3.7 dB, where the honest answer against a
-    // -30 dBFS voice is 14 dB. A noisy -55 dBFS room now asks for 30 dB and receives
-    // 27 after the knee, instead of the 20 the old form produced.
     const measuredSnrDb = ASSUMED_SPEECH_LEVEL_DBFS - roomDbfs
     const requiredDb = TARGET_SPEECH_TO_NOISE_DB - measuredSnrDb
 
-    // Speech-shaped background - a television, a conversation down the corridor -
-    // opens the gate on its own, so it has to be pushed further down than steady
-    // noise the gate already keeps out: 0 dB at noiseVadHigh <= 0.25, +5 dB at 0.70.
     const speechLikeBonusDb = 5 * clamp01((noiseVadHigh - 0.25) / 0.45)
-    // Impulsive noise (typing, clicks) at maximum attenuation produces pumping
-    // rather than cleanliness, because the network re-estimates on every burst. This
-    // used to be worth up to 3 dB, and on a room with a keyboard in it that was the
-    // difference between a demand of 13 and a delivered 10: a whole session of
-    // shallower suppression to avoid an artefact on the impulses themselves. The
-    // impulses are now rejected upstream, at the gate, by the transient detector in
-    // deepfilter-processor.ts - they never reach the stream at all, so there is
-    // nothing left to pump. 1 dB remains for the burst that arrives inside a phrase,
-    // where the gate is already open and only the network is deciding.
     const stationarity = peakNoise / Math.max(1e-5, lowNoise)
     const transientReliefDb = clamp01((stationarity - 6) / 6)
 
-    // The knee shapes the demand, because the demand is paid for by the voice. The
-    // transient relief is a safety subtraction rather than a demand, so it applies
-    // in full afterwards.
     const demandDb = requiredDb + speechLikeBonusDb
     const shapedDb = demandDb <= SUPPRESSION_SOFT_KNEE_DB
       ? demandDb
       : SUPPRESSION_SOFT_KNEE_DB + (demandDb - SUPPRESSION_SOFT_KNEE_DB) * SUPPRESSION_ABOVE_KNEE_SLOPE
 
-    // The seed is bounded on both sides, and the upper bound is the knee rather than
-    // DEEPFILTER_MAX_ATTEN on purpose. Being a guess about the voice, this number can be
-    // wrong in either direction, and the two errors do not cost the same: the worklet
-    // raises the limit when it measures a worse ratio than assumed, but it never lowers
-    // it, so an over-generous seed is paid for by the voice for the rest of the session
-    // while a modest one is corrected within seconds. Capping it at the knee - which is
-    // also the value used for a room nobody has measured at all
-    // (DEEPFILTER_SMART_DEFAULT_ATTEN) - means measuring a room can lower the starting
-    // point or confirm it, and only a *measured* ratio ever takes it above the knee.
     const attenuationLimit = Math.max(DEEPFILTER_MIN_ATTEN, Math.min(
       SUPPRESSION_SOFT_KNEE_DB,
       Math.round(shapedDb - transientReliefDb)
@@ -757,40 +726,25 @@ export class WebRTCManager {
       ? deviceId
       : `default:${deviceLabel.trim().toLowerCase() || 'unknown'}`
     this.calibrationDeviceId = normalizedDeviceId
-    this.calibratedNoiseFloor = 0.003
-    this.calibratedAttenuationLimit = DEEPFILTER_SMART_DEFAULT_ATTEN
-    this.calibratedPreGainDb = 0
-    this.calibratedVadTrackerSeed = DEFAULT_VAD_TRACKER_SEED
+    this.calibratedVadThreshold = DEFAULT_SILERO_THRESHOLD
     this.hasVoiceCalibration = false
 
-    // Apply the most recent stored profile for this device immediately. No
-    // background room probe is allowed to revise it while the user speaks.
-    const latest = this.readEnvironmentProfiles(normalizedDeviceId)
-      .sort((a, b) => b.timestamp - a.timestamp)[0]
-    if (latest) {
-      this.hasVoiceCalibration = true
-      if (Number.isFinite(latest.noiseFloor) && latest.noiseFloor > 0) {
-        this.calibratedNoiseFloor = Math.max(0.0001, Math.min(0.03, latest.noiseFloor))
+    try {
+      const raw = localStorage.getItem(this.calibrationStorageKey(normalizedDeviceId))
+      const profile = raw ? JSON.parse(raw) as StoredVoiceProfile : null
+      if (
+        profile?.version === WebRTCManager.CALIBRATION_SCHEMA_VERSION &&
+        Number.isFinite(profile.vadThreshold)
+      ) {
+        this.calibratedVadThreshold = Math.max(0.05, Math.min(0.45, profile.vadThreshold))
+        this.hasVoiceCalibration = true
       }
-      this.calibratedAttenuationLimit = Math.max(DEEPFILTER_MIN_ATTEN, Math.min(DEEPFILTER_MAX_ATTEN, latest.attenuationLimit))
-      // The room's own 95th Silero percentile is where the worklet's tracker would
-      // have converged anyway. Handing it over means the first second after joining
-      // is already calibrated instead of climbing from the floor.
-      this.calibratedVadTrackerSeed = Number.isFinite(latest.noiseVadHigh)
-        ? Math.max(0, Math.min(1, latest.noiseVadHigh!))
-        : DEFAULT_VAD_TRACKER_SEED
-      if (this.calibratedPreGainNode) {
-        this.calibratedPreGainNode.gain.value = Math.pow(10, this.calibratedPreGainDb / 20)
-      }
-      this.updateThresholds()
-    }
+    } catch { }
+    this.updateThresholds()
   }
 
   public resetMicCalibration() {
-    this.calibratedNoiseFloor = 0.003
-    this.calibratedAttenuationLimit = DEEPFILTER_SMART_DEFAULT_ATTEN
-    this.calibratedPreGainDb = 0
-    this.calibratedVadTrackerSeed = DEFAULT_VAD_TRACKER_SEED
+    this.calibratedVadThreshold = DEFAULT_SILERO_THRESHOLD
     this.hasVoiceCalibration = false
     try {
       for (let i = localStorage.length - 1; i >= 0; i--) {
@@ -805,29 +759,236 @@ export class WebRTCManager {
   }
 
   private async loadDeepFilterAsset(rel: string): Promise<ArrayBuffer | null> {
-    // Prefer the bundled asset: it works offline and inside the packaged file://
-    // app, where fetch() cannot read local resources. Fall back to the CDN only
-    // when the build-time download did not run and the machine is online.
-    try {
-      const bytes = await window.windowControls.loadDeepFilterAsset(rel)
-      if (bytes && bytes.byteLength > 0) {
-        return (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
-          ? bytes.buffer
-          : bytes.slice().buffer) as ArrayBuffer
+    return getDeepFilterAsset(rel)
+  }
+
+  private ensureVadWorker(): Promise<void> {
+    if (this.vadWorker && this.vadWorkerReady) return Promise.resolve()
+    if (this.vadWorkerInitPromise) return this.vadWorkerInitPromise
+
+    const startup = (async () => {
+      const worker = new VadWorker()
+      const wasmPath = new URL('./', window.location.href).href
+      let resolveReady: (() => void) | null = null
+      let rejectReady: ((error: Error) => void) | null = null
+      const ready = new Promise<void>((resolve, reject) => {
+        resolveReady = resolve
+        rejectReady = reject
+      })
+      ready.catch(() => { })
+      const readyTimeout = window.setTimeout(() => {
+        rejectReady?.(new Error('Silero VAD initialization timed out'))
+      }, VAD_WORKER_READY_TIMEOUT_MS)
+
+      worker.onmessage = (event) => {
+        const data = event.data
+        if (data.type === 'probability') {
+          this.vadWorkerReady = true
+          const epoch = Number(data.epoch)
+          if (Number.isFinite(epoch) && epoch !== this.vadEpoch) return
+          this.voiceProbeCollector?.(Number(data.probability), Number(data.windowRms))
+          this.vadProbabilityHandler?.(data)
+        } else if (data.type === 'ready') {
+          this.vadWorkerReady = true
+          window.clearTimeout(readyTimeout)
+          resolveReady?.()
+          resolveReady = null
+          rejectReady = null
+          console.info('[WebRTC] Silero VAD Worker is ready', data.io ?? '')
+        } else if (data.type === 'error') {
+          console.error('[WebRTC] Silero VAD Worker error:', data.error)
+          if (data.phase === 'initialization') {
+            window.clearTimeout(readyTimeout)
+            rejectReady?.(new Error(String(data.error)))
+          }
+        }
       }
-    } catch (e) {
-      console.warn(`[WebRTC] Bundled DeepFilter asset "${rel}" unavailable, trying CDN:`, e)
+      this.vadWorker = worker
+
+      const model = await withTimeout(
+        getSileroModel(),
+        SILERO_MODEL_LOAD_TIMEOUT_MS,
+        'Silero VAD model load timed out'
+      )
+      worker.postMessage({ type: 'init', model, wasmPath }, [model.buffer])
+      await ready
+    })()
+
+    this.vadWorkerInitPromise = startup.then(() => {
+      this.vadWorkerInitPromise = null
+    }).catch(error => {
+      this.terminateVadWorker()
+      this.vadWorkerInitPromise = null
+      throw error
+    })
+    return this.vadWorkerInitPromise
+  }
+
+  private terminateVadWorker() {
+    this.vadProbabilityHandler = null
+    this.vadWorkerReady = false
+    if (this.vadWorker) {
+      try { this.vadWorker.terminate() } catch { }
+      this.vadWorker = null
     }
-    // Без предела ожидания повисший запрос к CDN не отклоняется, worklet ждёт
-    // `fetchResponse` вечно, и шумодав молча не запускается вовсе.
-    const res = await fetch(`${DEEPFILTER_CDN_BASE}/${rel}`, { signal: AbortSignal.timeout(DEEPFILTER_FETCH_TIMEOUT_MS) })
-    if (!res.ok) throw new Error(`CDN ${res.status} ${res.statusText}`)
-    return res.arrayBuffer()
+  }
+
+  public warmUpSmartNoiseSuppression(enabled = this.noiseSuppression): void {
+    if (!enabled || this.thresholdMode !== 'auto') return
+    void preloadNoiseAssets(this.smartModel)
+      .then(() => this.ensureVadWorker())
+      .catch(error => console.warn('[WebRTC] Smart noise suppression warm-up failed:', error))
+  }
+
+  public warmUpConnectivity(): void {
+    const startedAt = performance.now()
+    void this.ensureIceServers()
+      .then(() => {
+        console.log(`[WebRTC] ICE servers warmed up in ${Math.round(performance.now() - startedAt)}ms ` +
+          `(${this.turnServers.length} entries)`)
+      })
+      .catch(error => console.warn('[WebRTC] ICE server warm-up failed:', error))
+  }
+
+  private createPeakGuard(ctx: AudioContext): WaveShaperNode {
+    const peakGuard = ctx.createWaveShaper()
+    const peakCurve = new Float32Array(65_536)
+    const linearLimit = 0.98
+    const outputLimit = 0.995
+    const softRange = 1 - linearLimit
+    const normalization = 1 - Math.exp(-3)
+    for (let i = 0; i < peakCurve.length; i++) {
+      const sample = (i / (peakCurve.length - 1)) * 2 - 1
+      const magnitude = Math.abs(sample)
+      peakCurve[i] = magnitude <= linearLimit
+        ? sample
+        : Math.sign(sample) * (
+          linearLimit +
+          (outputLimit - linearLimit) *
+          (1 - Math.exp(-3 * ((magnitude - linearLimit) / softRange))) /
+          normalization
+        )
+    }
+    peakGuard.curve = peakCurve
+    peakGuard.oversample = '4x'
+    return peakGuard
+  }
+
+  private createRumbleGuards(ctx: AudioContext): BiquadFilterNode[] {
+    const guards = RUMBLE_GUARD_QS.map(quality => {
+      const guard = ctx.createBiquadFilter()
+      guard.type = 'highpass'
+      guard.frequency.value = RUMBLE_GUARD_HZ
+      guard.Q.value = quality
+      return guard
+    })
+    for (let index = 1; index < guards.length; index++) guards[index - 1].connect(guards[index])
+    return guards
+  }
+
+  private applyLocalSpeaking(isSpeaking: boolean) {
+    if (isSpeaking && this.calibrationSuppressesSpeaking) return
+    if (isSpeaking === this.localSpeakingState) return
+    this.localSpeakingState = isSpeaking
+    const me = useAppStore.getState().currentUser
+    if (!me) return
+    useAppStore.getState().setSpeakingStatus(me.id, isSpeaking)
+    signalRService.setSpeakingState(isSpeaking)
+  }
+
+  private publishMicLevel(db: number) {
+    if (!Number.isFinite(db)) return
+    this.micLevelDb = db
+    this.micLevelListeners.forEach(listener => listener(db))
   }
 
   private async createProcessedStream(rawStream: MediaStream): Promise<MediaStream> {
+    if (!this.isSmartMode()) return this.createManualProcessedStream(rawStream)
+    return this.createSmartProcessedStream(rawStream, this.smartModel)
+  }
+
+  private async createManualProcessedStream(rawStream: MediaStream): Promise<MediaStream> {
     this.cleanupProcessedStream()
-    this.dfEngineError = null
+    this.audioProcessorError = null
+
+    const ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' })
+    this.processedContext = ctx
+    if (ctx.state === 'suspended') await ctx.resume().catch(() => { })
+
+    const destination = ctx.createMediaStreamDestination()
+    const source = ctx.createMediaStreamSource(rawStream)
+    this.processedSource = source
+    const inputGain = ctx.createGain()
+    inputGain.gain.value = this.inputVolumeToGain(this.inputVolume)
+    this.inputGainNode = inputGain
+    const peakGuard = this.createPeakGuard(ctx)
+    this.micOutputTap = peakGuard
+
+    try {
+      const analyser = ctx.createAnalyser()
+      analyser.fftSize = 256
+      source.connect(analyser)
+      this.rawAnalyserNode = analyser
+    } catch (error) {
+      console.warn('[WebRTC] Failed to create raw analyser node:', error)
+    }
+
+    const passthrough = () => {
+      source.connect(inputGain)
+      inputGain.connect(peakGuard)
+      peakGuard.connect(destination)
+      return destination.stream
+    }
+
+    if (!this.noiseSuppression) return passthrough()
+
+    try {
+      await ctx.audioWorklet.addModule(manualGateProcessorUrl)
+      this.manualGateNode = new AudioWorkletNode(ctx, 'manual-gate-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+        channelCount: 1,
+        channelCountMode: 'explicit'
+      })
+    } catch (error) {
+      this.audioProcessorError = `Manual gate worklet failed: ${error instanceof Error ? error.message : String(error)}`
+      console.error('[WebRTC] Failed to create the manual gate:', error)
+      return passthrough()
+    }
+
+    const gateNode = this.manualGateNode
+    gateNode.port.onmessage = (event) => {
+      if (event.data.type === 'vad') {
+        this.applyLocalSpeaking(Boolean(event.data.isSpeaking))
+      } else if (event.data.type === 'micLevelDb') {
+        this.publishMicLevel(Number(event.data.db))
+      }
+    }
+
+    const rumbleGuards = this.createRumbleGuards(ctx)
+    this.micRumbleFilters = rumbleGuards
+
+    const store = useAppStore.getState()
+    const isMuted = Boolean(store.currentUser?.isMuted || store.currentUser?.isServerMuted)
+    gateNode.port.postMessage({ type: 'setConfig', isMuted, ...this.getManualGateParams() })
+
+    source.connect(rumbleGuards[0])
+    rumbleGuards[rumbleGuards.length - 1].connect(inputGain)
+    inputGain.connect(gateNode)
+    gateNode.connect(peakGuard)
+    peakGuard.connect(destination)
+    this.localSpeakingState = false
+    return destination.stream
+  }
+
+  private async createSmartProcessedStream(
+    rawStream: MediaStream,
+    model: SmartNoiseModel
+  ): Promise<MediaStream> {
+    this.cleanupProcessedStream()
+    this.micEngineError = null
+    this.audioProcessorError = null
 
     const ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' })
     this.processedContext = ctx
@@ -835,10 +996,11 @@ export class WebRTCManager {
     if (ctx.sampleRate !== 48000) {
       const detail = `AudioContext runs at ${ctx.sampleRate}Hz, 48000Hz required`
       console.error(`[WebRTC] Audio processing requires 48000Hz, got ${ctx.sampleRate}Hz`)
-      this.dfEngineError = detail
+      this.micEngineError = detail
+      this.audioProcessorError = detail
       await ctx.close().catch(() => { })
       this.processedContext = null
-      return this.noiseSuppression ? createSilentAudioStream() : rawStream
+      return createSilentAudioStream()
     }
 
     if (ctx.state === 'suspended') {
@@ -846,10 +1008,12 @@ export class WebRTCManager {
     }
 
     const destination = ctx.createMediaStreamDestination()
+    const moduleUrl = model === 'deepfilter' ? micPipelineDeepFilterUrl : micPipelineRnnoiseUrl
+    const processorName = model === 'deepfilter' ? 'mic-pipeline-deepfilter' : 'mic-pipeline-rnnoise'
 
     try {
-      await ctx.audioWorklet.addModule(processorUrl)
-      this.dfNode = new AudioWorkletNode(ctx, 'deepfilter-processor', {
+      await ctx.audioWorklet.addModule(moduleUrl)
+      this.micNode = new AudioWorkletNode(ctx, processorName, {
         numberOfInputs: 1,
         numberOfOutputs: 1,
         outputChannelCount: [1],
@@ -857,61 +1021,44 @@ export class WebRTCManager {
         channelCountMode: 'explicit',
         channelInterpretation: 'speakers'
       })
-      this.dfNodeReady = false
-      this.vadWorkerReady = false
+      this.micNodeReady = false
       const me = useAppStore.getState().currentUser
       if (me) {
         this.clearVAD(me.id)
       }
     } catch (e) {
-      this.dfEngineError = `AudioWorklet module failed: ${e instanceof Error ? e.message : String(e)}`
-      console.error('[WebRTC] Failed to load deepfilter-processor.js', e)
+      this.micEngineError = `AudioWorklet module failed: ${e instanceof Error ? e.message : String(e)}`
+      console.error(`[WebRTC] Failed to load ${processorName}`, e)
     }
 
-    if (this.dfNode) {
-      // Install the bridge before either model starts. DeepFilter requests its
-      // WASM/model assets immediately and AudioWorklet messages are not replayed.
-      this.dfNode.port.onmessage = (event) => {
+    if (this.micNode) {
+      const graphEpoch = this.vadEpoch
+      this.micNode.port.onmessage = (event) => {
         if (event.data.type === 'vad') {
-          const isSpeaking = event.data.isSpeaking
-          // Calibration lifts the worklet mute to measure the real microphone.
-          // A muted user must not light up as speaking for everyone else while
-          // that runs — nothing is being transmitted anyway.
-          if (isSpeaking && this.calibrationSuppressesSpeaking) return
-          if (isSpeaking !== this.localSpeakingState) {
-            this.localSpeakingState = isSpeaking
-            const me = useAppStore.getState().currentUser
-            if (me) {
-              useAppStore.getState().setSpeakingStatus(me.id, isSpeaking)
-              signalRService.setSpeakingState(isSpeaking)
-            }
-          }
+          this.applyLocalSpeaking(Boolean(event.data.isSpeaking))
         } else if (event.data.type === 'audio16k') {
           if (this.vadWorker) {
             const audioFrame = event.data.audio as Float32Array
             this.vadWorker.postMessage({
               type: 'process',
               audioFrame,
+              epoch: graphEpoch,
               sequence: event.data.sequence,
               endFrameId: event.data.endFrameId,
               windowRms: event.data.windowRms
             }, [audioFrame.buffer])
           }
         } else if (event.data.type === 'micLevelDb') {
-          const db = Number(event.data.db)
-          if (Number.isFinite(db)) {
-            this.micLevelDb = db
-            this.micLevelListeners.forEach(listener => listener(db))
-          }
+          this.publishMicLevel(Number(event.data.db))
         } else if (event.data.type === 'resetVad') {
           this.vadWorker?.postMessage({ type: 'reset' })
         } else if (event.data.type === 'fetchRequest') {
           const url = event.data.url as string
           const deliver = (buffer: ArrayBuffer | null) => {
             if (buffer) {
-              this.dfNode?.port.postMessage({ type: 'fetchResponse', url, buffer }, [buffer])
+              this.micNode?.port.postMessage({ type: 'fetchResponse', url, buffer }, [buffer])
             } else {
-              this.dfNode?.port.postMessage({ type: 'fetchResponse', url, buffer: null })
+              this.micNode?.port.postMessage({ type: 'fetchResponse', url, buffer: null })
             }
           }
           const localRel = url.startsWith(`${DEEPFILTER_LOCAL_BASE}/`)
@@ -925,105 +1072,78 @@ export class WebRTCManager {
                 deliver(null)
               })
           } else {
-            fetch(url, { signal: AbortSignal.timeout(DEEPFILTER_FETCH_TIMEOUT_MS) })
-              .then(res => {
-                if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-                return res.arrayBuffer()
-              })
-              .then(deliver)
-              .catch(err => {
-                console.error('[WebRTC] fetchRequest failed:', err)
-                deliver(null)
-              })
+            console.error('[WebRTC] Worklet asked for a non-bundled asset, refused:', url)
+            deliver(null)
           }
         } else if (event.data.type === 'log') {
           console.log('[WebRTC Worklet Log]:', event.data.message)
-        } else if (event.data.type === 'engineError') {
-          // The neural denoiser can fail to start on a specific machine while raw
-          // audio keeps flowing. Remember why, so calibration can say so instead
-          // of waiting for a "ready" message that will never arrive.
-          this.dfEngineError = String(event.data.message || 'DeepFilterNet3 initialization failed')
-          console.error('[WebRTC] DeepFilterNet3 engine unavailable:', this.dfEngineError)
         } else if (event.data.type === 'ready') {
-          this.dfNodeReady = true
-          this.dfEngineError = null
-          console.log('[WebRTC Worklet Log]: DeepFilterProcessor is ready.')
+          this.micNodeReady = true
+          this.micEngineError = null
+          console.log(`[WebRTC Worklet Log]: ${processorName} is ready.`)
         }
       }
 
-      // Start model loading only after the fetch bridge above is listening.
-      this.dfNode.port.postMessage({ type: 'loadWasm', cdnUrl: DEEPFILTER_LOCAL_BASE })
+      this.micNode.port.onmessageerror = (event) => {
+        console.error('[WebRTC] Mic pipeline worklet could not deserialize a message:', event)
+      }
 
-      let vadReadyTimeout: number | undefined
-      try {
-        this.vadWorker = new VadWorker()
-        const absoluteWasmPath = new URL('./', window.location.href).href
-        let resolveVadReady: (() => void) | null = null
-        let rejectVadReady: ((error: Error) => void) | null = null
-        const vadReadyPromise = new Promise<void>((resolve, reject) => {
-          resolveVadReady = resolve
-          rejectVadReady = reject
-        })
-        // Обработчик навешивается сразу: таймаут ниже может отклонить промис
-        // раньше, чем до `await vadReadyPromise` дойдёт очередь, и это был бы
-        // необработанный reject. На сам `await` это не влияет.
-        vadReadyPromise.catch(() => { })
-        vadReadyTimeout = window.setTimeout(() => {
-          rejectVadReady?.(new Error('Silero VAD initialization timed out'))
-        }, 15000)
-        this.vadWorker.onmessage = (workerEvent) => {
-          if (workerEvent.data.type === 'probability') {
-            this.vadWorkerReady = true
-            const prob = workerEvent.data.probability
-            if (this.dfNode) {
-              this.dfNode.port.postMessage({
-                type: 'setSileroVadProbability',
-                probability: prob,
-                sequence: workerEvent.data.sequence,
-                endFrameId: workerEvent.data.endFrameId,
-                windowRms: workerEvent.data.windowRms
-              })
-            }
-          } else if (workerEvent.data.type === 'error') {
-            console.error('[WebRTC] Silero VAD Worker error:', workerEvent.data.error)
-            if (workerEvent.data.phase === 'initialization') {
-              window.clearTimeout(vadReadyTimeout)
-              this.vadWorkerReady = false
-              rejectVadReady?.(new Error(String(workerEvent.data.error)))
-            }
-          } else if (workerEvent.data.type === 'ready') {
-            this.vadWorkerReady = true
-            window.clearTimeout(vadReadyTimeout)
-            resolveVadReady?.()
-            resolveVadReady = null
-            rejectVadReady = null
-            console.log('[WebRTC] Silero VAD Worker is ready', workerEvent.data.io ?? '')
-            if (this.dfNode) {
-              this.dfNode.port.postMessage({
-                type: 'setConfig',
-                sileroVadEnabled: true
-              })
-            }
-          }
+      const micNodeForAssets = this.micNode
+      const sendPayload = (payload: DeepFilterPayload) => {
+        micNodeForAssets.port.postMessage({
+          type: 'loadWasm',
+          assetBase: DEEPFILTER_LOCAL_BASE,
+          wasmBytes: payload.wasmBytes,
+          modelBytes: payload.modelBytes
+        }, [payload.wasmBytes, payload.modelBytes])
+      }
+      const payload = model === 'deepfilter' ? getDeepFilterPayload() : null
+      if (payload) {
+        sendPayload(payload)
+      } else {
+        micNodeForAssets.port.postMessage({ type: 'loadWasm', assetBase: DEEPFILTER_LOCAL_BASE })
+        if (model === 'deepfilter') {
+          void preloadNoiseAssets('deepfilter')
+            .then(() => {
+              if (this.micNode !== micNodeForAssets || this.micNodeReady) return
+              const late = getDeepFilterPayload()
+              if (late) sendPayload(late)
+            })
+            .catch(error => console.warn('[WebRTC] Late DeepFilter payload delivery failed:', error))
         }
-        const model = await withTimeout(
-          window.windowControls.loadSileroModel(),
-          SILERO_MODEL_LOAD_TIMEOUT_MS,
-          'Silero VAD model load timed out'
-        )
-        this.vadWorker.postMessage({
-          type: 'init',
-          model,
-          wasmPath: absoluteWasmPath
-        }, [model.buffer])
-        await vadReadyPromise
-      } catch (e) {
-        window.clearTimeout(vadReadyTimeout)
-        this.vadWorker?.terminate()
-        this.vadWorker = null
-        this.vadWorkerReady = false
-        this.dfNode.port.postMessage({ type: 'setConfig', sileroVadEnabled: false })
-        console.warn(`[WebRTC] Silero VAD is unavailable; using energy-based speech detection: ${e instanceof Error ? e.message : String(e)}`)
+      }
+
+      const micNode = this.micNode
+      this.vadProbabilityHandler = (data) => {
+        if (this.micNode !== micNode) return
+        micNode.port.postMessage({
+          type: 'setSileroVadProbability',
+          probability: data.probability,
+          sequence: data.sequence,
+          endFrameId: data.endFrameId,
+          windowRms: data.windowRms
+        })
+      }
+
+      const attachSileroVad = () => {
+        if (this.micNode !== micNode) return
+        this.vadWorker?.postMessage({ type: 'reset' })
+        micNode.port.postMessage({ type: 'setConfig', sileroVadEnabled: true })
+      }
+
+      if (this.vadWorkerReady) {
+        attachSileroVad()
+      } else {
+        micNode.port.postMessage({ type: 'setConfig', sileroVadEnabled: false })
+        void this.ensureVadWorker()
+          .then(attachSileroVad)
+          .catch(e => {
+            if (this.micNode !== micNode) return
+            this.vadProbabilityHandler = null
+            this.audioProcessorError = `Silero VAD failed: ${e instanceof Error ? e.message : String(e)}`
+            micNode.port.postMessage({ type: 'setConfig', sileroVadEnabled: false })
+            console.warn(`[WebRTC] Silero VAD is unavailable; using energy-based speech detection: ${e instanceof Error ? e.message : String(e)}`)
+          })
       }
 
       this.localSpeakingState = false
@@ -1037,52 +1157,11 @@ export class WebRTCManager {
     highpass1.frequency.value = 60
     highpass1.Q.value = 0.707
 
-    // Rumble has to be removed *before* the worklet, not after it, because the worklet
-    // is where every decision about this audio is made. The 60 Hz filter above sits
-    // after dfNode, so the pitch detector, Silero, the room trackers and calibration
-    // all see low-frequency energy in full - and the pitch detector searches lags
-    // 40-229 at 16 kHz, i.e. 70-400 Hz, which is precisely where a desk thump, a
-    // footstep or a table knock lives. Such a thump is *genuinely periodic* in that
-    // band, so it scores as voiced and opens the gate: the reported "claps and clicks
-    // go into the stream". Two cascaded 90 Hz sections (24 dB/oct) put a knock 20+ dB
-    // down before anything looks at it, while the lowest male F0 (~85 Hz, with its
-    // harmonics carrying the periodicity) survives - telephony has band-limited voice
-    // at 300 Hz for a century without hurting intelligibility, so 90 Hz is
-    // conservative. highpass1 stays as belt-and-braces on the output.
-    const rumbleGuards = [ctx.createBiquadFilter(), ctx.createBiquadFilter()]
-    for (const guard of rumbleGuards) {
-      guard.type = 'highpass'
-      guard.frequency.value = 90
-      guard.Q.value = 0.707
-    }
+    const rumbleGuards = this.createRumbleGuards(ctx)
     this.micRumbleFilters = rumbleGuards
 
-    // Do not use a broadband compressor on the microphone path. It performs
-    // automatic gain riding: sustained vowels are pushed down and recover when
-    // the sound stops, which makes the voice feel as if it is breathing.
-    // A static soft clipper protects the encoder from overload without attack,
-    // release, or time-dependent gain changes. Normal voice remains exactly linear.
-    const peakGuard = ctx.createWaveShaper()
-    const peakCurve = new Float32Array(65536)
-    // Static peak limiter: the transfer curve never changes and remains linear
-    // until the signal is genuinely close to digital clipping.
-    const linearLimit = 0.98
-    const outputLimit = 0.995
-    const softRange = 1 - linearLimit
-    const normalization = 1 - Math.exp(-3)
-    for (let i = 0; i < peakCurve.length; i++) {
-      const sample = (i / (peakCurve.length - 1)) * 2 - 1
-      const magnitude = Math.abs(sample)
-      if (magnitude <= linearLimit) {
-        peakCurve[i] = sample
-      } else {
-        const position = (magnitude - linearLimit) / softRange
-        const guarded = linearLimit + (outputLimit - linearLimit) * (1 - Math.exp(-3 * position)) / normalization
-        peakCurve[i] = Math.sign(sample) * guarded
-      }
-    }
-    peakGuard.curve = peakCurve
-    peakGuard.oversample = '4x'
+    const peakGuard = this.createPeakGuard(ctx)
+    this.micOutputTap = peakGuard
 
     const inputGain = ctx.createGain()
     const calibratedPreGain = ctx.createGain()
@@ -1102,34 +1181,31 @@ export class WebRTCManager {
       console.warn('[WebRTC] Failed to create raw analyser node for silence monitoring:', e)
     }
 
-    if (this.dfNode) {
+    if (this.micNode) {
       const store = useAppStore.getState()
       const isMuted = store.currentUser?.isMuted || store.currentUser?.isServerMuted || false
-      this.dfNode.port.postMessage({
+      this.micNode.port.postMessage({
         type: 'setConfig',
         noiseSuppression: this.noiseSuppression,
         sileroVadEnabled: this.vadWorkerReady,
         isMuted: isMuted
       })
-      this.dfNode.port.postMessage({
+      this.micNode.port.postMessage({
         type: 'setCalibratedParams',
-        ...this.getThresholdParams(gainFactor),
+        ...this.getSmartGateParams(gainFactor),
       })
       source.connect(rumbleGuards[0])
-      rumbleGuards[0].connect(rumbleGuards[1])
-      rumbleGuards[1].connect(this.dfNode)
-      this.dfNode.connect(highpass1)
+      rumbleGuards[rumbleGuards.length - 1].connect(this.micNode)
+      this.micNode.connect(highpass1)
       highpass1.connect(calibratedPreGain)
       calibratedPreGain.connect(inputGain)
     } else {
-      // Keep the microphone closed when smart suppression cannot be created.
-      // Falling back to the raw track would silently leak unprocessed noise.
       source.connect(inputGain)
       inputGain.gain.value = this.noiseSuppression ? 0 : gainFactor
       inputGain.connect(highpass1)
     }
 
-    if (this.dfNode) inputGain.connect(peakGuard)
+    if (this.micNode) inputGain.connect(peakGuard)
     else highpass1.connect(peakGuard)
     peakGuard.connect(destination)
 
@@ -1142,8 +1218,11 @@ export class WebRTCManager {
       try { this.inputGainNode.disconnect() } catch { }
       this.inputGainNode = null
     }
-    if (this.dfNode) {
-      try { this.dfNode.disconnect() } catch { }
+    if (this.micNode) {
+      try { this.micNode.disconnect() } catch { }
+    }
+    if (this.manualGateNode) {
+      try { this.manualGateNode.disconnect() } catch { }
     }
     if (this.processedSource) {
       try { this.processedSource.disconnect() } catch { }
@@ -1153,6 +1232,10 @@ export class WebRTCManager {
       try { guard.disconnect() } catch { }
     }
     this.micRumbleFilters = []
+    if (this.micOutputTap) {
+      try { this.micOutputTap.disconnect() } catch { }
+      this.micOutputTap = null
+    }
     if (this.rawAnalyserNode) {
       try { this.rawAnalyserNode.disconnect() } catch { }
       this.rawAnalyserNode = null
@@ -1161,20 +1244,23 @@ export class WebRTCManager {
 
   private cleanupProcessedStream() {
     this.cleanupProcessedStreamSourceOnly()
-    if (this.dfNode) {
-      try { this.dfNode.port.close() } catch { }
-      this.dfNode = null
+    if (this.micNode) {
+      try { this.micNode.port.close() } catch { }
+      this.micNode = null
     }
-    this.dfNodeReady = false
-    this.vadWorkerReady = false
+    if (this.manualGateNode) {
+      try { this.manualGateNode.port.close() } catch { }
+      this.manualGateNode = null
+    }
+    this.voiceProbeCollector = null
+    this.micNodeReady = false
     if (this.processedContext && this.processedContext.state !== 'closed') {
       this.processedContext.close().catch(() => { })
     }
     this.processedContext = null
-    if (this.vadWorker) {
-      try { this.vadWorker.terminate() } catch { }
-      this.vadWorker = null
-    }
+    this.vadEpoch++
+    this.vadProbabilityHandler = null
+    this.vadWorker?.postMessage({ type: 'reset' })
     const me = useAppStore.getState().currentUser
     if (me) {
       useAppStore.getState().setSpeakingStatus(me.id, false)
@@ -1188,32 +1274,46 @@ export class WebRTCManager {
     const gainFactor = this.inputVolumeToGain(this.inputVolume)
 
     if (this.inputGainNode) {
-      this.inputGainNode.gain.value = this.noiseSuppression && !this.dfNode ? 0 : gainFactor
+      this.inputGainNode.gain.value = gainFactor
     }
-    if (this.dfNode) {
-      this.dfNode.port.postMessage({
+    if (this.backgroundMeterGain) {
+      this.backgroundMeterGain.gain.value = gainFactor
+    }
+    if (this.micNode) {
+      this.micNode.port.postMessage({
         type: 'setCalibratedParams',
-        ...this.getThresholdParams(gainFactor)
+        ...this.getSmartGateParams(gainFactor)
       })
     }
   }
 
   public setMicThresholdParams(mode: 'auto' | 'manual', manualValue: number) {
     const normalizedThreshold = this.normalizeManualThreshold(manualValue)
+    const modeChanged = this.thresholdMode !== mode
     localStorage.setItem('zabor_threshold_mode', mode)
     localStorage.setItem('zabor_manual_threshold_value', normalizedThreshold.toString())
     this.thresholdMode = mode
     this.manualThresholdValue = normalizedThreshold
     this.updateThresholds()
+    if (modeChanged) this.warmUpSmartNoiseSuppression()
+    if (modeChanged && this.localStream) {
+      void this.updateSettings(this.currentDeviceId, this.noiseSuppression)
+    }
   }
 
   private updateThresholds() {
     const gainFactor = this.inputVolumeToGain(this.inputVolume)
 
-    if (this.dfNode) {
-      this.dfNode.port.postMessage({
+    if (this.micNode) {
+      this.micNode.port.postMessage({
         type: 'setCalibratedParams',
-        ...this.getThresholdParams(gainFactor)
+        ...this.getSmartGateParams(gainFactor)
+      })
+    }
+    if (this.manualGateNode) {
+      this.manualGateNode.port.postMessage({
+        type: 'setCalibratedParams',
+        ...this.getManualGateParams()
       })
     }
   }
@@ -1221,6 +1321,7 @@ export class WebRTCManager {
   public setOutputVolume(volume: number) {
     this.outputVolume = volume
     this.userGainNodes.forEach((_, userId) => this.updateRemoteVolume(userId))
+    if (this.micTestGain) this.micTestGain.gain.value = this.micTestVolume()
   }
 
   public setDeafened(deafened: boolean) {
@@ -1248,26 +1349,41 @@ export class WebRTCManager {
 
   public setNoiseSuppression(enabled: boolean) {
     this.noiseSuppression = enabled
-    if (this.inputGainNode && !this.dfNode) {
-      this.inputGainNode.gain.value = enabled ? 0 : this.inputVolumeToGain(this.inputVolume)
-    }
-    if (this.dfNode) {
-      this.dfNode.port.postMessage({
-        type: 'setConfig',
-        noiseSuppression: enabled
-      })
-    }
+    this.warmUpSmartNoiseSuppression(enabled)
+    if (this.localStream) void this.updateSettings(this.currentDeviceId, enabled)
   }
 
+  public getSmartNoiseModel(): SmartNoiseModel {
+    return this.smartModel
+  }
 
+  public setSmartNoiseModel(model: SmartNoiseModel) {
+    if (model !== 'deepfilter' && model !== 'rnnoise') return
+    if (this.smartModel === model) return
+    this.smartModel = model
+    localStorage.setItem(SMART_MODEL_STORAGE_KEY, model)
+    this.warmUpSmartNoiseSuppression()
+    if (this.localStream) void this.updateSettings(this.currentDeviceId, this.noiseSuppression)
+  }
 
+  public getSuppressionStrength(): number {
+    return this.suppressionStrengthDb
+  }
+
+  public setSuppressionStrength(db: number) {
+    const normalized = this.normalizeSuppressionStrength(db)
+    if (normalized === this.suppressionStrengthDb) return
+    this.suppressionStrengthDb = normalized
+    localStorage.setItem(SUPPRESSION_STRENGTH_STORAGE_KEY, normalized.toString())
+    this.updateThresholds()
+  }
 
   private setupVAD(stream: MediaStream, userId: string, isLocal: boolean) {
     this.clearVAD(userId)
 
     try {
       if (isLocal) {
-        if (this.dfNode || this.dfNodeReady) {
+        if (this.hasSpeakingWorklet()) {
           return
         }
         if (!this.processedContext || this.processedContext.state === 'closed') {
@@ -1409,8 +1525,6 @@ export class WebRTCManager {
     useAppStore.getState().setSpeakingStatus(userId, false)
   }
 
-
-
   private toCleanAudioDevice(device: MediaDeviceInfo): MediaDeviceInfo {
     const cleanLabel = (device.label || '').replace(/^(Default|Communications|По умолчанию|Связь)[\s:\-]+/i, '').trim()
     return {
@@ -1447,9 +1561,6 @@ export class WebRTCManager {
       }
     }
 
-    // Some systems expose only the "default"/"communications" pseudo-devices.
-    // Dropping them would leave an empty selector with nothing to choose, so keep
-    // them rather than hiding a microphone the user actually has.
     if (result.length === 0) {
       return devices.filter(device => device.deviceId).map(device => this.toCleanAudioDevice(device))
     }
@@ -1459,10 +1570,6 @@ export class WebRTCManager {
 
   private getDefaultDeviceFingerprint(devices: MediaDeviceInfo[], kind: MediaDeviceKind): string | null {
     const devicesOfKind = devices.filter(device => device.kind === kind)
-    // Windows exposes a "default" pseudo-device mirroring the system choice. Where
-    // it is missing, a constraint without deviceId lands on the first enumerated
-    // device, so use that as the fingerprint instead of returning null and never
-    // noticing that the system default changed.
     const device = devicesOfKind.find(item => item.deviceId === 'default')
       ?? devicesOfKind.find(item => item.deviceId === 'communications')
       ?? devicesOfKind[0]
@@ -1509,6 +1616,10 @@ export class WebRTCManager {
       try { this.backgroundSource.disconnect() } catch { }
       this.backgroundSource = null
     }
+    if (this.backgroundMeterGain) {
+      try { this.backgroundMeterGain.disconnect() } catch { }
+      this.backgroundMeterGain = null
+    }
     this.backgroundAnalyser = null
     if (this.backgroundContext && this.backgroundContext.state !== 'closed') {
       this.backgroundContext.close().catch(() => { })
@@ -1525,8 +1636,10 @@ export class WebRTCManager {
     const analyser = context.createAnalyser()
     analyser.fftSize = 512
     analyser.smoothingTimeConstant = 0
-    source.connect(analyser)
-    // Keep the graph alive without sending microphone audio to the speakers.
+    const meterGain = context.createGain()
+    meterGain.gain.value = this.inputVolumeToGain(this.inputVolume)
+    source.connect(meterGain)
+    meterGain.connect(analyser)
     const silentOutput = context.createGain()
     silentOutput.gain.value = 0
     analyser.connect(silentOutput)
@@ -1534,6 +1647,7 @@ export class WebRTCManager {
     this.backgroundContext = context
     this.backgroundSource = source
     this.backgroundAnalyser = analyser
+    this.backgroundMeterGain = meterGain
     if (context.state === 'suspended') context.resume().catch(() => { })
 
     const samples = new Float32Array(analyser.fftSize)
@@ -1553,52 +1667,28 @@ export class WebRTCManager {
   }
 
   private buildMicConstraints(deviceId?: string, echoCancellation = true): MediaTrackConstraints {
+    const useWebRtcNoiseSuppression = this.noiseSuppression && this.thresholdMode === 'manual'
     const constraints: MediaTrackConstraints = {
       channelCount: 1,
-      // Echo cancellation is the one Chromium capture processor this pipeline wants,
-      // and it is a different kind of thing from the other two. AEC subtracts a model
-      // of what the speakers are playing from what the microphone hears; it does not
-      // ride the gain and does not decide what is noise, so it takes nothing away from
-      // the voice. Without it a user on laptop speakers sends every other participant
-      // their own voice back, which no amount of denoising downstream can undo -
-      // DeepFilterNet correctly classifies far-end speech as speech.
-      //
-      // AGC and Chromium's own noise suppression stay off, as they were: AGC fights
-      // the worklet's ALC and produces exactly the breathing this pipeline exists to
-      // avoid, and a second suppressor ahead of DeepFilterNet damages what the network
-      // is trained to receive. Some Windows audio paths implement all three as one
-      // unit and switch the others on alongside AEC - captureRawMicStream checks the
-      // settings actually delivered and recaptures without AEC when that happens, so
-      // the trade is only ever taken when it costs nothing.
       echoCancellation,
-      noiseSuppression: false,
+      noiseSuppression: useWebRtcNoiseSuppression,
       autoGainControl: false,
       sampleRate: { ideal: 48000 },
-      // Legacy Chromium flags are still honored by some Windows audio paths.
-      // Set every adaptive capture processor explicitly to false.
       // @ts-ignore
       googAutoGainControl: false,
       googAutoGainControl2: false,
-      googNoiseSuppression: false,
-      googNoiseSuppression2: false,
+      googNoiseSuppression: useWebRtcNoiseSuppression,
+      googNoiseSuppression2: useWebRtcNoiseSuppression,
       googTypingNoiseDetection: false,
       googHighpassFilter: false,
       googEchoCancellation: echoCancellation,
       googEchoCancellation2: echoCancellation,
       googAudioMirroring: false
     }
-    // Omitting deviceId is deliberate for "default": Chromium then follows the
-    // system default device on its own, including later changes.
     if (deviceId && deviceId !== 'default') constraints.deviceId = { exact: deviceId }
     return constraints
   }
 
-  /**
-   * Один заход захвата с самопроверкой AEC. Если драйвер включил вместе с ним AGC
-   * или собственный шумодав, трек останавливается и та же попытка повторяется с
-   * `echoCancellation: false` — эхоподавление берётся только тогда, когда оно не
-   * тянет за собой обработку, портящую голос.
-   */
   private async captureMicAttempt(
     label: string,
     run: (echoCancellation: boolean) => Promise<MediaStream>
@@ -1614,7 +1704,8 @@ export class WebRTCManager {
     const settings = stream.getAudioTracks()[0]?.getSettings() ?? {}
     const hitchhikers: string[] = []
     if (settings.autoGainControl === true) hitchhikers.push('AGC')
-    if (settings.noiseSuppression === true) hitchhikers.push('noise suppression')
+    const expectsNoiseSuppression = this.noiseSuppression && this.thresholdMode === 'manual'
+    if (settings.noiseSuppression === true && !expectsNoiseSuppression) hitchhikers.push('noise suppression')
 
     if (hitchhikers.length === 0) {
       if (settings.echoCancellation !== true) {
@@ -1631,14 +1722,6 @@ export class WebRTCManager {
     return capture(false)
   }
 
-  /**
-   * The single microphone capture path for both the foreground and the background
-   * graph. Never falls back to `audio: true`: Chromium would silently enable AGC
-   * and its own noise suppression, producing the exact level pumping this pipeline
-   * exists to avoid. Echo cancellation is requested deliberately and verified per
-   * attempt (see captureMicAttempt). The first DOMException is preserved (name
-   * included) so the UI can tell "no permission" from "busy" and "missing".
-   */
   private async captureRawMicStream(): Promise<MediaStream> {
     const requestedDeviceId = this.currentDeviceId
     const attempts: Array<{
@@ -1686,8 +1769,6 @@ export class WebRTCManager {
       try {
         const stream = await this.captureMicAttempt(attempt.label, attempt.run)
         if (!attempt.keepsSelection) {
-          // The stored selection is gone. Follow the system default from now on
-          // instead of failing the same constraint on every restart.
           this.currentDeviceId = 'default'
           console.warn(`[WebRTC] Microphone "${requestedDeviceId}" unavailable, captured via ${attempt.label}`)
         }
@@ -1709,8 +1790,6 @@ export class WebRTCManager {
   private reportMicCaptureError(error: unknown): void {
     const detail = describeMediaError(error)
     this.lastMicCaptureError = detail
-    // enumerateDevices/devicechange can retry capture many times. Report each
-    // distinct failure once instead of stacking identical toasts.
     if (this.lastReportedMicError === detail) return
     this.lastReportedMicError = detail
 
@@ -1741,9 +1820,6 @@ export class WebRTCManager {
       this.rawStream = await this.captureRawMicStream()
       const rawTrack = this.rawStream.getAudioTracks()[0]
       const settings = rawTrack?.getSettings()
-      // Pass the label: without it this path stores the profile under
-      // "default:unknown" while startLocalStream uses "default:<label>", and a
-      // successful calibration is never found again.
       this.loadCalibration(settings?.deviceId || this.currentDeviceId, rawTrack?.label || '')
       this.startBackgroundMeter()
       return true
@@ -1818,6 +1894,7 @@ export class WebRTCManager {
 
   private async applyOutputDevice() {
     const audioElement = this.mixAudioElement
+    if (this.micTestContext) await this.applyMicTestSink(this.micTestContext)
     if (!audioElement) return
 
     const sinkId = this.currentOutputDeviceId === 'default' ? '' : this.currentOutputDeviceId
@@ -1858,9 +1935,14 @@ export class WebRTCManager {
       calibrationProfileKey: this.calibrationDeviceId,
       noiseSuppression: this.noiseSuppression,
       thresholdMode: this.thresholdMode,
-      hasDfNode: Boolean(this.dfNode),
-      dfNodeReady: this.dfNodeReady,
-      dfEngineError: this.dfEngineError,
+      smartModel: this.smartModel,
+      suppressionStrengthDb: this.suppressionStrengthDb,
+      hasMicNode: Boolean(this.micNode),
+      micNodeReady: this.micNodeReady,
+      micEngineError: this.micEngineError,
+      hasManualGateNode: Boolean(this.manualGateNode),
+      audioProcessorError: this.audioProcessorError,
+      sileroVadThreshold: this.calibratedVadThreshold,
       vadWorkerReady: this.vadWorkerReady,
       micCaptureError: this.lastMicCaptureError,
       processedContextState: this.processedContext?.state ?? null,
@@ -1868,10 +1950,6 @@ export class WebRTCManager {
       capturedDeviceId: rawSettings?.deviceId ?? null,
       capturedSampleRate: rawSettings?.sampleRate ?? null,
       capturedChannelCount: rawSettings?.channelCount ?? null,
-      // What the driver actually delivered, not what was asked for. AEC is requested;
-      // the other two must read false, and if AGC or noise suppression is true here
-      // the recapture in captureMicAttempt failed to take effect - that is the case
-      // where Chromium is processing the voice before this pipeline sees it.
       capturedEchoCancellation: rawSettings?.echoCancellation ?? null,
       capturedAutoGainControl: rawSettings?.autoGainControl ?? null,
       capturedNoiseSuppression: rawSettings?.noiseSuppression ?? null,
@@ -1883,57 +1961,57 @@ export class WebRTCManager {
     }
   }
 
-  public async calibrateMic(durationMs = 2500, onStarted?: () => void): Promise<CalibrationResult> {
-    const wasInActiveSession = Boolean(useAppStore.getState().currentChannelId || useAppStore.getState().currentCallUser)
+  private activeCalibrationEngine(): SmartNoiseModel | 'manual' {
+    if (!this.isSmartMode()) return 'manual'
+    return this.smartModel
+  }
 
-    // A live localStream is not proof of a working graph: the worklet or the
-    // DeepFilter engine can fail on a specific machine while the raw delayed frame
-    // keeps reaching the channel, so the user is heard but nothing can be
-    // calibrated. Plain startLocalStream() returns early on a live stream and
-    // would never repair that, so force the graph to be rebuilt.
-    if (!this.dfNode || !this.dfNodeReady) {
-      try {
-        if (this.localStream) {
-          // Also replaces the outgoing track on every peer connection.
-          await this.updateSettings(this.currentDeviceId, this.noiseSuppression)
-        } else {
-          await this.startLocalStream(this.currentDeviceId, this.noiseSuppression, true)
-        }
-      } catch (error) {
-        const detail = describeMediaError(error)
-        console.error('[WebRTC] Calibration could not start the microphone:', detail)
-        if (!wasInActiveSession) await this.enterBackgroundMode()
-        throw new CalibrationError('CALIBRATION_NO_MIC', detail)
-      }
+  private postEngineConfig(config: Record<string, unknown>) {
+    this.micNode?.port.postMessage({ type: 'setConfig', ...config })
+    this.manualGateNode?.port.postMessage({ type: 'setConfig', ...config })
+  }
+
+  public async calibrateMic(durationMs = 4500, onStarted?: () => void): Promise<CalibrationResult> {
+    const wasInActiveSession = Boolean(useAppStore.getState().currentChannelId || useAppStore.getState().currentCallUser)
+    const engine = this.activeCalibrationEngine()
+
+    if (engine === 'manual') {
+      throw new CalibrationError(
+        'CALIBRATION_ENGINE_UNAVAILABLE',
+        'Calibration requires smart noise suppression'
+      )
     }
 
-    // Calibration must measure the real microphone even while the user is muted:
-    // the worklet keeps counting frames and writes silence, and the localStream
-    // tracks stay disabled, so nothing reaches the channel.
     const me = useAppStore.getState().currentUser
     const wasMuted = Boolean(me?.isMuted || me?.isServerMuted)
-    if (wasMuted) {
-      this.calibrationSuppressesSpeaking = true
-      this.dfNode?.port.postMessage({ type: 'setConfig', isMuted: false })
-    }
+    let muteLifted = false
 
     try {
-      if (this.lastMicCaptureError) {
-        // Capture fell back to a silent track: calibration would only measure
-        // digital silence and report "no speech" for a device problem.
-        throw new CalibrationError('CALIBRATION_NO_MIC', this.lastMicCaptureError)
-      }
-      await this.waitForCalibrationReady()
-      onStarted?.()
-      return await this.calibrateActiveMic(durationMs)
-    } finally {
+      await withTimeout(
+        this.prepareCalibrationEngine(),
+        CALIBRATION_PREPARE_TIMEOUT_MS,
+        `Calibration preparation timed out (${engine})`
+      )
+
       if (wasMuted) {
-        // Re-read the state instead of blindly restoring: the user may have
-        // unmuted during the run, and forcing the worklet mute back on would
-        // silence them while the UI shows them as live.
+        this.calibrationSuppressesSpeaking = true
+        muteLifted = true
+        this.postEngineConfig({ isMuted: false })
+      }
+
+      onStarted?.()
+      return await this.calibrateViaVadWorker(durationMs)
+    } catch (error) {
+      if (error instanceof CalibrationError) throw error
+      throw new CalibrationError(
+        'CALIBRATION_TIMEOUT',
+        error instanceof Error ? error.message : String(error)
+      )
+    } finally {
+      if (muteLifted) {
         const currentUser = useAppStore.getState().currentUser
         const stillMuted = Boolean(currentUser?.isMuted || currentUser?.isServerMuted)
-        this.dfNode?.port.postMessage({ type: 'setConfig', isMuted: stillMuted })
+        this.postEngineConfig({ isMuted: stillMuted })
         this.calibrationSuppressesSpeaking = false
         if (stillMuted && this.localSpeakingState) {
           this.localSpeakingState = false
@@ -1943,32 +2021,65 @@ export class WebRTCManager {
           }
         }
       }
-      if (!wasInActiveSession) await this.enterBackgroundMode()
+      if (!wasInActiveSession) {
+        await withTimeout(
+          this.enterBackgroundMode(),
+          CALIBRATION_CLEANUP_TIMEOUT_MS,
+          'Background microphone restore timed out'
+        ).catch(error => console.warn('[WebRTC] Calibration cleanup:', error))
+      }
     }
+  }
+
+  private async prepareCalibrationEngine(): Promise<void> {
+    if (!this.micNode) {
+      try {
+        if (this.localStream) {
+          await this.updateSettings(this.currentDeviceId, this.noiseSuppression)
+        } else {
+          await this.startLocalStream(this.currentDeviceId, this.noiseSuppression, true)
+        }
+      } catch (error) {
+        const detail = describeMediaError(error)
+        console.error('[WebRTC] Calibration could not start the microphone:', detail)
+        throw new CalibrationError('CALIBRATION_NO_MIC', detail)
+      }
+    }
+
+    if (this.lastMicCaptureError) {
+      throw new CalibrationError('CALIBRATION_NO_MIC', this.lastMicCaptureError)
+    }
+
+    await this.ensureVadWorker().catch(error => {
+      console.warn('[WebRTC] Calibration could not start Silero VAD:', error)
+    })
+
+    await this.waitForCalibrationReady()
   }
 
   private async waitForCalibrationReady(timeoutMs = 8000): Promise<void> {
     const startedAt = Date.now()
-    while (!this.dfNodeReady && Date.now() - startedAt < timeoutMs) {
-      // A failed engine never becomes ready. Stop waiting as soon as the worklet
-      // or the DeepFilter runtime has reported why it is unavailable.
-      if (!this.dfNode || this.dfEngineError) break
+    const hasNode = () => Boolean(this.micNode)
+    const isReady = () => hasNode() && this.vadWorkerReady
+
+    while (!isReady() && Date.now() - startedAt < timeoutMs) {
+      if (!hasNode() || this.audioProcessorError) break
       await new Promise(resolve => setTimeout(resolve, 100))
     }
-    if (!this.dfNodeReady) {
-      throw new CalibrationError('CALIBRATION_ENGINE_UNAVAILABLE', this.dfEngineError || (this.dfNode
-        ? 'DeepFilterNet3 did not become ready'
+    if (!isReady()) {
+      throw new CalibrationError('CALIBRATION_ENGINE_UNAVAILABLE', this.audioProcessorError || (hasNode()
+        ? 'Silero voice detection did not become ready'
         : 'Audio worklet node is unavailable'))
     }
   }
 
-  // durationMs is the worklet's measuring window, not the UI countdown: it has to
-  // match the time the user is actually asked to stay silent, or the run keeps
-  // recording after the prompt has already gone away.
-  private calibrateActiveMic(durationMs = 2500): Promise<CalibrationResult> {
+  private calibrateViaVadWorker(durationMs = 4500): Promise<CalibrationResult> {
     return new Promise((resolve, reject) => {
-      if (!this.dfNode || !this.dfNodeReady) {
-        reject(new CalibrationError('CALIBRATION_ENGINE_UNAVAILABLE', this.dfEngineError || 'Audio processors are not ready'))
+      if (!this.micNode || !this.vadWorkerReady) {
+        reject(new CalibrationError(
+          'CALIBRATION_ENGINE_UNAVAILABLE',
+          this.audioProcessorError || 'Silero voice detection is not ready'
+        ))
         return
       }
       if (this.calibrationInProgress) {
@@ -1980,201 +2091,92 @@ export class WebRTCManager {
         return
       }
 
-      const previousProfile = {
-        noiseFloor: this.calibratedNoiseFloor,
-        attenuationLimit: this.calibratedAttenuationLimit,
-        preGainDb: this.calibratedPreGainDb,
-        vadTrackerSeed: this.calibratedVadTrackerSeed,
-        hasVoiceCalibration: this.hasVoiceCalibration
-      }
-      const previousInputGain = this.inputGainNode?.gain.value ?? this.inputVolumeToGain(this.inputVolume)
-      const restoreInputGain = () => {
-        if (this.inputGainNode) this.inputGainNode.gain.value = previousInputGain
-      }
+      const previousThreshold = this.calibratedVadThreshold
+      const previousCalibrationState = this.hasVoiceCalibration
       const restorePreviousProfile = () => {
-        restoreInputGain()
-        this.calibratedNoiseFloor = previousProfile.noiseFloor
-        this.calibratedAttenuationLimit = previousProfile.attenuationLimit
-        this.calibratedPreGainDb = previousProfile.preGainDb
-        this.calibratedVadTrackerSeed = previousProfile.vadTrackerSeed
-        this.hasVoiceCalibration = previousProfile.hasVoiceCalibration
-        if (this.calibratedPreGainNode) {
-          this.calibratedPreGainNode.gain.value = Math.pow(10, previousProfile.preGainDb / 20)
-        }
+        this.calibratedVadThreshold = previousThreshold
+        this.hasVoiceCalibration = previousCalibrationState
         this.updateThresholds()
       }
+
       this.calibrationInProgress = true
-      this.calibratedPreGainDb = 0
-      if (this.inputGainNode) this.inputGainNode.gain.value = 1
-      if (this.calibratedPreGainNode) this.calibratedPreGainNode.gain.value = 1
-      this.updateThresholds()
-      this.dfNode.port.postMessage({ type: 'setCalibratedParams', gainFactor: 1 })
-      const timeout = window.setTimeout(() => {
-        this.calibrationInProgress = false
-        this.dfNode?.port.removeEventListener('message', messageHandler)
-        restorePreviousProfile()
-        // The worklet stopped producing frames mid-run: the track died, the
-        // context got suspended or the engine crashed after it reported ready.
-        const rawTrack = this.rawStream?.getAudioTracks()[0]
-        reject(new CalibrationError('CALIBRATION_TIMEOUT', this.dfEngineError
-          || `no result within ${durationMs + 3000}ms (context ${this.processedContext?.state ?? 'none'}, track ${rawTrack?.readyState ?? 'none'}${rawTrack?.muted ? ', muted by the system' : ''})`))
-      }, durationMs + 3000)
-
-      const messageHandler = (e: MessageEvent) => {
-        if (e.data.type === 'calibrationResult') {
-          window.clearTimeout(timeout)
-          this.calibrationInProgress = false
-          this.dfNode?.port.removeEventListener('message', messageHandler)
-          const noiseFloor = Number(e.data.noiseFloor)
-          const lowNoise = Number(e.data.lowNoise)
-          const peakNoise = Number(e.data.peakNoise)
-          const zeroCrossingRate = Number(e.data.zeroCrossingRate)
-          const spectralTilt = Number(e.data.spectralTilt)
-          const acceptedFrames = Number(e.data.acceptedFrames) || 0
-          const rejectedSpeechFrames = Number(e.data.rejectedSpeechFrames) || 0
-          const totalFrames = acceptedFrames + rejectedSpeechFrames
-
-          if (!Number.isFinite(noiseFloor) || noiseFloor <= 0 || !Number.isFinite(lowNoise) || lowNoise <= 0 ||
-            !Number.isFinite(peakNoise) || peakNoise <= 0 || !Number.isFinite(zeroCrossingRate) ||
-            !Number.isFinite(spectralTilt) || acceptedFrames < MIN_CALIBRATION_FRAMES) {
-            const silenceReference = Number(e.data.silenceReference) || 0
-            console.warn('[WebRTC] Calibration rejected: insufficient noise samples', {
-              acceptedFrames,
-              rejectedSpeechFrames,
-              totalFrames,
-              requiredFrames: MIN_CALIBRATION_FRAMES,
-              // Only near-field speech is rejected now, so a high count here means
-              // the user was talking during the run - not that a distant television
-              // or a conversation in another room was audible.
-              silenceReferenceDbfs: Number((20 * Math.log10(Math.max(1e-5, silenceReference))).toFixed(1)),
-              nearFieldFloorDbfs: Number((20 * Math.log10(Math.max(1e-5, Math.max(silenceReference * 8, 0.0008)))).toFixed(1))
-            })
-            restorePreviousProfile()
-            reject(new CalibrationError('CALIBRATION_NEEDS_SILENCE',
-              `accepted ${acceptedFrames} of ${totalFrames} noise frames`))
-            return
-          }
-
-          const dbNoise = 20 * Math.log10(Math.max(1e-5, noiseFloor))
-          const stationarityRatio = peakNoise / Math.max(1e-5, lowNoise)
-          const noiseVadMedian = Number(e.data.noiseVadMedian) || 0
-          const noiseVadHigh = Number(e.data.noiseVadHigh) || 0
-
-          // The room is now the only measurement, and it fully determines the
-          // suppression strength. There is nothing left to accept or reject beyond
-          // "did we get enough frames": the wizard no longer asks for a phrase, so
-          // it can no longer fail on one.
-          const suppressionCalibration = this.calculateAttenuationFromRoom(
-            noiseFloor,
-            lowNoise,
-            peakNoise,
-            noiseVadHigh
-          )
-          const attenuationLimit = suppressionCalibration.attenuationLimit
-
-          restoreInputGain()
-          this.calibratedNoiseFloor = noiseFloor
-          this.calibratedAttenuationLimit = attenuationLimit
-          // Pre-gain came from the calibration phrase and left with it. The user's
-          // own input volume (0-200 %) is the remaining loudness control.
-          this.calibratedPreGainDb = 0
-          this.calibratedVadTrackerSeed = Math.max(0, Math.min(1, noiseVadHigh))
-          this.hasVoiceCalibration = true
-          if (this.calibratedPreGainNode) this.calibratedPreGainNode.gain.value = 1
-          this.updateThresholds()
-          console.info('[WebRTC] Calibration suppression profile', {
-            noiseDbfs: Number(dbNoise.toFixed(1)),
-            // Median vs. the high percentile the demand is actually measured against;
-            // roomDbfs above noiseDbfs means the p95-6dB branch won.
-            roomDbfs: Number(suppressionCalibration.roomDbfs.toFixed(1)),
-            stationarityRatio: Number(stationarityRatio.toFixed(2)),
-            noiseVadMedian: Number(noiseVadMedian.toFixed(4)),
-            noiseVadHigh: Number(noiseVadHigh.toFixed(4)),
-            requiredDb: Number(suppressionCalibration.requiredDb.toFixed(1)),
-            speechLikeBonusDb: Number(suppressionCalibration.speechLikeBonusDb.toFixed(2)),
-            demandDb: Number(suppressionCalibration.demandDb.toFixed(1)),
-            shapedDb: Number(suppressionCalibration.shapedDb.toFixed(1)),
-            transientReliefDb: Number(suppressionCalibration.transientReliefDb.toFixed(2)),
-            attenuationLimitDb: attenuationLimit,
-            assumedSpeechDbfs: ASSUMED_SPEECH_LEVEL_DBFS,
-            assumedSnrDb: Number((ASSUMED_SPEECH_LEVEL_DBFS - suppressionCalibration.roomDbfs).toFixed(1)),
-            targetSpeechToNoiseDb: TARGET_SPEECH_TO_NOISE_DB,
-            targetResidualDbfs: TARGET_RESIDUAL_NOISE_DBFS,
-            softKneeDb: SUPPRESSION_SOFT_KNEE_DB,
-            vadTrackerSeed: Number(this.calibratedVadTrackerSeed.toFixed(4)),
-            appliedAttenuationDb: this.getThresholdParams(1).attenuationLimit,
-            thresholdMode: this.thresholdMode,
-            availableRangeDb: `${DEEPFILTER_MIN_ATTEN}-${DEEPFILTER_MAX_ATTEN}`
-          })
-          console.info(
-            `[WebRTC] Calibration result: noise=${dbNoise.toFixed(1)}dBFS ` +
-            `(room reference ${suppressionCalibration.roomDbfs.toFixed(1)}dBFS), ` +
-            `stationarity=${stationarityRatio.toFixed(2)}, ` +
-            `noiseVadHigh=${noiseVadHigh.toFixed(4)}, ` +
-            `frames=${acceptedFrames} (rejected ${rejectedSpeechFrames}), ` +
-            `attenuation=${attenuationLimit}dB of ${DEEPFILTER_MAX_ATTEN}dB ` +
-            `(demand ${suppressionCalibration.demandDb.toFixed(1)}dB to lift a ` +
-            `${(ASSUMED_SPEECH_LEVEL_DBFS - suppressionCalibration.roomDbfs).toFixed(1)}dB room SNR to ` +
-            `${TARGET_SPEECH_TO_NOISE_DB}dB speech-to-noise, ` +
-            `softened to ${suppressionCalibration.shapedDb.toFixed(1)}dB above the ` +
-            `${SUPPRESSION_SOFT_KNEE_DB}dB knee)`
-          )
-
-          try {
-            const profile: StoredEnvironmentProfile = {
-              version: WebRTCManager.CALIBRATION_SCHEMA_VERSION,
-              timestamp: Date.now(),
-              noiseFloor,
-              lowNoise,
-              peakNoise,
-              attenuationLimit,
-              noiseVadMedian,
-              noiseVadHigh,
-              zeroCrossingRate,
-              spectralTilt
-            }
-            const profiles = this.readEnvironmentProfiles()
-              .filter(existing => this.environmentDistance(
-                existing,
-                noiseFloor,
-                lowNoise,
-                peakNoise,
-                zeroCrossingRate,
-                spectralTilt
-              ) > 3)
-            profiles.push(profile)
-            profiles.sort((a, b) => b.timestamp - a.timestamp)
-            localStorage.setItem(this.calibrationStorageKey(this.calibrationDeviceId), JSON.stringify({
-              version: WebRTCManager.CALIBRATION_SCHEMA_VERSION,
-              deviceId: this.calibrationDeviceId,
-              profiles: profiles.slice(0, 6)
-            }))
-          } catch (e) {
-            console.error('Failed to save calibration data', e)
-          }
-
-          resolve({
-            noiseFloor,
-            lowNoise,
-            peakNoise,
-            attenuationLimit,
-            noiseVadMedian,
-            noiseVadHigh,
-            zeroCrossingRate,
-            spectralTilt,
-            acceptedFrames,
-            rejectedSpeechFrames
-          })
-        }
+      const probabilities: number[] = []
+      let peakProbability = 0
+      const settleUntil = Date.now() + 150
+      const collector = (probability: number, windowRms: number) => {
+        if (Date.now() < settleUntil) return
+        if (!Number.isFinite(probability) || !Number.isFinite(windowRms)) return
+        if (windowRms < 0.0006 || probability < 0.05) return
+        if (probabilities.length >= 512) return
+        probabilities.push(probability)
+        peakProbability = Math.max(peakProbability, probability)
       }
+      this.voiceProbeCollector = collector
 
-      this.dfNode.port.addEventListener('message', messageHandler)
-      this.dfNode.port.start()
+      window.setTimeout(() => {
+        this.calibrationInProgress = false
+        if (this.voiceProbeCollector !== collector) {
+          reject(new CalibrationError(
+            'CALIBRATION_ENGINE_UNAVAILABLE',
+            this.micEngineError || 'The audio graph was rebuilt during calibration'
+          ))
+          return
+        }
+        this.voiceProbeCollector = null
 
-      this.dfNode.port.postMessage({
-        type: 'startCalibration',
-        durationMs
-      })
+        const values = probabilities.slice().sort((a, b) => a - b)
+        const percentile = (p: number) => values.length
+          ? values[Math.min(values.length - 1, Math.floor((values.length - 1) * p))]
+          : 0
+        const voiceLow = percentile(0.1)
+        const voiceMedian = percentile(0.5)
+        const voiceHigh = percentile(0.9)
+
+        if (values.length < MIN_VOICE_CALIBRATION_WINDOWS || peakProbability < 0.12) {
+          restorePreviousProfile()
+          reject(new CalibrationError(
+            'CALIBRATION_NEEDS_VOICE',
+            `accepted ${values.length} voice windows, peak ${peakProbability.toFixed(3)}`
+          ))
+          return
+        }
+
+        const margin = Math.max(0.05, voiceLow * 0.35)
+        this.calibratedVadThreshold = Math.max(0.05, Math.min(0.45, voiceLow - margin))
+        this.hasVoiceCalibration = true
+        this.updateThresholds()
+        console.info('[WebRTC] DeepFilter voice calibration', {
+          vadThreshold: Number(this.calibratedVadThreshold.toFixed(4)),
+          voiceLow: Number(voiceLow.toFixed(4)),
+          voiceMedian: Number(voiceMedian.toFixed(4)),
+          voiceHigh: Number(voiceHigh.toFixed(4)),
+          peakProbability: Number(peakProbability.toFixed(4)),
+          acceptedVoiceWindows: values.length
+        })
+
+        try {
+          const profile: StoredVoiceProfile = {
+            version: WebRTCManager.CALIBRATION_SCHEMA_VERSION,
+            timestamp: Date.now(),
+            vadThreshold: this.calibratedVadThreshold,
+            voiceLow,
+            voiceMedian,
+            voiceHigh
+          }
+          localStorage.setItem(this.calibrationStorageKey(this.calibrationDeviceId), JSON.stringify(profile))
+        } catch (error) {
+          console.error('Failed to save Silero calibration data', error)
+        }
+
+        resolve({
+          vadThreshold: this.calibratedVadThreshold,
+          voiceLow,
+          voiceMedian,
+          voiceHigh,
+          peakProbability,
+          acceptedVoiceWindows: values.length
+        })
+      }, durationMs)
     })
   }
 
@@ -2183,6 +2185,257 @@ export class WebRTCManager {
       return true
     }
     return this.startLocalStream(undefined, undefined, false)
+  }
+
+  private setMonitorWhileMuted(enabled: boolean) {
+    this.micNode?.port.postMessage({ type: 'setConfig', monitorWhileMuted: enabled })
+    this.manualGateNode?.port.postMessage({ type: 'setConfig', monitorWhileMuted: enabled })
+  }
+
+  private async ensureMicTestCaptureModule(ctx: AudioContext): Promise<void> {
+    if (this.micTestCaptureModules.has(ctx)) return
+    await ctx.audioWorklet.addModule(micTestCaptureProcessorUrl)
+    this.micTestCaptureModules.add(ctx)
+  }
+
+  private ensureMicTestPlayback(sampleRate: number): { ctx: AudioContext; gain: GainNode } {
+    let ctx = this.micTestContext
+    if (ctx && ctx.state !== 'closed' && this.micTestGain) {
+      if (ctx.state === 'suspended') void ctx.resume().catch(() => { })
+      return { ctx, gain: this.micTestGain }
+    }
+
+    this.releaseMicTestPlayback()
+    try {
+      ctx = new AudioContext({ sampleRate, latencyHint: 'interactive' })
+    } catch (error) {
+      console.warn(`[WebRTC] Mic test playback could not use ${sampleRate} Hz, falling back to default:`, error)
+      ctx = new AudioContext({ latencyHint: 'interactive' })
+    }
+    this.micTestContext = ctx
+    const gain = ctx.createGain()
+    gain.gain.value = this.micTestVolume()
+    gain.connect(ctx.destination)
+    this.micTestGain = gain
+    void this.applyMicTestSink(ctx)
+    if (ctx.state === 'suspended') void ctx.resume().catch(() => { })
+
+    return { ctx, gain }
+  }
+
+  private micTestVolume(): number {
+    return Math.max(0, Math.min(2, this.outputVolume / 100))
+  }
+
+  private releaseMicTestPlayback() {
+    this.detachMicTestSource()
+    if (this.micTestGain) {
+      try { this.micTestGain.disconnect() } catch { }
+      this.micTestGain = null
+    }
+    if (this.micTestContext) {
+      const ctx = this.micTestContext
+      this.micTestContext = null
+      void ctx.close().catch(() => { })
+    }
+  }
+
+  private detachMicTestSource() {
+    const source = this.micTestSource
+    this.micTestSource = null
+    if (!source) return
+    source.onended = null
+    try { source.stop() } catch { }
+    try { source.disconnect() } catch { }
+  }
+
+  private async applyMicTestSink(ctx: AudioContext) {
+    const target = ctx as AudioContext & { setSinkId?: (id: string) => Promise<void> }
+    if (typeof target.setSinkId !== 'function') return
+    const sinkId = this.currentOutputDeviceId === 'default' ? '' : this.currentOutputDeviceId
+    try {
+      await target.setSinkId(sinkId)
+    } catch (error) {
+      console.warn('[WebRTC] Mic test could not select the output device:', error)
+    }
+  }
+
+  public isMicTestRecording(): boolean {
+    return this.micTestRun !== null
+  }
+
+  public async prepareMicTest(): Promise<void> {
+    try {
+      if (!await this.prewarmLocalStream()) return
+      const ctx = this.processedContext
+      if (!ctx || ctx.state === 'closed') return
+      await this.ensureMicTestCaptureModule(ctx)
+    } catch (error) {
+      console.warn('[WebRTC] Mic test could not warm up:', error)
+    }
+  }
+
+  public async recordMicTest(onArmed?: () => void, durationMs = MIC_TEST_DURATION_MS): Promise<MicTestClip> {
+    if (this.micTestRun) return this.micTestRun
+    this.micTestRun = this.runMicTest(durationMs, onArmed)
+    try {
+      return await this.micTestRun
+    } finally {
+      this.micTestRun = null
+    }
+  }
+
+  private async runMicTest(durationMs: number, onArmed?: () => void): Promise<MicTestClip> {
+    this.pauseMicTest()
+    this.micTestBuffer = null
+    const generation = this.micTestGeneration
+
+    const started = await this.prewarmLocalStream()
+    const ctx = this.processedContext
+    const tap = this.micOutputTap
+    if (!started || !ctx || !tap || ctx.state === 'closed') throw new Error('MIC_TEST_NO_MIC')
+    if (ctx.state === 'suspended') await ctx.resume().catch(() => { })
+
+    await this.ensureMicTestCaptureModule(ctx)
+    const capture = new AudioWorkletNode(ctx, 'mic-test-capture-processor', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      channelCount: 1,
+      channelCountMode: 'explicit'
+    })
+    const sink = ctx.createMediaStreamDestination()
+    capture.connect(sink)
+
+    let timeout: ReturnType<typeof setTimeout> | null = null
+    const captured = new Promise<Float32Array<ArrayBuffer>>((resolve, reject) => {
+      capture.port.onmessage = event => {
+        if (event.data?.type === 'captured') resolve(event.data.pcm as Float32Array<ArrayBuffer>)
+      }
+      capture.onprocessorerror = () => reject(new Error('MIC_TEST_CAPTURE_FAILED'))
+      timeout = setTimeout(() => reject(new Error('MIC_TEST_TIMEOUT')), durationMs + MIC_TEST_CAPTURE_GRACE_MS)
+    })
+
+    try {
+      tap.connect(capture)
+      this.setMonitorWhileMuted(true)
+      capture.port.postMessage({
+        type: 'start',
+        samples: Math.round((durationMs / 1000) * ctx.sampleRate)
+      })
+      onArmed?.()
+      const pcm = await captured
+      if (generation !== this.micTestGeneration) throw new Error('MIC_TEST_CANCELLED')
+      if (pcm.length === 0) throw new Error('MIC_TEST_EMPTY')
+
+      let peak = 0
+      for (let i = 0; i < pcm.length; i++) {
+        const magnitude = pcm[i] < 0 ? -pcm[i] : pcm[i]
+        if (magnitude > peak) peak = magnitude
+      }
+
+      const playback = this.ensureMicTestPlayback(ctx.sampleRate)
+      const buffer = playback.ctx.createBuffer(1, pcm.length, ctx.sampleRate)
+      buffer.copyToChannel(pcm, 0)
+      this.micTestBuffer = buffer
+      this.micTestOffset = 0
+
+      return {
+        durationSeconds: buffer.duration,
+        peakDb: Math.round(20 * Math.log10(Math.max(peak, 1e-6)))
+      }
+    } catch (error) {
+      if (generation !== this.micTestGeneration) throw new Error('MIC_TEST_CANCELLED')
+      throw error
+    } finally {
+      if (timeout) clearTimeout(timeout)
+      this.setMonitorWhileMuted(false)
+      capture.port.onmessage = null
+      capture.onprocessorerror = null
+      try { capture.port.postMessage({ type: 'stop' }) } catch { }
+      try { tap.disconnect(capture) } catch { }
+      try { capture.disconnect() } catch { }
+      for (const track of sink.stream.getTracks()) {
+        try { track.stop() } catch { }
+      }
+    }
+  }
+
+  public onMicTestEnded(listener: (() => void) | null) {
+    this.micTestEndedListener = listener
+  }
+
+  public getMicTestDuration(): number {
+    return this.micTestBuffer?.duration ?? 0
+  }
+
+  public isMicTestPlaying(): boolean {
+    return this.micTestPlaying
+  }
+
+  public getMicTestPosition(): number {
+    const buffer = this.micTestBuffer
+    if (!buffer) return 0
+    if (!this.micTestPlaying || !this.micTestContext) return Math.min(this.micTestOffset, buffer.duration)
+    const elapsed = this.micTestContext.currentTime - this.micTestStartedAt
+    return Math.max(0, Math.min(buffer.duration, elapsed))
+  }
+
+  public playMicTest(offsetSeconds?: number): boolean {
+    const buffer = this.micTestBuffer
+    if (!buffer) return false
+
+    const playback = this.ensureMicTestPlayback(buffer.sampleRate)
+    this.detachMicTestSource()
+
+    const requested = offsetSeconds === undefined ? this.micTestOffset : offsetSeconds
+    const offset = requested >= buffer.duration - 0.02 ? 0 : Math.max(0, requested)
+
+    const source = playback.ctx.createBufferSource()
+    source.buffer = buffer
+    source.connect(playback.gain)
+    playback.gain.gain.value = this.micTestVolume()
+    source.onended = () => {
+      if (this.micTestSource !== source) return
+      this.micTestSource = null
+      this.micTestPlaying = false
+      this.micTestOffset = buffer.duration
+      this.micTestEndedListener?.()
+    }
+
+    this.micTestSource = source
+    this.micTestOffset = offset
+    this.micTestStartedAt = playback.ctx.currentTime - offset
+    this.micTestPlaying = true
+    source.start(0, offset)
+    return true
+  }
+
+  public pauseMicTest() {
+    if (!this.micTestPlaying) return
+    this.micTestOffset = this.getMicTestPosition()
+    this.micTestPlaying = false
+    this.detachMicTestSource()
+  }
+
+  public seekMicTest(seconds: number) {
+    const buffer = this.micTestBuffer
+    if (!buffer) return
+    const target = Math.max(0, Math.min(buffer.duration - MIC_TEST_SEEK_TAIL_S, seconds))
+    if (this.micTestPlaying) {
+      this.playMicTest(target)
+      return
+    }
+    this.micTestOffset = target
+  }
+
+  public disposeMicTest() {
+    this.micTestGeneration++
+    this.micTestPlaying = false
+    this.micTestOffset = 0
+    this.micTestBuffer = null
+    this.releaseMicTestPlayback()
+    this.setMonitorWhileMuted(false)
   }
 
   public async startLocalStream(deviceId?: string, useNS?: boolean, forceRestart = false): Promise<boolean> {
@@ -2194,11 +2447,20 @@ export class WebRTCManager {
     }
 
     const run = async () => {
+      const startedAt = performance.now()
+      const laps: string[] = []
+      let lapAt = startedAt
+      const lap = (label: string) => {
+        const now = performance.now()
+        laps.push(`${label} ${Math.round(now - lapAt)}ms`)
+        lapAt = now
+      }
       if (!forceRestart && this.localStream && this.localStream.getAudioTracks().length > 0 && this.localStream.getAudioTracks().every(t => t.readyState === 'live')) {
         const me = useAppStore.getState().currentUser
         if (me && this.rawStream && !this.speakingIntervals.has(me.id)) {
           this.setupVAD(this.rawStream, me.id, true)
         }
+        console.log(`[WebRTC] startLocalStream reused existing stream in ${Math.round(performance.now() - startedAt)}ms`)
         return true
       }
 
@@ -2208,18 +2470,18 @@ export class WebRTCManager {
         if (forceRestart && this.rawStream) { this.rawStream.getTracks().forEach(t => t.stop()); this.rawStream = null }
         if (this.localStream) { this.localStream.getTracks().forEach(t => t.stop()); this.localStream = null }
         this.cleanupProcessedStream()
+        lap('cleanup')
 
         let raw = this.rawStream
         if (!raw?.getAudioTracks().some(track => track.readyState === 'live')) {
           try {
             raw = await this.captureRawMicStream()
           } catch (error) {
-            // Keep the session alive with a silent track instead of tearing the
-            // call down, but tell the user which device problem to fix.
             this.reportMicCaptureError(error)
             raw = createSilentAudioStream()
           }
         }
+        lap('getUserMedia')
 
         this.rawStream = raw
         const rawTrack = raw.getAudioTracks()[0]
@@ -2238,13 +2500,11 @@ export class WebRTCManager {
         }
 
         this.localStream = await this.createProcessedStream(raw)
+        lap('graph')
 
         const localTrack = this.localStream.getAudioTracks()[0]
         if (localTrack) {
-          // The track has already passed Silero and DeepFilter. Preserve its
-          // full-band timbre instead of asking WebRTC to apply speech-oriented
-          // encoder heuristics to an already cleaned signal.
-          localTrack.contentHint = 'music'
+          localTrack.contentHint = 'speech'
         }
 
         if (this.processedContext && this.processedContext.state === 'suspended') {
@@ -2254,15 +2514,15 @@ export class WebRTCManager {
         this.startSilenceMonitor()
 
         const me = useAppStore.getState().currentUser
-        if (me && this.rawStream && !this.dfNode) this.setupVAD(this.rawStream, me.id, true)
+        if (me && this.rawStream && !this.hasSpeakingWorklet()) this.setupVAD(this.rawStream, me.id, true)
 
         const isMuted = me?.isMuted || me?.isServerMuted || false
         this.toggleMute(isMuted)
+        lap('meters')
 
+        console.log(`[WebRTC] startLocalStream ${Math.round(performance.now() - startedAt)}ms: ${laps.join(', ')}`)
         return true
       } catch (e) {
-        // Keep the DOMException name inside the message: the toast classifier
-        // needs it to tell a busy or missing microphone from a denied one.
         throw new Error(`MIC_ACCESS_FAILED: ${describeMediaError(e)}`)
       }
     }
@@ -2299,6 +2559,12 @@ export class WebRTCManager {
       this.stopBackgroundMeter()
       await this.startBackgroundMic(deviceId)
     }
+  }
+
+  public async setNoiseSuppressionMode(mode: 'auto' | 'manual') {
+    this.thresholdMode = mode
+    localStorage.setItem('zabor_threshold_mode', mode)
+    if (this.localStream) await this.updateSettings(this.currentDeviceId, this.noiseSuppression)
   }
 
   public stopLocalStream() {
@@ -2344,7 +2610,6 @@ export class WebRTCManager {
       const store = useAppStore.getState();
       const me = store.currentUser;
 
-
       if (!me || me.isMuted || me.isServerMuted) {
         this.silenceCounterMs = 0;
         return;
@@ -2358,7 +2623,6 @@ export class WebRTCManager {
             sumSquares += dataArray[i] * dataArray[i];
           }
           const rms = Math.sqrt(sumSquares / bufferLength);
-
 
           if (rms < 0.0002) {
             this.silenceCounterMs += 200;
@@ -2399,8 +2663,11 @@ export class WebRTCManager {
   }
 
   public toggleMute(isMuted: boolean) {
-    if (this.dfNode) {
-      this.dfNode.port.postMessage({ type: 'setConfig', isMuted: isMuted })
+    if (this.micNode) {
+      this.micNode.port.postMessage({ type: 'setConfig', isMuted: isMuted })
+    }
+    if (this.manualGateNode) {
+      this.manualGateNode.port.postMessage({ type: 'setConfig', isMuted })
     }
     if (this.localStream) {
       this.localStream.getAudioTracks().forEach(t => { t.enabled = !isMuted })
@@ -2419,8 +2686,6 @@ export class WebRTCManager {
     }
   }
 
-
-
   private initOutputMixer() {
     if (this.outputMixContext) {
       if (this.outputMixContext.state === 'suspended') this.outputMixContext.resume().catch(() => { })
@@ -2437,22 +2702,10 @@ export class WebRTCManager {
     }
     this.outputCompressor = this.outputMixContext.createDynamicsCompressor()
 
-    // Make-up gain for everything arriving from the channel - voices and shared
-    // stream audio alike. In-app sound effects are deliberately not here: they run
-    // on their own AudioContext in signalr.ts and keep the level they were mixed at.
-    //
-    // The bus used to sit at unity with the compressor as a distant safety net at
-    // -3 dB, so nothing in the chain ever applied gain: a quiet sender stayed quiet
-    // no matter how far the sliders were pushed, which is the reported problem. With
-    // the make-up ahead of the compressor the pair behaves as a mix leveller: a
-    // sender that is already at the standard level is peak-limited back to roughly
-    // +4.5 dB, while a quiet or legacy sender receives the full +6 dB.
     this.outputBusGain = this.outputMixContext.createGain()
     this.outputBusGain.gain.value = Math.pow(10, PLAYBACK_MAKEUP_GAIN_DB / 20)
     this.outputBusGain.connect(this.outputCompressor)
 
-    // Threshold lowered from -3 dB so the compressor actually catches what the
-    // make-up adds; the slower release keeps it from pumping between syllables.
     this.outputCompressor.threshold.value = -8
     this.outputCompressor.knee.value = 6
     this.outputCompressor.ratio.value = 4
@@ -2501,17 +2754,24 @@ export class WebRTCManager {
 
         if (this.streamSourceNodes.has(userId)) {
           try { this.streamSourceNodes.get(userId)?.disconnect() } catch { }
+          try { this.streamDelayNodes.get(userId)?.disconnect() } catch { }
           try { this.streamGainNodes.get(userId)?.disconnect() } catch { }
         }
 
         const source = this.outputMixContext!.createMediaStreamSource(new MediaStream([event.track]))
+        const delay = new DelayNode(this.outputMixContext!, { maxDelayTime: 0.5, delayTime: 0 })
         const gain = this.outputMixContext!.createGain()
-        source.connect(gain)
+        source.connect(delay)
+        delay.connect(gain)
         gain.connect(this.outputBusGain!)
 
         this.streamSourceNodes.set(userId, source)
+        this.streamDelayNodes.set(userId, delay)
         this.streamGainNodes.set(userId, gain)
+        this.streamSyncOffsetEma.delete(userId)
+        this.streamSyncSkew.delete(userId)
         this.updateRemoteStreamVolume(userId)
+        this.startStreamSyncMonitoring()
       } else {
         this.setupVAD(stream, userId, false)
 
@@ -2550,6 +2810,21 @@ export class WebRTCManager {
       const iceSt = pc.iceConnectionState
 
       if (st === 'connected' || iceSt === 'connected' || iceSt === 'completed') {
+        const startedAt = this.peerConnectStartedAt.get(userId)
+        if (startedAt !== undefined) {
+          this.peerConnectStartedAt.delete(userId)
+          const elapsed = Math.round(performance.now() - startedAt)
+          void pc.getStats().then(stats => {
+            let pair = ''
+            stats.forEach(report => {
+              if (report.type !== 'candidate-pair' || !report.selected && report.state !== 'succeeded') return
+              const local = stats.get(report.localCandidateId)
+              const remote = stats.get(report.remoteCandidateId)
+              if (local && remote) pair = `${local.candidateType}/${local.protocol} -> ${remote.candidateType}/${remote.protocol}`
+            })
+            console.log(`[WebRTC] peer ${userId} connected in ${elapsed}ms${pair ? ` via ${pair}` : ''}`)
+          }).catch(() => console.log(`[WebRTC] peer ${userId} connected in ${elapsed}ms`))
+        }
         useAppStore.getState().setWebRTCConnectionStatus(userId, true)
         this.clearIceTimeout(userId)
         this.retryCount.delete(userId)
@@ -2612,8 +2887,6 @@ export class WebRTCManager {
     try {
       const count = this.retryCount.get(userId) ?? 0
 
-      // Give one side priority to avoid simultaneous offers, but let the other
-      // side recover independently if the preferred peer is completely offline.
       if (me > userId && count === 0) {
         this.retryCount.set(userId, 1)
         this.startIceTimeout(userId)
@@ -2627,8 +2900,6 @@ export class WebRTCManager {
         return
       }
 
-      // Rebuild only after ICE restarts are exhausted. Preserve the last frame
-      // so a transient outage does not close the stream card for the viewer.
       this.disconnectFromPeer(userId, { preserveRemoteVideo: true, preserveRetryState: true })
       this.retryCount.set(userId, 0)
       await this.connectToPeer(userId, true)
@@ -2667,8 +2938,8 @@ export class WebRTCManager {
     }
 
     try {
-      await context.audioWorklet.addModule(streamAudioProcessorUrl)
-      const node = new AudioWorkletNode(context, 'stream-audio-processor', {
+      await context.audioWorklet.addModule(playbackBufferProcessorUrl)
+      const node = new AudioWorkletNode(context, 'playback-buffer-processor', {
         numberOfInputs: 0,
         numberOfOutputs: 1,
         outputChannelCount: [2]
@@ -2784,16 +3055,14 @@ export class WebRTCManager {
         videoTrack.contentHint = 'motion'
       }
 
-
-
       for (const [userId, pc] of this.peerConnections.entries()) {
         if (videoTrack) {
           const sender = pc.addTrack(videoTrack, stream)
           try {
             if (!isCamera) {
-              (sender as any).degradationPreference = 'maintain-resolution'
               const params = sender.getParameters()
               if (!params.encodings || params.encodings.length === 0) params.encodings = [{}]
+              params.degradationPreference = 'maintain-resolution'
               params.encodings[0].maxBitrate = quality === 'high' ? 6000000 : 2500000
               params.encodings[0].maxFramerate = quality === 'high' ? 60 : 30
               params.encodings[0].networkPriority = 'high'
@@ -2836,6 +3105,12 @@ export class WebRTCManager {
       this.renegotiatePeer(pc, userId).catch(() => { })
     }
     this.lastPacketsLost.clear()
+    this.lastPacketsSent.clear()
+    this.lossLadderStep.clear()
+    this.lossBreachCount.clear()
+    this.lossCleanCount.clear()
+    this.appliedVideoProfiles.clear()
+    this.viewerStates.clear()
   }
 
   private async renegotiatePeer(pc: RTCPeerConnection, userId: string, iceRestart = false): Promise<boolean> {
@@ -2864,6 +3139,245 @@ export class WebRTCManager {
     void this.renegotiatePeer(pc, userId)
   }
 
+  private static readonly SYNC_DEADBAND_S = 0.015
+  private static readonly SYNC_MAX_AUDIO_DELAY_S = 0.4
+  private static readonly SYNC_VIDEO_TARGET_FLOOR_MS = 80
+  private static readonly SYNC_MAX_VIDEO_TARGET_MS = 400
+  private static readonly SYNC_EMA_ALPHA = 0.4
+  private static readonly SYNC_CORRECTION_GAIN = 0.6
+  private static readonly SYNC_MAX_DELAY_STEP_S = 0.025
+  private static readonly SYNC_DELAY_RAMP_S = 1.0
+
+  private startStreamSyncMonitoring() {
+    if (this.streamSyncInterval) return
+    this.streamSyncInterval = setInterval(() => {
+      void this.runStreamSyncTick()
+    }, 1000)
+  }
+
+  private stopStreamSyncMonitoring() {
+    if (!this.streamSyncInterval) return
+    clearInterval(this.streamSyncInterval)
+    this.streamSyncInterval = null
+    this.streamSyncOffsetEma.clear()
+    this.streamSyncSkew.clear()
+  }
+
+  private measureAudioVideoOffset(stats: RTCStatsReport): number | null {
+    let audioPlayout = Number.NaN
+    let videoPlayout = Number.NaN
+    let audioJitter = Number.NaN
+    let videoJitter = Number.NaN
+
+    stats.forEach(report => {
+      if (report.type !== 'inbound-rtp') return
+      const emitted = report.jitterBufferEmittedCount
+      const jitterDelay = typeof report.jitterBufferDelay === 'number' && typeof emitted === 'number' && emitted > 0
+        ? report.jitterBufferDelay / emitted
+        : Number.NaN
+      if (report.kind === 'audio') {
+        if (typeof report.estimatedPlayoutTimestamp === 'number') audioPlayout = report.estimatedPlayoutTimestamp
+        audioJitter = jitterDelay
+      } else if (report.kind === 'video') {
+        if (typeof report.estimatedPlayoutTimestamp === 'number') videoPlayout = report.estimatedPlayoutTimestamp
+        videoJitter = jitterDelay
+      }
+    })
+
+    if (Number.isFinite(audioPlayout) && Number.isFinite(videoPlayout)) {
+      return (audioPlayout - videoPlayout) / 1000
+    }
+    if (Number.isFinite(audioJitter) && Number.isFinite(videoJitter)) {
+      return videoJitter - audioJitter
+    }
+    return null
+  }
+
+  private async runStreamSyncTick() {
+    if (this.streamGainNodes.size === 0) {
+      this.stopStreamSyncMonitoring()
+      return
+    }
+
+    const ctx = this.outputMixContext
+    if (!ctx) return
+
+    for (const userId of this.streamGainNodes.keys()) {
+      const pc = this.peerConnections.get(userId)
+      const delayNode = this.streamDelayNodes.get(userId)
+      if (!pc || !delayNode || pc.connectionState !== 'connected') continue
+
+      try {
+        const stats = await pc.getStats()
+        const rawOffset = this.measureAudioVideoOffset(stats)
+        if (rawOffset === null || !Number.isFinite(rawOffset)) continue
+
+        const clampedOffset = Math.max(-1, Math.min(1, rawOffset))
+        const previousEma = this.streamSyncOffsetEma.get(userId)
+        const smoothed = previousEma === undefined
+          ? clampedOffset
+          : previousEma + WebRTCManager.SYNC_EMA_ALPHA * (clampedOffset - previousEma)
+        this.streamSyncOffsetEma.set(userId, smoothed)
+
+        const maxVideoExtra = (WebRTCManager.SYNC_MAX_VIDEO_TARGET_MS - WebRTCManager.SYNC_VIDEO_TARGET_FLOOR_MS) / 1000
+        let skew = this.streamSyncSkew.get(userId) ?? 0
+        if (Math.abs(smoothed) > WebRTCManager.SYNC_DEADBAND_S) {
+          skew = Math.max(
+            -maxVideoExtra,
+            Math.min(WebRTCManager.SYNC_MAX_AUDIO_DELAY_S, skew + WebRTCManager.SYNC_CORRECTION_GAIN * smoothed)
+          )
+          this.streamSyncSkew.set(userId, skew)
+        }
+
+        const wantedAudioDelay = Math.max(0, skew)
+        const appliedAudioDelay = delayNode.delayTime.value
+        const step = Math.max(
+          -WebRTCManager.SYNC_MAX_DELAY_STEP_S,
+          Math.min(WebRTCManager.SYNC_MAX_DELAY_STEP_S, wantedAudioDelay - appliedAudioDelay)
+        )
+        if (Math.abs(step) > 0.002) {
+          const now = ctx.currentTime
+          delayNode.delayTime.cancelScheduledValues(now)
+          delayNode.delayTime.setValueAtTime(appliedAudioDelay, now)
+          delayNode.delayTime.linearRampToValueAtTime(
+            appliedAudioDelay + step,
+            now + WebRTCManager.SYNC_DELAY_RAMP_S
+          )
+        }
+
+        const videoReceiver = pc.getReceivers().find(r => r.track?.kind === 'video')
+        if (videoReceiver && 'jitterBufferTarget' in videoReceiver) {
+          const wantedTargetMs = WebRTCManager.SYNC_VIDEO_TARGET_FLOOR_MS + Math.max(0, -skew) * 1000
+          const currentTargetMs = videoReceiver.jitterBufferTarget
+          if (currentTargetMs === null || Math.abs(currentTargetMs - wantedTargetMs) > 5) {
+            videoReceiver.jitterBufferTarget = wantedTargetMs
+          }
+        }
+      } catch { }
+    }
+  }
+
+  public applyViewerState(viewerId: string, state: 'watching' | 'preview') {
+    const normalized = state === 'preview' ? 'preview' : 'watching'
+    if (this.viewerStates.get(viewerId) === normalized) return
+    this.viewerStates.set(viewerId, normalized)
+    if (this.localVideoStream && this.currentStreamQuality !== 'camera') {
+      void this.applyVideoProfile(viewerId)
+    }
+  }
+
+  public scheduleStreamViewInterestReport() {
+    if (this.viewInterestTimer) clearTimeout(this.viewInterestTimer)
+    this.viewInterestTimer = setTimeout(() => {
+      this.viewInterestTimer = null
+      this.reportStreamViewInterest()
+    }, 300)
+  }
+
+  private reportStreamViewInterest() {
+    const store = useAppStore.getState()
+    const currentUserId = store.currentUser?.id
+    const watchedId = store.activeStreamId
+    const streamingPeers = Object.keys(store.remoteVideoStreams)
+
+    for (const peerId of [...this.reportedViewStates.keys()]) {
+      if (!streamingPeers.includes(peerId)) this.reportedViewStates.delete(peerId)
+    }
+
+    for (const peerId of streamingPeers) {
+      if (peerId === currentUserId) continue
+      if (!this.peerConnections.has(peerId)) continue
+      const desired: 'watching' | 'preview' = peerId === watchedId ? 'watching' : 'preview'
+      if (this.reportedViewStates.get(peerId) === desired) continue
+      this.reportedViewStates.set(peerId, desired)
+      signalRService.sendStreamViewState(peerId, desired)
+    }
+  }
+
+  private static readonly VIDEO_LADDER = [
+    { scale: 1.0, bitrateHigh: 6000000, bitrateLow: 2500000, fpsHigh: 60, fpsLow: 30 },
+    { scale: 1.0, bitrateHigh: 3000000, bitrateLow: 1200000, fpsHigh: 60, fpsLow: 30 },
+    { scale: 1.0, bitrateHigh: 1800000, bitrateLow: 700000, fpsHigh: 30, fpsLow: 20 },
+    { scale: 2.0, bitrateHigh: 800000, bitrateLow: 400000, fpsHigh: 20, fpsLow: 15 }
+  ]
+
+  private static readonly PREVIEW_VIDEO_PROFILE = { scale: 4.0, bitrate: 150000, framerate: 2 }
+  private static readonly LADDER_BREACHES_TO_DROP = 2
+  private static readonly LADDER_CLEAN_TO_RECOVER = 4
+
+  private videoProfileFor(userId: string) {
+    if (this.viewerStates.get(userId) === 'preview') return WebRTCManager.PREVIEW_VIDEO_PROFILE
+    const isHigh = this.currentStreamQuality === 'high'
+    const maxStep = WebRTCManager.VIDEO_LADDER.length - 1
+    const step = Math.max(0, Math.min(maxStep, this.lossLadderStep.get(userId) ?? 0))
+    const rung = WebRTCManager.VIDEO_LADDER[step]
+    return {
+      scale: rung.scale,
+      bitrate: isHigh ? rung.bitrateHigh : rung.bitrateLow,
+      framerate: isHigh ? rung.fpsHigh : rung.fpsLow
+    }
+  }
+
+  private async applyVideoProfile(userId: string, pc?: RTCPeerConnection | null) {
+    const connection = pc ?? this.peerConnections.get(userId)
+    if (!connection) return
+    const sender = connection.getSenders().find(s => s.track?.kind === 'video')
+    if (!sender) return
+
+    const profile = this.videoProfileFor(userId)
+    const signature = `${profile.scale}|${profile.bitrate}|${profile.framerate}`
+    if (this.appliedVideoProfiles.get(userId) === signature) return
+
+    try {
+      const params = sender.getParameters()
+      if (!params.encodings || params.encodings.length === 0) params.encodings = [{}]
+      params.degradationPreference = 'maintain-resolution'
+      params.encodings[0].priority = 'medium'
+      params.encodings[0].networkPriority = 'high'
+      params.encodings[0].scaleResolutionDownBy = profile.scale
+      params.encodings[0].maxBitrate = profile.bitrate
+      params.encodings[0].maxFramerate = profile.framerate
+      await sender.setParameters(params)
+      this.appliedVideoProfiles.set(userId, signature)
+    } catch { }
+  }
+
+  private updateLossLadder(userId: string, fractionLost: number, rtt: number) {
+    const desiredStep =
+      fractionLost > 0.05 || rtt > 0.28 ? 3
+        : fractionLost > 0.02 || rtt > 0.18 ? 2
+          : fractionLost > 0.008 || rtt > 0.10 ? 1
+            : 0
+    const currentStep = this.lossLadderStep.get(userId) ?? 0
+
+    if (desiredStep > currentStep) {
+      const breaches = (this.lossBreachCount.get(userId) ?? 0) + 1
+      this.lossCleanCount.set(userId, 0)
+      if (breaches >= WebRTCManager.LADDER_BREACHES_TO_DROP) {
+        this.lossLadderStep.set(userId, currentStep + 1)
+        this.lossBreachCount.set(userId, 0)
+      } else {
+        this.lossBreachCount.set(userId, breaches)
+      }
+      return
+    }
+
+    this.lossBreachCount.set(userId, 0)
+
+    if (desiredStep < currentStep) {
+      const clean = (this.lossCleanCount.get(userId) ?? 0) + 1
+      if (clean >= WebRTCManager.LADDER_CLEAN_TO_RECOVER) {
+        this.lossLadderStep.set(userId, currentStep - 1)
+        this.lossCleanCount.set(userId, 0)
+      } else {
+        this.lossCleanCount.set(userId, clean)
+      }
+      return
+    }
+
+    this.lossCleanCount.set(userId, 0)
+  }
+
   private startStatsMonitoring() {
     if (this.statsInterval) clearInterval(this.statsInterval)
     this.statsInterval = setInterval(async () => {
@@ -2872,70 +3386,38 @@ export class WebRTCManager {
         if (pc.connectionState !== 'connected') continue
         try {
           const stats = await pc.getStats()
-          let rawPacketsLost = 0
+          let reportedFractionLost = -1
           let rtt = 0
           let framesDropped = 0
+          let rawPacketsLost = 0
+          let rawPacketsSent = 0
 
           stats.forEach(report => {
             if (report.type === 'remote-inbound-rtp' && report.kind === 'video') {
-              rawPacketsLost = report.packetsLost || 0
               rtt = report.roundTripTime || 0
+              rawPacketsLost = report.packetsLost || 0
+              if (typeof report.fractionLost === 'number') reportedFractionLost = report.fractionLost
             }
             if (report.type === 'outbound-rtp' && report.kind === 'video') {
               framesDropped = report.framesDropped || 0
+              rawPacketsSent = report.packetsSent || 0
             }
           })
 
-          const prevLost = this.lastPacketsLost.get(userId) ?? 0
+          const previousLost = this.lastPacketsLost.get(userId) ?? rawPacketsLost
+          const previousSent = this.lastPacketsSent.get(userId) ?? rawPacketsSent
           this.lastPacketsLost.set(userId, rawPacketsLost)
-          const packetsLost = Math.max(0, rawPacketsLost - prevLost)
+          this.lastPacketsSent.set(userId, rawPacketsSent)
 
-          const sender = pc.getSenders().find(s => s.track?.kind === 'video')
-          if (sender) {
-            const params = sender.getParameters()
-            if (!params.encodings || params.encodings.length === 0) params.encodings = [{}]
-            let changed = false
-
-            const isHigh = this.currentStreamQuality === 'high'
-
-            if (params.encodings[0].priority !== 'medium') {
-              params.encodings[0].priority = 'medium'
-              changed = true
-            }
-
-            let targetScale = 1.0
-            let targetBitrate = isHigh ? 6000000 : 2500000
-            let targetFramerate = isHigh ? 60 : 30
-
-            if (packetsLost > 6 || rtt > 0.28) {
-              targetScale = 2.0
-              targetBitrate = isHigh ? 800000 : 400000
-              targetFramerate = isHigh ? 20 : 15
-            } else if (packetsLost > 3 || rtt > 0.18) {
-              targetScale = 1.0
-              targetBitrate = isHigh ? 1800000 : 700000
-              targetFramerate = isHigh ? 30 : 20
-            } else if (packetsLost > 1 || rtt > 0.10) {
-              targetScale = 1.0
-              targetBitrate = isHigh ? 3000000 : 1200000
-              targetFramerate = isHigh ? 60 : 30
-            }
-
-            if (
-              params.encodings[0].scaleResolutionDownBy !== targetScale ||
-              params.encodings[0].maxBitrate !== targetBitrate ||
-              params.encodings[0].maxFramerate !== targetFramerate
-            ) {
-              params.encodings[0].scaleResolutionDownBy = targetScale
-              params.encodings[0].maxBitrate = targetBitrate
-              params.encodings[0].maxFramerate = targetFramerate
-              changed = true
-            }
-
-            if (changed) {
-              await sender.setParameters(params)
-            }
+          let fractionLost = reportedFractionLost
+          if (fractionLost < 0) {
+            const lostDelta = Math.max(0, rawPacketsLost - previousLost)
+            const sentDelta = Math.max(0, rawPacketsSent - previousSent)
+            fractionLost = sentDelta > 0 ? Math.min(1, lostDelta / (sentDelta + lostDelta)) : 0
           }
+
+          this.updateLossLadder(userId, fractionLost, rtt)
+          await this.applyVideoProfile(userId, pc)
 
           if (framesDropped > 50) {
             const store = useAppStore.getState()
@@ -2981,15 +3463,35 @@ export class WebRTCManager {
     return Boolean(store.currentChannelId && store.voiceUsers.some(user => user.id === userId))
   }
 
+  private async awaitPeerRelevance(userId: string): Promise<boolean> {
+    if (this.isPeerRelevant(userId)) return true
+    const startedAt = performance.now()
+    const deadline = startedAt + WebRTCManager.PEER_RELEVANCE_WAIT_MS
+    while (performance.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+      if (!useAppStore.getState().currentUser) return false
+      if (this.isPeerRelevant(userId)) {
+        console.log(`[WebRTC] peer ${userId} became known after ${Math.round(performance.now() - startedAt)}ms`)
+        return true
+      }
+    }
+    console.warn(`[WebRTC] peer ${userId} never appeared in the channel roster, signalling dropped`)
+    return false
+  }
+
   public async connectToPeer(userId: string, preserveRemoteVideoOnFailure = false) {
     if (userId === useAppStore.getState().currentUser?.id) return
     if (!this.isPeerRelevant(userId)) return
     if (this.peerConnections.has(userId)) return
 
+    const startedAt = performance.now()
+    this.peerConnectStartedAt.set(userId, startedAt)
     if (!this.localStream) {
       await this.startLocalStream().catch(() => { })
     }
+    const iceStartedAt = performance.now()
     await this.ensureIceServers()
+    const iceMs = Math.round(performance.now() - iceStartedAt)
     if (!this.isPeerRelevant(userId)) return
 
     const pc = new RTCPeerConnection(this.rtcConfig())
@@ -3010,9 +3512,9 @@ export class WebRTCManager {
           try {
             const isCamera = this.currentStreamQuality === 'camera'
             if (!isCamera) {
-              (sender as any).degradationPreference = 'maintain-resolution'
               const params = sender.getParameters()
               if (!params.encodings || params.encodings.length === 0) params.encodings = [{}]
+              params.degradationPreference = 'maintain-resolution'
               params.encodings[0].maxBitrate = this.currentStreamQuality === 'high' ? 6000000 : 2500000
               params.encodings[0].maxFramerate = this.currentStreamQuality === 'high' ? 60 : 30
               params.encodings[0].networkPriority = 'high'
@@ -3037,8 +3539,10 @@ export class WebRTCManager {
         return
       }
       signalRService.sendWebRTCOffer(userId, JSON.stringify(pc.localDescription))
+      console.log(`[WebRTC] offer to ${userId} sent in ${Math.round(performance.now() - startedAt)}ms (ice servers ${iceMs}ms)`)
     } catch (e) {
       console.error('[WebRTC] connectToPeer failed', e)
+      this.peerConnectStartedAt.delete(userId)
       if (preserveRemoteVideoOnFailure) {
         this.startIceTimeout(userId)
       } else {
@@ -3050,10 +3554,11 @@ export class WebRTCManager {
   public async handleOffer(senderId: string, offerStr: string) {
     const store = useAppStore.getState()
     if (senderId === store.currentUser?.id) return
-    if (!this.isPeerRelevant(senderId)) return
+    if (!await this.awaitPeerRelevance(senderId)) return
 
     let pc = this.peerConnections.get(senderId)
     if (!pc) {
+      if (!this.peerConnectStartedAt.has(senderId)) this.peerConnectStartedAt.set(senderId, performance.now())
       if (!this.localStream) {
         await this.startLocalStream().catch(() => { })
       }
@@ -3077,9 +3582,9 @@ export class WebRTCManager {
             try {
               const isCamera = this.currentStreamQuality === 'camera'
               if (!isCamera) {
-                (sender as any).degradationPreference = 'maintain-resolution'
                 const params = sender.getParameters()
                 if (!params.encodings || params.encodings.length === 0) params.encodings = [{}]
+                params.degradationPreference = 'maintain-resolution'
                 params.encodings[0].maxBitrate = this.currentStreamQuality === 'high' ? 6000000 : 2500000
                 params.encodings[0].maxFramerate = this.currentStreamQuality === 'high' ? 60 : 30
                 params.encodings[0].networkPriority = 'high'
@@ -3143,14 +3648,18 @@ export class WebRTCManager {
 
   public async handleIceCandidate(senderId: string, candidateStr: string) {
     if (senderId === useAppStore.getState().currentUser?.id) return
-    if (!this.isPeerRelevant(senderId)) {
-      this.pendingCandidates.delete(senderId)
-      return
-    }
-    const pc = this.peerConnections.get(senderId)
     let candidate: RTCIceCandidateInit
     try { candidate = JSON.parse(candidateStr) } catch { return }
 
+    if (!this.isPeerRelevant(senderId)) {
+      const early = this.pendingCandidates.get(senderId) ?? []
+      if (early.length < WebRTCManager.PENDING_CANDIDATES_PER_PEER) {
+        early.push(candidate)
+        this.pendingCandidates.set(senderId, early)
+      }
+      return
+    }
+    const pc = this.peerConnections.get(senderId)
     if (!pc) {
       const buf = this.pendingCandidates.get(senderId) ?? []
       buf.push(candidate)
@@ -3210,6 +3719,12 @@ export class WebRTCManager {
     const streamGain = this.streamGainNodes.get(userId)
     if (streamGain) { try { streamGain.disconnect() } catch { }; this.streamGainNodes.delete(userId) }
 
+    const streamDelay = this.streamDelayNodes.get(userId)
+    if (streamDelay) { try { streamDelay.disconnect() } catch { }; this.streamDelayNodes.delete(userId) }
+    this.streamSyncOffsetEma.delete(userId)
+    this.streamSyncSkew.delete(userId)
+    if (this.streamGainNodes.size === 0) this.stopStreamSyncMonitoring()
+
     if (!options.preserveRemoteVideo) {
       useAppStore.getState().setRemoteVideoStream(userId, null)
     }
@@ -3218,6 +3733,13 @@ export class WebRTCManager {
     this.pendingRenegotiation.delete(userId)
     this.clearVAD(userId)
     this.lastPacketsLost.delete(userId)
+    this.lastPacketsSent.delete(userId)
+    this.lossLadderStep.delete(userId)
+    this.lossBreachCount.delete(userId)
+    this.lossCleanCount.delete(userId)
+    this.appliedVideoProfiles.delete(userId)
+    this.viewerStates.delete(userId)
+    this.reportedViewStates.delete(userId)
   }
 
   public cleanupRemoteStream(userId: string) {
@@ -3229,6 +3751,12 @@ export class WebRTCManager {
 
     const streamGain = this.streamGainNodes.get(userId)
     if (streamGain) { try { streamGain.disconnect() } catch { }; this.streamGainNodes.delete(userId) }
+
+    const streamDelay = this.streamDelayNodes.get(userId)
+    if (streamDelay) { try { streamDelay.disconnect() } catch { }; this.streamDelayNodes.delete(userId) }
+    this.streamSyncOffsetEma.delete(userId)
+    this.streamSyncSkew.delete(userId)
+    if (this.streamGainNodes.size === 0) this.stopStreamSyncMonitoring()
 
     useAppStore.getState().setRemoteVideoStream(userId, null)
   }

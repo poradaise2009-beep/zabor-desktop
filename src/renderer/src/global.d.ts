@@ -25,6 +25,7 @@ declare global {
       getUserDataPath: () => Promise<string>;
       loadSileroModel: () => Promise<Uint8Array>;
       loadDeepFilterAsset: (assetPath: string) => Promise<Uint8Array | null>;
+      saveDeepFilterAsset: (assetPath: string, bytes: Uint8Array) => Promise<boolean>;
       getAutoLaunch: () => Promise<boolean>;
       setAutoLaunch: (enabled: boolean) => Promise<boolean>;
       getMinimizeToTray: () => Promise<boolean>;

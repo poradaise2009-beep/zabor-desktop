@@ -1,0 +1,176 @@
+name: Build DeepFilterNet wasm
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: Git ref of Rikorose/DeepFilterNet to build from
+        required: true
+        default: main
+      wasm_opt:
+        description: Run wasm-opt -O3 on the wasm-bindgen output
+        required: true
+        default: 'true'
+
+permissions:
+  contents: read
+
+jobs:
+  wasm:
+    runs-on: ubuntu-latest
+
+    env:
+      RUSTFLAGS: -C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint
+      VENDORED_SHA256: 6ea100532996aa0a07405fa2265e27337c351fe1cbdf63ac65886373484089c7
+      VENDORED_BYTES: '9235331'
+
+    steps:
+      - name: Checkout DeepFilterNet
+        uses: actions/checkout@v4
+        with:
+          repository: Rikorose/DeepFilterNet
+          ref: ${{ inputs.upstream_ref }}
+          path: upstream
+
+      - name: Record upstream commit
+        working-directory: upstream
+        run: |
+          set -euo pipefail
+          UPSTREAM_SHA="$(git rev-parse HEAD)"
+          echo "UPSTREAM_SHA=$UPSTREAM_SHA" >> "$GITHUB_ENV"
+          git log -1 --pretty='upstream %H %ci%n  %s'
+
+      - name: Verify the wasm target exists upstream
+        working-directory: upstream
+        run: |
+          set -euo pipefail
+          test -f libDF/src/wasm.rs
+          grep -q '^wasm = ' libDF/Cargo.toml
+          echo "libDF/src/wasm.rs and the wasm feature are present"
+
+      - name: Install Rust wasm target
+        run: |
+          set -euo pipefail
+          rustup target add wasm32-unknown-unknown
+          rustc --version
+          cargo --version
+
+      - name: Resolve wasm-bindgen version
+        working-directory: upstream
+        run: |
+          set -euo pipefail
+          if [ ! -f Cargo.lock ]; then
+            cargo generate-lockfile
+          fi
+          VER="$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/[",]/, "", $3); print $3; exit}' Cargo.lock)"
+          if [ -z "$VER" ]; then
+            echo "wasm-bindgen is not in Cargo.lock; enabling the wasm feature to resolve it"
+            cargo metadata --format-version 1 --features wasm --manifest-path libDF/Cargo.toml > /dev/null
+            VER="$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/[",]/, "", $3); print $3; exit}' Cargo.lock)"
+          fi
+          test -n "$VER"
+          echo "WASM_BINDGEN_VERSION=$VER" >> "$GITHUB_ENV"
+          echo "wasm-bindgen resolved to $VER"
+
+      - name: Install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --version "${WASM_BINDGEN_VERSION}" --locked
+
+      - name: Build deep_filter for wasm32-unknown-unknown
+        working-directory: upstream
+        run: |
+          set -euo pipefail
+          cargo build --release \
+            --locked \
+            --target wasm32-unknown-unknown \
+            --package deep_filter \
+            --no-default-features \
+            --features wasm
+          ls -l target/wasm32-unknown-unknown/release/df.wasm
+
+      - name: Generate JS bindings
+        working-directory: upstream
+        run: |
+          set -euo pipefail
+          wasm-bindgen target/wasm32-unknown-unknown/release/df.wasm \
+            --target web \
+            --out-dir ../out/pkg \
+            --out-name df
+          ls -l ../out/pkg
+
+      - name: Optimize
+        if: ${{ inputs.wasm_opt == 'true' }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y binaryen
+          wasm-opt --version
+          cp out/pkg/df_bg.wasm out/pkg/df_bg.unoptimized.wasm
+          wasm-opt -O3 \
+            --enable-simd \
+            --enable-bulk-memory \
+            --enable-nontrapping-float-to-int \
+            out/pkg/df_bg.unoptimized.wasm \
+            -o out/pkg/df_bg.wasm
+          rm out/pkg/df_bg.unoptimized.wasm
+
+      - name: Verify exports
+        run: |
+          set -euo pipefail
+          node -e "
+            const fs = require('fs');
+            const required = ['df_create', 'df_get_frame_length', 'df_set_atten_lim', 'df_set_post_filter_beta', 'df_process_frame', 'memory', '__wbindgen_malloc', '__wbindgen_exn_store'];
+            const bytes = fs.readFileSync('out/pkg/df_bg.wasm');
+            WebAssembly.compile(bytes).then(mod => {
+              const names = WebAssembly.Module.exports(mod).map(e => e.name);
+              const missing = required.filter(n => !names.includes(n));
+              console.log('exports: ' + names.sort().join(', '));
+              if (missing.length) {
+                console.error('MISSING EXPORTS: ' + missing.join(', '));
+                process.exit(1);
+              }
+              console.log('all exports required by mic-pipeline are present');
+            }).catch(err => { console.error(err); process.exit(1); });
+          "
+
+      - name: Report provenance
+        run: |
+          set -euo pipefail
+          SIZE="$(stat -c %s out/pkg/df_bg.wasm)"
+          DIGEST="$(sha256sum out/pkg/df_bg.wasm | cut -d' ' -f1)"
+          {
+            echo "upstream_repo=https://github.com/Rikorose/DeepFilterNet"
+            echo "upstream_ref=${{ inputs.upstream_ref }}"
+            echo "upstream_commit=${UPSTREAM_SHA}"
+            echo "rustc=$(rustc --version)"
+            echo "wasm_bindgen=${WASM_BINDGEN_VERSION}"
+            echo "rustflags=${RUSTFLAGS}"
+            echo "cargo_features=wasm (no default features)"
+            echo "wasm_opt=${{ inputs.wasm_opt }}"
+            echo "df_bg.wasm.bytes=${SIZE}"
+            echo "df_bg.wasm.sha256=${DIGEST}"
+            echo "vendored.bytes=${VENDORED_BYTES}"
+            echo "vendored.sha256=${VENDORED_SHA256}"
+          } | tee out/pkg/BUILD-INFO.txt
+          {
+            echo "### DeepFilterNet wasm build"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| upstream commit | \`${UPSTREAM_SHA}\` |"
+            echo "| size | ${SIZE} bytes (vendored: ${VENDORED_BYTES}) |"
+            echo "| sha256 | \`${DIGEST}\` |"
+            echo "| vendored sha256 | \`${VENDORED_SHA256}\` |"
+            echo ""
+            if [ "$DIGEST" = "$VENDORED_SHA256" ]; then
+              echo "This build reproduces the vendored binary bit for bit."
+            else
+              echo "This build differs from the vendored binary. Adopt it only after an A/B listening test, then update the pin in scripts/fetch-deepfilter-assets.cjs."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepfilternet3-wasm-${{ inputs.upstream_ref }}
+          path: out/pkg
+          if-no-files-found: error

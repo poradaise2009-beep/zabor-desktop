@@ -1,8 +1,39 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import { CornersIn, CornersOut } from '@phosphor-icons/react'
 import { useTranslation } from 'react-i18next'
 import { User, useAppStore } from '../../store/useAppStore'
+import { AvatarImg } from '../Shared/AvatarImg'
+
+const StreamLoadingDots = ({ compact, label }: { compact: boolean; label: string }) => (
+  <div
+    role="status"
+    aria-label={label}
+    className="absolute inset-0 z-10 flex items-center justify-center bg-black/40 backdrop-blur-[2px] pointer-events-none"
+  >
+    <div className={`flex ${compact ? 'gap-1.5' : 'gap-2.5'}`}>
+      <div className={`${compact ? 'w-2 h-2' : 'w-3 h-3'} bg-[#c70060] rounded-full animate-pulse`} />
+      <div className={`${compact ? 'w-2 h-2' : 'w-3 h-3'} bg-[#c70060] rounded-full animate-pulse`} style={{ animationDelay: '0.15s' }} />
+      <div className={`${compact ? 'w-2 h-2' : 'w-3 h-3'} bg-[#c70060] rounded-full animate-pulse`} style={{ animationDelay: '0.3s' }} />
+    </div>
+  </div>
+)
+
+const StreamOwnerPill = ({ user, cardWidth, compact }: { user: User; cardWidth: number; compact: boolean }) => (
+  <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
+    <div
+      className={`bg-[#09090B]/80 backdrop-blur-md border border-[#303035]/50 rounded-full flex items-center shadow-lg whitespace-nowrap ${compact ? 'gap-1.5 px-2 py-0.5' : 'gap-2 px-3 py-1'}`}
+      style={{ maxWidth: `${Math.max(60, cardWidth - 20)}px` }}
+    >
+      <div className="shrink-0" style={{ width: compact ? 16 : 20, height: compact ? 16 : 20 }}>
+        <AvatarImg src={user.avatarBase64} size={compact ? 16 : 20} bgColor={user.avatarColor} animate={false} />
+      </div>
+      <span className={`text-white font-bold truncate ${compact ? 'text-[11px]' : 'text-sm'}`}>
+        {user.displayName}
+      </span>
+    </div>
+  </div>
+)
 
 interface StreamCardProps {
   user: User
@@ -34,12 +65,14 @@ export const StreamCard = ({
   const captureVideoRef = useRef<HTMLVideoElement | null>(null)
   const [snapshot, setSnapshot] = useState<string | null>(null)
   const [isCapturing, setIsCapturing] = useState(false)
+  const [hasFirstFrame, setHasFirstFrame] = useState(false)
   const retryTimerRef = useRef<NodeJS.Timeout | null>(null)
 
   const currentUserId = useAppStore((state) => state.currentUser?.id)
   const isLocal = user.id === currentUserId
 
   const mode = isFullscreen ? 'fullscreen' : (isFocused ? 'focused' : 'normal')
+  const compactPill = cardSize.w <= 200
 
   useEffect(() => {
     if (isLocal) return
@@ -82,7 +115,7 @@ export const StreamCard = ({
             const canvas = document.createElement('canvas')
             canvas.width = 320
             canvas.height = 180
-            const ctx = canvas.getContext('2d')
+            const ctx = canvas.getContext('2d', { willReadFrequently: true })
             if (ctx) {
               ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
               const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height).data
@@ -122,10 +155,49 @@ export const StreamCard = ({
   }, [isCapturing, stream, snapshot])
 
   useEffect(() => {
-    if (mode !== 'normal' && videoRef.current) {
-      videoRef.current.srcObject = stream
+    setHasFirstFrame(false)
+  }, [stream])
+
+  const videoOnlyStream = useMemo(() => new MediaStream(stream.getVideoTracks()), [stream])
+
+  useEffect(() => {
+    if (mode === 'normal' || !videoRef.current) return
+    const video = videoRef.current
+    if (video.srcObject !== videoOnlyStream) video.srcObject = videoOnlyStream
+
+    let cancelled = false
+    let frameHandle = 0
+    const markReady = () => {
+      if (!cancelled) setHasFirstFrame(true)
     }
-  }, [mode, stream])
+
+    const anyVideo = video as HTMLVideoElement & {
+      requestVideoFrameCallback?: (callback: () => void) => number
+      cancelVideoFrameCallback?: (handle: number) => void
+    }
+
+    if (typeof anyVideo.requestVideoFrameCallback === 'function') {
+      frameHandle = anyVideo.requestVideoFrameCallback(markReady)
+    } else {
+      const onPlaying = () => {
+        if (video.videoWidth > 0) markReady()
+      }
+      video.addEventListener('playing', onPlaying)
+      video.addEventListener('loadeddata', onPlaying)
+      return () => {
+        cancelled = true
+        video.removeEventListener('playing', onPlaying)
+        video.removeEventListener('loadeddata', onPlaying)
+      }
+    }
+
+    return () => {
+      cancelled = true
+      if (frameHandle && typeof anyVideo.cancelVideoFrameCallback === 'function') {
+        anyVideo.cancelVideoFrameCallback(frameHandle)
+      }
+    }
+  }, [mode, videoOnlyStream])
 
   if (mode === 'normal') {
     return (
@@ -155,6 +227,10 @@ export const StreamCard = ({
           )}
           <div className="absolute inset-0 bg-black/40" />
         </div>
+
+        {!snapshot && <StreamLoadingDots compact={compactPill} label={t('stream.loading')} />}
+
+        <StreamOwnerPill user={user} cardWidth={cardSize.w} compact={compactPill} />
 
         <div className="absolute inset-0 rounded-xl ring-1 ring-inset ring-[#303035] group-hover:ring-2 group-hover:ring-[#FF007F] group-hover:ring-inset pointer-events-none z-20 transition-all duration-300" />
 
@@ -200,6 +276,13 @@ export const StreamCard = ({
         />
       </div>
 
+      {!hasFirstFrame && (
+        <>
+          <StreamLoadingDots compact={false} label={t('stream.loading')} />
+          <StreamOwnerPill user={user} cardWidth={cardSize.w} compact={false} />
+        </>
+      )}
+
       {!isFullscreen && (
         <div className="absolute inset-0 rounded-xl ring-1 ring-inset ring-[#303035] pointer-events-none z-20" />
       )}
@@ -207,7 +290,7 @@ export const StreamCard = ({
       <div className={`absolute inset-x-0 top-0 p-4 pointer-events-none flex items-center justify-between z-10 transition-all duration-300 ${isFullscreen && !showOverlays ? '-translate-y-4 opacity-0' : 'translate-y-0 opacity-100'}`}>
         <div className="bg-[#09090B]/85 border border-[#303035]/50 px-3 py-1 rounded-full flex items-center gap-2">
           <span className="text-white font-bold text-xs truncate">
-            Трансляция {user.displayName}
+            {t('stream.broadcastOf', { name: user.displayName })}
           </span>
         </div>
 

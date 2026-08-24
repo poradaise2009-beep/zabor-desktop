@@ -9,7 +9,7 @@ export function TitleBar() {
   }, []);
 
   return (
-    <div className="title-bar h-9 bg-[#09090B] flex items-center justify-between shrink-0 relative z-[10000] border-b border-[#1a1a1f]">
+    <div className="title-bar h-9 bg-[#09090B] flex items-center justify-between shrink-0 relative z-[2000000] border-b border-[#1a1a1f]">
       <div className="flex items-center pl-4 gap-2 pointer-events-none">
         <span className="text-[13px] font-black tracking-[0.2em] text-white/30">ZABOR</span>
       </div>

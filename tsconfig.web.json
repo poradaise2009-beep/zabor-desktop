@@ -19,7 +19,11 @@
     "composite": true,
     "baseUrl": ".",
     "paths": {
-      "@renderer/*": ["src/renderer/src/*"]
+      "@renderer/*": ["src/renderer/src/*"],
+      "deepfilter-wasm-bindgen": ["node_modules/deepfilter-standalone/dist/df3/df.d.ts"],
+      "rnnoise-wasm-polyfills": ["node_modules/@timephy/rnnoise-wasm/dist/polyfills.d.ts"],
+      "rnnoise-wasm-processor": ["node_modules/@timephy/rnnoise-wasm/dist/RnnoiseProcessor.d.ts"],
+      "rnnoise-wasm-sync": ["node_modules/@timephy/rnnoise-wasm/dist/generated/rnnoise-sync.d.ts"]
     },
     "types": ["node"]
   },

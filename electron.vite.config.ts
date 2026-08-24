@@ -3,15 +3,20 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import { loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// Секрет подписи сборки. Берётся из переменной окружения (GitHub Actions secrets)
-// либо из локального `.env` — он в .gitignore, в репозиторий секрет не попадает.
-// Внедряется ТОЛЬКО в main-бандл: в renderer он оказался бы в читаемом коде страницы.
-// Без секрета сборка считается неофициальной и подпись не отправляет.
-// Подробности: docs/client-attestation.md
 const fileEnv = loadEnv(process.env.NODE_ENV === 'development' ? 'development' : 'production', process.cwd(), '')
 const clientSecret = process.env.ZABOR_CLIENT_SECRET || fileEnv.ZABOR_CLIENT_SECRET || ''
 const clientChannel =
   process.env.ZABOR_CLIENT_CHANNEL || fileEnv.ZABOR_CLIENT_CHANNEL || (clientSecret ? 'official' : 'unofficial')
+
+function relaxCspForDevServer() {
+  return {
+    name: 'zabor-relax-csp-for-dev-server',
+    apply: 'serve' as const,
+    transformIndexHtml(html: string) {
+      return html.replace("script-src 'self' 'unsafe-eval'", "script-src 'self' 'unsafe-eval' 'unsafe-inline'")
+    }
+  }
+}
 
 export default defineConfig({
   main: {
@@ -27,10 +32,14 @@ export default defineConfig({
   renderer: {
     resolve: {
       alias: {
-        '@renderer': resolve('src/renderer/src')
+        '@renderer': resolve('src/renderer/src'),
+        'deepfilter-wasm-bindgen': resolve('node_modules/deepfilter-standalone/dist/df3/df.js'),
+        'rnnoise-wasm-polyfills': resolve('node_modules/@timephy/rnnoise-wasm/dist/polyfills.js'),
+        'rnnoise-wasm-processor': resolve('node_modules/@timephy/rnnoise-wasm/dist/RnnoiseProcessor.js'),
+        'rnnoise-wasm-sync': resolve('node_modules/@timephy/rnnoise-wasm/dist/generated/rnnoise-sync.js')
       }
     },
-    plugins: [react()],
+    plugins: [react(), relaxCspForDevServer()],
     server: {
       host: '127.0.0.1',
       port: 5173,

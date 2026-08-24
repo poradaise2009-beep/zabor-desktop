@@ -24,13 +24,14 @@
       "default": "Default",
       "micFallback": "Microphone",
       "speakerFallback": "Speakers",
-      "calibrateSensitivity": "Noise Suppression Calibration",
-      "calibrateDesc": "Measures the room's steady noise while you stay silent",
-      "calibrateButton": "Detect Noise",
-      "calibrating": "Detecting noise...",
+      "calibrateSensitivity": "Microphone calibration",
+      "calibrateDesc": "Tunes Silero confidence for your voice",
+      "calibrateButton": "Calibration",
+      "calibrating": "Analyzing voice...",
       "calibrationComplete": "Success",
       "calibrationSuccess": "Success",
-      "doNotSpeak": "Stay silent, measuring noise",
+      "doNotSpeak": "Speak in your normal voice",
+      "speakNormally": "Speak in your normal voice",
       "micThresholdAuto": "Automatic noise suppression strength",
       "micThresholdLabel": "MAXIMUM NOISE SUPPRESSION, DB",
       "noiseSuppressionMode": "Noise suppression mode",
@@ -39,7 +40,21 @@
       "threshold": "Threshold",
       "thresholdLabel": "Microphone activation threshold",
       "checking": "Checking",
-      "preparing": "Preparing"
+      "preparing": "Preparing",
+      "noiseModel": "Noise suppression model",
+      "model1": "Model 1",
+      "model2": "Model 2",
+      "suppressionStrength": "Suppression strength",
+      "micTestListen": "Hear yourself",
+      "micTestArming": "Getting ready…",
+      "micTestTalk": "Keep talking",
+      "micTestRetake": "Record again?",
+      "micTestPlay": "Play",
+      "micTestPause": "Pause",
+      "micTestSeek": "Playback position",
+      "micTestSilent": "No sound captured",
+      "micTestFailed": "Recording failed",
+      "calibrationPhrase": "\"The quick brown fox jumps over the lazy dog\""
     },
     "privacy": {
       "newPassword": "NEW PASSWORD",
@@ -47,7 +62,10 @@
       "changePassword": "Change Password",
       "changePasswordTitle": "Change Password",
       "logout": "Logout",
-      "changePasswordFailed": "Failed to change password"
+      "changePasswordFailed": "Failed to change password",
+      "network": "NETWORK",
+      "hideIp": "Hide my IP address",
+      "hideIpDesc": "All voice traffic goes through the relay server, so other people cannot see your IP. Slightly higher latency. Applies to new connections."
     }
   },
   "auth": {
@@ -289,16 +307,18 @@
     "audioError": "Audio error: {{message}}",
     "incomingCall": "Incoming call...",
     "incomingChannelInvite": "You are invited to a channel",
-    "startupCalibration": "Microphone calibration... Please remain silent for 3s.",
+    "startupCalibration": "Microphone calibration... Speak in your normal voice.",
     "calibrationComplete": "Microphone successfully calibrated!",
-    "calibrationNeedSilence": "Silence is required: don't speak while measuring. Please try again.",
+    "calibrationNeedSilence": "Speak in your normal voice during calibration.",
+    "calibrationNeedVoice": "Keep speaking in your normal voice throughout calibration, then try again.",
     "calibrationFailedRetry": "Calibration failed. Please try again.",
     "calibrationEngineUnavailable": "Noise suppression failed to start on this device. Please restart the app.",
     "calibrationNoMic": "The microphone is unavailable. Check the input device and try again.",
     "calibrationTimeout": "The microphone stopped sending audio. Check the device and try again.",
     "calibrationBusy": "Calibration is already running. Please wait for it to finish.",
     "micUnknownError": "Unknown microphone error",
-    "channelJoinFailed": "Could not join the channel: the server did not respond. Please try again."
+    "channelJoinFailed": "Could not join the channel: the server did not respond. Please try again.",
+    "relayUnavailable": "IP hiding is on, but the relay server is unreachable — the connection will not be established."
   },
   "stream": {
     "pickerTitle": "Select Source",
@@ -314,7 +334,9 @@
     "confirm": "Go Live",
     "minimizeHint": "Minimize stream to thumbnail",
     "fullscreenHint": "Enter fullscreen (F)",
-    "exitFullscreenHint": "Return to focus mode (F)"
+    "exitFullscreenHint": "Return to focus mode (F)",
+    "broadcastOf": "{{name}}'s stream",
+    "loading": "Loading stream"
   },
   "joke": {
     "title": "JOKE:",
@@ -330,6 +352,7 @@
     "invalidPassword": "Incorrect password!",
     "networkError": "Network error, try again",
     "registerError": "Registration error",
-    "connectError": "Connection error"
+    "connectError": "Connection error",
+    "authThrottled": "Too many sign-in attempts. Try again in {{minutes}} min."
   }
 }

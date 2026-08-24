@@ -1,6 +1,6 @@
 {
   "name": "zabor-desktop",
-  "version": "3.2.2",
+  "version": "3.5.0",
   "description": "ZABOR - Разговорчики",
   "main": "./out/main/index.js",
   "author": "vnkdevelop",
@@ -10,7 +10,7 @@
     "dev": "node scripts/fetch-deepfilter-assets.cjs && cross-env RUSTFLAGS=\"-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint\" electron-vite dev",
     "build": "node scripts/fetch-deepfilter-assets.cjs && cross-env RUSTFLAGS=\"-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint\" electron-vite build",
     "dist:win": "node scripts/fetch-deepfilter-assets.cjs && cross-env RUSTFLAGS=\"-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint\" electron-vite build && electron-builder --win",
-    "postinstall": "node scripts/rebuild-native-audio.cjs && node scripts/fetch-deepfilter-assets.cjs",
+    "postinstall": "node scripts/rebuild-native-audio.cjs && node scripts/fetch-deepfilter-assets.cjs --allow-missing",
     "release": "release.bat",
     "sandbox": "cd sandbox && npm run dev"
   },
@@ -22,6 +22,10 @@
       {
         "from": "build/icon.ico",
         "to": "icon.ico"
+      },
+      {
+        "from": "THIRD-PARTY-NOTICES.md",
+        "to": "THIRD-PARTY-NOTICES.md"
       }
     ],
     "copyright": "Copyright © 2026 ZABOR",
@@ -71,6 +75,7 @@
     "@electron-toolkit/utils": "^4.0.0",
     "@microsoft/signalr": "^8.0.7",
     "@phosphor-icons/react": "^2.1.10",
+    "@timephy/rnnoise-wasm": "^1.0.0",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",

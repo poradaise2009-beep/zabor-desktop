@@ -26,6 +26,7 @@ TECHNICAL_DOCUMENTATION.md
 dist-electron/
 electron.vite.config.*.mjs
 graphify-out/
+.graphifyignore
 /sandbox/
 /build/
 
@@ -42,4 +43,5 @@ GEMINI.md
 .continue/
 .windsurf/
 .copilot/
-skills-lock.jsonsrc/renderer/public/deepfilternet3/
+skills-lock.json
+src/renderer/public/deepfilternet3/**/*.download

@@ -19,8 +19,8 @@ import { Md3Switch } from './components/Shared/Md3Switch';
 import { AvatarImg } from './components/Shared/AvatarImg';
 import { StreamPicker } from './components/Stream/StreamPicker';
 import { StreamCard } from './components/Stream/StreamCard';
-import { NoiseSuppressionSettings, type CalibrationPhase } from './components/Settings/NoiseSuppressionSettings';
-
+import { NoiseSuppressionSettings, type CalibrationPhase, type SmartNoiseModel } from './components/Settings/NoiseSuppressionSettings';
+import { MIC_TEST_PANEL_GAP_PX, MicTestPanel } from './components/Settings/MicTestPanel';
 
 const lastNonZeroUserVolumes = new Map<string, number>();
 const lastNonZeroVolumes = new Map<string, number>();
@@ -85,10 +85,6 @@ const CallUserCard = memo(({ currentCallUser, callStatus, cardSize, webrtcConnec
 
   return (
     <div ref={containerRef} className="w-full h-full flex items-center justify-center">
-      {/* transition-all анимировал в том числе width/height, которые заданы
-          инлайном и пересчитываются на каждый ресайз контейнера: карточка
-          тянулась за окном с отставанием и на каждом кадре требовала layout.
-          Переход нужен только рамке говорящего и цвету. */}
       <div
         onContextMenu={e => handleContextMenu(e, 'voiceUser', currentCallUser)}
         className={`relative flex flex-col items-center justify-center overflow-hidden shrink-0 transition-[box-shadow,background-color] duration-200
@@ -279,6 +275,8 @@ export default function App() {
   const [noiseSuppression, setNoiseSuppression] = useState(true);
   const [micThresholdMode, setMicThresholdMode] = useState<'auto' | 'manual'>('auto');
   const [manualThresholdValue, setManualThresholdValue] = useState(-42);
+  const [smartNoiseModel, setSmartNoiseModel] = useState<SmartNoiseModel>(() => webrtc.getSmartNoiseModel());
+  const [suppressionStrength, setSuppressionStrength] = useState(() => webrtc.getSuppressionStrength());
   const [isSwitchingChannel, setIsSwitchingChannel] = useState(false);
   const [autoLaunch, setAutoLaunch] = useState(false);
   const [minimizeToTray, setMinimizeToTray] = useState(true);
@@ -289,6 +287,10 @@ export default function App() {
   } | null>(null);
   const [showInvitesPanel, setShowInvitesPanel] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'general' | 'audio' | 'privacy'>('general');
+  const [relayOnlyIce, setRelayOnlyIce] = useState(() => webrtc.isRelayOnlyIce());
+  const [micTestPanelHeight, setMicTestPanelHeight] = useState(0);
+  const micTestPanelOpen = noiseSuppression && settingsTab === 'audio';
+  const micTestPanelReserve = micTestPanelOpen && micTestPanelHeight > 0 ? micTestPanelHeight + MIC_TEST_PANEL_GAP_PX : 0;
   const [isCalibrating, setIsCalibrating] = useState(false);
   const [calibrationCountdown, setCalibrationCountdown] = useState(10);
   const [calibrationPhase, setCalibrationPhase] = useState<CalibrationPhase>('idle');
@@ -318,8 +320,6 @@ export default function App() {
       return next;
     });
   }, []);
-
-
 
   useEffect(() => {
     setProfileFriendRequestStatus('idle');
@@ -375,8 +375,6 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [store.incomingCall]);
 
-
-
   useEffect(() => {
     if (store.callStatus !== 'calling') return;
     const timer = setTimeout(() => {
@@ -418,8 +416,6 @@ export default function App() {
   const loginInputRef = useRef<HTMLInputElement>(null);
   const passwordInputRef = useRef<HTMLInputElement>(null);
 
-
-
   const [controlsShake, setControlsShake] = useState(false);
   const [adminBlockToast, setAdminBlockToast] = useState<string | null>(null);
   const adminBlockTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -440,12 +436,6 @@ export default function App() {
   }, [inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression, language, autoLaunch, minimizeToTray, micThresholdMode, manualThresholdValue]);
 
   useEffect(() => {
-    // Подсветка под курсором ездит за мышью через transform — это работа
-    // композитора, без перекраски (см. #mouse-glow в index.css). Раньше сдвигался
-    // центр градиента прямо в обработчике mousemove, а мышь отдаёт события чаще
-    // кадра: на каждый кадр приходилось несколько перерисовок слоя размером с
-    // окно, и от этого дёргалось всё остальное. Теперь координаты копятся, а в
-    // стиль попадают ровно один раз за кадр, в rAF.
     let glowElement: HTMLElement | null = null;
     let frameHandle = 0;
     let pendingX = 0;
@@ -488,8 +478,6 @@ export default function App() {
       document.removeEventListener('mouseleave', handleMouseLeave);
     };
   }, []);
-
-
 
   const saveLocalCache = useCallback(() => {
     try {
@@ -585,6 +573,7 @@ export default function App() {
     setMicThresholdMode(mode);
     setManualThresholdValue(val);
     webrtc.setMicThresholdParams(mode, val);
+    webrtc.warmUpSmartNoiseSuppression(s.noiseSuppression ?? true);
 
     webrtc.setInputDevice(normalizedInput);
     webrtc.setOutputDevice(normalizedOutput);
@@ -663,6 +652,10 @@ export default function App() {
       webrtc.updateRemoteStreamVolume(user.id);
     });
   }, [store.activeStreamId, store.voiceUsers]);
+
+  useEffect(() => {
+    webrtc.scheduleStreamViewInterestReport();
+  }, [store.activeStreamId, store.remoteVideoStreams]);
 
   useEffect(() => {
     credentialsRef.current = { login, password };
@@ -749,16 +742,6 @@ export default function App() {
     );
   }, [inviteChannelId, store.channelMembersCache, store.friends, inviteFriendSearch]);
 
-  /**
-   * Повторный вход после разрыва соединения.
-   *
-   * Сервер отвечает 'network' и на живом соединении — например, когда он занят и
-   * вызов не успел пройти. Раньше на этом попытки заканчивались: следующая
-   * запускалась только по очередному переходу соединения в Connected, которого
-   * уже не будет, и экран подключения висел до перезапуска приложения. Теперь
-   * попытки повторяются сами, с растущей паузой и джиттером, чтобы клиенты не
-   * били в занятый сервер в такт друг с другом.
-   */
   const attemptAutoLogin = useCallback(async () => {
     if (autoLoginInFlightRef.current) return;
     const creds = credentialsRef.current;
@@ -791,6 +774,14 @@ export default function App() {
         setTimeout(() => setAppLoading(false), 650);
         return;
       }
+      if (result === 'throttled') {
+        autoLoginAttemptsRef.current = 0;
+        autoLoginPendingRef.current = false;
+        setShowErrorText(true);
+        setLoadingFadeOut(true);
+        setTimeout(() => setAppLoading(false), 650);
+        return;
+      }
       autoLoginPendingRef.current = true;
       setShowErrorText(true);
       setShowReconnectingOverlay(true);
@@ -806,8 +797,6 @@ export default function App() {
     }
   }, [isAuth, applySettings, saveLocalCache]);
 
-  // Ссылка на актуальную версию: отложенный повтор не должен держать замыкание
-  // с устаревшими зависимостями.
   useEffect(() => { attemptAutoLoginRef.current = () => { void attemptAutoLogin(); }; }, [attemptAutoLogin]);
 
   useEffect(() => () => {
@@ -832,7 +821,6 @@ export default function App() {
         setShowReconnectingOverlay(false);
 
         if (autoLoginPendingRef.current) {
-          // Соединение только что вернулось: отсчёт попыток начинается заново.
           autoLoginAttemptsRef.current = 0;
           if (autoLoginRetryTimerRef.current) {
             clearTimeout(autoLoginRetryTimerRef.current);
@@ -847,8 +835,6 @@ export default function App() {
       } else if (isAuth) {
         setServerConnected(false);
         autoLoginPendingRef.current = true;
-        // Пока сокета нет, повторять вход бессмысленно: попытку заново запустит
-        // переход соединения в Connected.
         if (autoLoginRetryTimerRef.current) {
           clearTimeout(autoLoginRetryTimerRef.current);
           autoLoginRetryTimerRef.current = null;
@@ -859,7 +845,6 @@ export default function App() {
         setContextMenu(null);
         setShowInvitesPanel(false);
         signalRService.stopRingtone();
-
 
         if (!disconnectTimerRef.current) {
           disconnectTimerRef.current = setTimeout(() => {
@@ -904,7 +889,6 @@ export default function App() {
         return false;
       });
 
-
       if (!cachedCredentials) {
         await micPromise;
         initCompleteRef.current = true;
@@ -912,7 +896,6 @@ export default function App() {
         setTimeout(() => setAppLoading(false), 650);
         return;
       }
-
 
       setShowInitConnectionError(false);
       const errorTimer = setTimeout(() => setShowInitConnectionError(true), 10000);
@@ -929,9 +912,6 @@ export default function App() {
       setShowErrorText(false);
       setShowInitConnectionError(false);
 
-
-
-
       if (!connected) {
         autoLoginPendingRef.current = true;
         await micPromise;
@@ -939,7 +919,6 @@ export default function App() {
         setShowInitConnectionError(true);
         return;
       }
-
 
       const loginResult = await signalRService.login(
         cachedCredentials.login,
@@ -984,6 +963,12 @@ export default function App() {
           setLoadingFadeOut(true);
           setTimeout(() => setAppLoading(false), 650);
         }, 300);
+      } else if (loginResult === 'throttled') {
+        await micPromise;
+        initCompleteRef.current = true;
+        setShowErrorText(true);
+        setLoadingFadeOut(true);
+        setTimeout(() => setAppLoading(false), 650);
       } else if (loginResult === 'invalid') {
 
         await window.windowControls.clearSession().catch(() => { });
@@ -1045,8 +1030,6 @@ export default function App() {
     preloadStaticFrame(store.currentCallUser?.avatarBase64);
   }, [store.channelUsersMap, store.friends, store.voiceUsers, store.currentUser?.avatarBase64, store.currentCallUser?.avatarBase64]);
 
-
-
   const userVolumesSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
@@ -1070,12 +1053,10 @@ export default function App() {
     }, 500);
   }, [inputVolume, outputVolume, selectedInput, selectedOutput, noiseSuppression, isAuth, language, micThresholdMode, manualThresholdValue]);
 
-
   useEffect(() => {
     if (!settingsLoadedRef.current || !isAuth) return;
     saveLocalCache();
   }, [autoLaunch, minimizeToTray, isAuth, saveLocalCache]);
-
 
   useEffect(() => {
     if (!settingsLoadedRef.current || !isAuth) return;
@@ -1141,8 +1122,6 @@ export default function App() {
     inviteRequestIdRef.current++;
     membersRequestIdRef.current++;
 
-
-
     setContextMenu(null);
     setShowInvitesPanel(false);
 
@@ -1204,6 +1183,10 @@ export default function App() {
 
       if (authStep === 'login') {
         const exists = await signalRService.checkUserExists(login);
+        if (signalRService.lastAuthThrottleMessage) {
+          setError(signalRService.lastAuthThrottleMessage);
+          return;
+        }
         if (exists) {
           settingsLoadedRef.current = false;
           resetToDefaults();
@@ -1224,6 +1207,8 @@ export default function App() {
             saveLocalCache();
             setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
 
+          } else if (loginResult === 'throttled') {
+            setError(signalRService.lastAuthThrottleMessage ?? t('validation.networkError', 'Ошибка сети, попробуйте ещё раз'));
           } else if (loginResult === 'invalid') {
             setError(t('validation.invalidPassword', 'Неверный пароль!'));
           } else {
@@ -1251,7 +1236,7 @@ export default function App() {
           setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
 
         } else {
-          setError(t('validation.registerError', 'Ошибка регистрации'));
+          setError(signalRService.lastAuthThrottleMessage ?? t('validation.registerError', 'Ошибка регистрации'));
         }
       }
     } catch {
@@ -1274,18 +1259,15 @@ export default function App() {
     let interval: ReturnType<typeof setInterval> | null = null;
 
     try {
-      // The wizard now measures one thing: the room with nobody speaking. The
-      // countdown shows 3 s while the worklet measures 2.5 s, so the prompt is
-      // still on screen when the last frame is recorded.
-      await webrtc.calibrateMic(2500, () => {
+      await webrtc.calibrateMic(4500, () => {
         const startedAt = Date.now();
-        setCalibrationPhase('silence');
-        setCalibrationCountdown(3);
+        setCalibrationPhase('voice');
+        setCalibrationCountdown(5);
         interval = setInterval(() => {
           const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-          if (elapsed < 3) {
-            setCalibrationPhase('silence');
-            setCalibrationCountdown(3 - elapsed);
+          if (elapsed < 5) {
+            setCalibrationPhase('voice');
+            setCalibrationCountdown(5 - elapsed);
           } else {
             setCalibrationPhase('checking');
             setCalibrationCountdown(0);
@@ -1295,9 +1277,6 @@ export default function App() {
       });
       setCalibrationSuccess(true);
     } catch (err) {
-      // Every failure cause gets its own message: a single generic toast made
-      // machine-specific problems (dead DeepFilter engine, busy or missing
-      // microphone) indistinguishable from "stay silent and try again".
       const code = err instanceof CalibrationError ? err.code : null;
       console.error('Manual calibration failed:', {
         code: code ?? (err instanceof Error ? err.message : String(err)),
@@ -1312,8 +1291,8 @@ export default function App() {
             ? t('toasts.calibrationBusy', 'Калибровка уже идёт. Дождитесь её окончания.')
             : code === 'CALIBRATION_TIMEOUT'
               ? t('toasts.calibrationTimeout', 'Микрофон перестал отдавать звук. Проверьте устройство и повторите.')
-              : code === 'CALIBRATION_NEEDS_SILENCE'
-                ? t('toasts.calibrationNeedSilence', 'Нужна тишина: не говорите во время замера. Повторите.')
+              : code === 'CALIBRATION_NEEDS_VOICE'
+                ? t('toasts.calibrationNeedVoice', 'Говорите обычным голосом на протяжении всей калибровки и повторите.')
                 : t('toasts.calibrationFailedRetry', 'Калибровка не удалась. Повторите.');
       store.setSystemToast(message);
       setTimeout(() => {
@@ -1331,7 +1310,6 @@ export default function App() {
 
   const handleLogout = useCallback(async () => {
     settingsLoadedRef.current = false;
-
 
     closeAndResetModals();
 
@@ -1364,8 +1342,6 @@ export default function App() {
 
     setJoke('');
 
-
-
     setDisplayName('');
     setAvatarBase64(null);
     setAvatarColor('#c70060');
@@ -1378,7 +1354,6 @@ export default function App() {
     setError('');
     setAuthStep('login');
     setIsAuth(false);
-
 
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -1463,16 +1438,9 @@ export default function App() {
     signalRService.updateChannel(id, name);
   }, [editChannelId, editChannelName, validateName, closeAndResetModals]);
 
-  /**
-   * Единая реакция на итог входа в канал. Раньше 'network' игнорировался молча:
-   * загрузка исчезала, пользователь оставался вне канала и не понимал, почему.
-   * Про 'mic_failed' уже сообщает аудиослой своим разбором ошибки устройства.
-   */
   const reportChannelJoinStatus = useCallback((status: 'ok' | 'network' | 'mic_failed' | 'full') => {
     if (status === 'ok' || status === 'mic_failed') return;
     if (status === 'full') { store.setModal('channelFull', true); return; }
-    // Отказ по уже идущей голосовой операции (двойной клик по каналу) — не сбой:
-    // в этот момент вход всё ещё выполняется.
     if (useAppStore.getState().isJoiningChannel) return;
     const message = t('toasts.channelJoinFailed', 'Не удалось войти в канал: сервер не ответил. Попробуйте снова.');
     store.setSystemToast(message);
@@ -1645,7 +1613,6 @@ export default function App() {
     webrtc.setDeafened(nextDeafened);
   }, [store.currentUser, showAdminBlockFeedback]);
 
-
   const handleAcceptCall = useCallback(async () => {
     if (store.incomingCall) await signalRService.acceptCall(store.incomingCall.callerId);
   }, [store.incomingCall]);
@@ -1817,7 +1784,7 @@ export default function App() {
     const canvas = document.createElement('canvas');
     canvas.width = 200;
     canvas.height = 200;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
 
     const ratio = Math.min(200 / img.naturalWidth, 200 / img.naturalHeight);
@@ -1853,7 +1820,6 @@ export default function App() {
     setCropGifDataUrl(null);
     setShowCropper(false);
   }, [cropScale, cropPos, cropContext, cropGifDataUrl, getDominantColor]);
-
 
   const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>, context: 'setup' | 'profile') => {
     if (e.target.files?.[0]) {
@@ -1893,7 +1859,7 @@ export default function App() {
     if (!store.modals[key]) return null;
 
     return (
-      <div className="fixed inset-0 z-[100000] bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
+      <div className="fixed inset-0 z-[100000] bg-black/70 backdrop-blur-md flex items-center justify-center p-3 pt-[3.75rem]">
         {content}
       </div>
     );
@@ -1981,14 +1947,11 @@ export default function App() {
     );
   };
 
-
-
   const hasInvites = store.channelInvites.length > 0 || store.friendRequests.length > 0;
 
   return (
     <>
       <div id="mouse-glow" />
-      {/* Auth screen — показывается поверх основного UI, когда пользователь не авторизован */}
       {!isAuth && (
         <div className="fixed inset-0 z-[100000] flex flex-col bg-appBg text-textMain animate-fade-in select-none">
           <TitleBar />
@@ -2056,7 +2019,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Loading overlays — рендерятся поверх основного UI, чтобы интерфейс монтировался заранее */}
       {appLoading && (
         <div className={`fixed inset-0 z-[100000] flex flex-col bg-appBg transition-opacity duration-[600ms] select-none ${loadingFadeOut ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
           <TitleBar />
@@ -2106,8 +2068,6 @@ export default function App() {
       <div className="flex flex-col h-screen w-screen bg-appBg text-textMain overflow-hidden relative select-none">
         <TitleBar />
         <div className="flex flex-1 overflow-hidden">
-
-
 
           {!store.isStreamFullscreen && (
             <div className="w-80 bg-panelBg flex flex-col border-r border-[#303035] relative shrink-0">
@@ -2306,7 +2266,6 @@ export default function App() {
                   </div>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
-
 
                   <button
                     onClick={() => {
@@ -2799,7 +2758,12 @@ export default function App() {
       )}
 
       {renderModal('settings',
-        <div className="bg-panelBg rounded-3xl w-[500px] max-h-[80vh] flex flex-col overflow-hidden shadow-2xl">
+        <div className="relative transition-[margin] duration-[420ms] ease-[cubic-bezier(0.16,1,0.3,1)]" style={{ marginBottom: micTestPanelReserve }}>
+          <MicTestPanel isEnabled={noiseSuppression} isActive={settingsTab === 'audio'} onHeightChange={setMicTestPanelHeight} />
+          <div
+            className="relative z-10 bg-panelBg rounded-3xl w-[500px] flex flex-col overflow-hidden shadow-2xl transition-[max-height] duration-[420ms] ease-[cubic-bezier(0.16,1,0.3,1)]"
+            style={{ maxHeight: `min(90vh, calc(100vh - 4.5rem - ${micTestPanelReserve}px))` }}
+          >
           <div className="flex items-center justify-between p-6 pb-0">
             <h2 className="text-xl font-bold text-white">{t('settings.title', 'Настройки')}</h2>
             <button onClick={closeAndResetModals} className="group text-textMuted hover:text-white transition-colors duration-200 p-1.5 rounded-lg hover:bg-surface"><X weight="bold" size={24} /></button>
@@ -2911,7 +2875,7 @@ export default function App() {
                   onModeChange={m => {
                     const nextMode = m === 'smart' ? 'auto' : 'manual';
                     setMicThresholdMode(nextMode);
-                    webrtc.setMicThresholdParams(nextMode, manualThresholdValue);
+                    void webrtc.setNoiseSuppressionMode(nextMode);
                     settingsRef.current = { ...settingsRef.current, micThresholdMode: nextMode };
                   }}
                   manualThreshold={manualThresholdValue}
@@ -2919,6 +2883,16 @@ export default function App() {
                     setManualThresholdValue(v);
                     webrtc.setMicThresholdParams('manual', v);
                     settingsRef.current = { ...settingsRef.current, manualThresholdValue: v };
+                  }}
+                  smartModel={smartNoiseModel}
+                  onSmartModelChange={m => {
+                    setSmartNoiseModel(m);
+                    webrtc.setSmartNoiseModel(m);
+                  }}
+                  suppressionStrength={suppressionStrength}
+                  onSuppressionStrengthChange={v => {
+                    setSuppressionStrength(v);
+                    webrtc.setSuppressionStrength(v);
                   }}
                   onStartCalibration={handleManualCalibration}
                   isCalibrating={isCalibrating}
@@ -2930,6 +2904,19 @@ export default function App() {
             )}
             {settingsTab === 'privacy' && (
               <div className="space-y-6">
+                <div>
+                  <label className="text-xs font-bold text-textMuted mb-3 block tracking-wider">{t('settings.privacy.network', 'СЕТЬ')}</label>
+                  <div className="flex items-center justify-between bg-surface p-4 rounded-xl">
+                    <div className="mr-4">
+                      <span className="font-semibold text-white text-[15px]">{t('settings.privacy.hideIp', 'Скрывать мой IP-адрес')}</span>
+                      <p className="text-xs text-textMuted mt-1">{t('settings.privacy.hideIpDesc', 'Весь голос идёт через сервер ретрансляции, собеседники не видят ваш IP. Задержка чуть выше. Применяется к новым подключениям.')}</p>
+                    </div>
+                    <Md3Switch checked={relayOnlyIce} onChange={(v) => {
+                      setRelayOnlyIce(v);
+                      webrtc.setRelayOnlyIce(v);
+                    }} />
+                  </div>
+                </div>
                 <div>
                   <button
                     onClick={() => store.setModal('privacy', true)}
@@ -2947,6 +2934,7 @@ export default function App() {
                 </button>
               </div>
             )}
+          </div>
           </div>
         </div>
       )}
@@ -3163,7 +3151,7 @@ export default function App() {
       )}
 
       {store.modals.privacy && (
-        <div className="fixed inset-0 z-[100000] bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[100000] bg-black/70 backdrop-blur-md flex items-center justify-center p-3 pt-[3.75rem]">
           <div className="bg-panelBg p-8 rounded-3xl w-[400px] shadow-2xl border border-[#303035]">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-xl font-bold text-white">{t('settings.privacy.changePasswordTitle', 'Сменить пароль')}</h2>
@@ -3184,7 +3172,7 @@ export default function App() {
       )}
 
       {store.modals.profile && store.selectedProfileUser && (
-        <div className="fixed inset-0 z-[100000] bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[100000] bg-black/70 backdrop-blur-md flex items-center justify-center p-3 pt-[3.75rem]">
           <div className="bg-panelBg w-[400px] rounded-[32px] overflow-hidden shadow-2xl relative border border-[#303035]">
             <div
               className="h-32 w-full relative transition-colors duration-500"
@@ -3210,7 +3198,6 @@ export default function App() {
 
             <div className="px-8 pb-8 relative mt-[-56px]">
               <div className="flex items-start gap-6 mb-6 relative z-10">
-                {/* Avatar container */}
                 <div className="relative group shrink-0">
                   <div className="w-[112px] h-[112px] rounded-full border-[6px] border-panelBg bg-panelBg relative shadow-xl">
                     <AvatarImg
@@ -3241,14 +3228,11 @@ export default function App() {
                   )}
                 </div>
 
-                {/* About me thought bubble on the right */}
                 {!isEditingProfile && store.selectedProfileUser?.aboutMe && (
                   <div className="flex-1 mt-10 relative animate-fade-in">
-                    {/* Little tail circles for the thought bubble */}
                     <div className="absolute w-1.5 h-1.5 rounded-full bg-[#303035] left-[-18px] top-[-12px] opacity-90" />
                     <div className="absolute w-2.5 h-2.5 rounded-full bg-[#303035] left-[-8px] top-[-5px] opacity-90" />
 
-                    {/* Thought bubble container */}
                     <div className="bg-[#2B2D31] border border-[#303035] p-3 rounded-2xl shadow-md min-h-[60px] flex items-center justify-center">
                       <p className="text-white/90 text-sm font-medium leading-relaxed break-words whitespace-pre-wrap text-center w-full">
                         {store.selectedProfileUser.aboutMe}
@@ -3389,7 +3373,6 @@ export default function App() {
                     </button>
                   ) : store.friends.some(f => f.id === store.selectedProfileUser?.id) ? (
                     <div className="flex justify-center items-center gap-4 w-full">
-                      {/* Left: Remove Friend */}
                       <button
                         onClick={() => {
                           if (store.selectedProfileUser) signalRService.removeFriend(store.selectedProfileUser.id);
@@ -3401,7 +3384,6 @@ export default function App() {
                         <UserMinus weight="bold" size={28} />
                       </button>
 
-                      {/* Center: Achievements */}
                       <button
                         onClick={() => {
                           if (store.selectedProfileUser) openUserAchievements(store.selectedProfileUser.id);
@@ -3413,7 +3395,6 @@ export default function App() {
                         <Trophy weight="bold" size={28} />
                       </button>
 
-                      {/* Right: Call */}
                       <button
                         onClick={async () => {
                           if (store.selectedProfileUser && store.selectedProfileUser.isOnline) {
@@ -3437,7 +3418,6 @@ export default function App() {
                     </div>
                   ) : (
                     <div className="flex justify-center items-center gap-4 w-full">
-                      {/* Left: Achievements */}
                       <button
                         onClick={() => {
                           if (store.selectedProfileUser) openUserAchievements(store.selectedProfileUser.id);
@@ -3449,7 +3429,6 @@ export default function App() {
                         <Trophy weight="bold" size={28} />
                       </button>
 
-                      {/* Right: Add Friend */}
                       {(() => {
                         const hasOutgoingRequest = (
                           store.selectedProfileUser?.friendRequestsReceived ||
@@ -3502,7 +3481,6 @@ export default function App() {
           </div>
         </div>
       )}
-      {/* Achievement Toast */}
       {store.achievementToast && createPortal((() => {
         const isHiding = store.achievementToast.startsWith('__hiding__');
         const achId = isHiding ? store.achievementToast.replace('__hiding__', '') : store.achievementToast;
@@ -3525,9 +3503,8 @@ export default function App() {
         );
       })(), document.body)}
 
-      {/* Achievements Modal */}
       {renderModal('achievements',
-        <div className="bg-panelBg rounded-3xl w-[500px] max-h-[80vh] flex flex-col overflow-hidden shadow-2xl">
+        <div className="bg-panelBg rounded-3xl w-[500px] max-h-[min(90vh,100vh-4.5rem)] flex flex-col overflow-hidden shadow-2xl">
           <div className="flex items-center justify-between p-6 pb-4">
             <h2 className="text-xl font-bold text-white flex items-center gap-3">
               <Trophy weight="bold" size={24} />
@@ -3545,12 +3522,6 @@ export default function App() {
 
               const categoryOrder: Record<string, number> = { voice: 0, calls: 1, social: 2, hidden: 3 };
 
-              // Три полосы, между которыми ничего не перемешивается:
-              //   0 — полученные скрытые: наверху, с явной меткой «Скрытое»,
-              //   1 — обычные достижения,
-              //   2 — ещё не открытые скрытые: всегда в самом низу.
-              // Раньше сортировка шла только по факту получения, из-за чего
-              // нераскрытые «???» вклинивались между обычными достижениями.
               const bandOf = (a: typeof ACHIEVEMENTS[number]) =>
                 a.hidden ? (unlocked.includes(a.id) ? 0 : 2) : 1;
 
@@ -3652,8 +3623,6 @@ export default function App() {
         document.body
       )}
 
-
-
       {adminBlockToast && createPortal((() => {
         const isHiding = adminBlockToast === '__hiding__';
         return (
@@ -3735,7 +3704,7 @@ export default function App() {
       )}
 
       {showStreamPicker && (
-        <div className="fixed inset-0 z-[100000] bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[100000] bg-black/70 backdrop-blur-md flex items-center justify-center p-3 pt-[3.75rem]">
           <StreamPicker
             onClose={() => setShowStreamPicker(false)}
             onSelect={handleStartStream}
