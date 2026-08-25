@@ -21,8 +21,8 @@ jobs:
 
     env:
       RUSTFLAGS: -C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint
-      VENDORED_SHA256: 6ea100532996aa0a07405fa2265e27337c351fe1cbdf63ac65886373484089c7
-      VENDORED_BYTES: '9235331'
+      VENDORED_SHA256: 0027c731a1093589b78f73a997a6b10c387862f451542041b5b673eea10e4812
+      VENDORED_BYTES: '9068001'
 
     steps:
       - name: Checkout DeepFilterNet
@@ -192,9 +192,9 @@ jobs:
             echo "| vendored sha256 | \`${VENDORED_SHA256}\` |"
             echo ""
             if [ "$DIGEST" = "$VENDORED_SHA256" ]; then
-              echo "This build reproduces the vendored binary bit for bit."
+              echo "This build reproduces the shipped binary bit for bit."
             else
-              echo "This build differs from the vendored binary. Adopt it only after an A/B listening test, then update the pin in scripts/fetch-deepfilter-assets.cjs."
+              echo "This build differs from the shipped binary. Before adopting it, run scripts/check-deepfilter-wasm.mjs against both files and compare the reported output sha256; the DSP is equivalent only if those match. Then update the pin in scripts/fetch-deepfilter-assets.cjs and the entry in THIRD-PARTY-NOTICES.md."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
