@@ -17,8 +17,6 @@ const windowControls = {
   loadSileroModel: (): Promise<Uint8Array> => ipcRenderer.invoke('load-silero-model'),
   loadDeepFilterAsset: (assetPath: string): Promise<Uint8Array | null> =>
     ipcRenderer.invoke('load-deepfilter-asset', assetPath),
-  saveDeepFilterAsset: (assetPath: string, bytes: Uint8Array): Promise<boolean> =>
-    ipcRenderer.invoke('save-deepfilter-asset', assetPath, bytes),
   getAutoLaunch: (): Promise<boolean> => ipcRenderer.invoke('get-auto-launch'),
   setAutoLaunch: (enabled: boolean): Promise<boolean> => ipcRenderer.invoke('set-auto-launch', enabled),
   getMinimizeToTray: (): Promise<boolean> => ipcRenderer.invoke('get-minimize-to-tray'),

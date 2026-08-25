@@ -10,8 +10,8 @@ const ALLOW_MISSING = process.argv.includes('--allow-missing')
 const ASSETS = [
   {
     rel: 'pkg/df_bg.wasm',
-    bytes: 9235331,
-    sha256: '6ea100532996aa0a07405fa2265e27337c351fe1cbdf63ac65886373484089c7'
+    bytes: 9068001,
+    sha256: '0027c731a1093589b78f73a997a6b10c387862f451542041b5b673eea10e4812'
   },
   {
     rel: 'models/DeepFilterNet3_onnx.tar.gz',

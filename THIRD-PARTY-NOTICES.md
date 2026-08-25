@@ -23,16 +23,18 @@ If you publish measurements obtained with this model, the upstream project asks 
 ## DeepFilterNet 3 — WebAssembly build
 
 - File: `src/renderer/public/deepfilternet3/pkg/df_bg.wasm`
-- Size: 9 235 331 bytes
-- SHA-256: `6ea100532996aa0a07405fa2265e27337c351fe1cbdf63ac65886373484089c7`
+- Size: 9 068 001 bytes
+- SHA-256: `0027c731a1093589b78f73a997a6b10c387862f451542041b5b673eea10e4812`
 - Contains: a `wasm32-unknown-unknown` build of the DeepFilterNet Rust implementation
   (MIT or Apache-2.0, copyright (c) 2021 Hendrik Schröter) behind a `wasm-bindgen` wrapper
-- Obtained from: <https://github.com/abdullahtalal1122/deepfilternet3-standalone-raw-audio-denoising>
-  (npm package `deepfilter-standalone`, MIT), itself derived from
-  <https://github.com/phuvinh010701/livekit-deepfilternet3-noise-filter>
+- Built by: `.github/workflows/build-deepfilter-wasm.yml`, run 32790281941, from
+  <https://github.com/Rikorose/DeepFilterNet> at commit
+  `d375b2d8309e0935d165700c91da9de862a99c31` — crate `deep_filter` 0.5.7-pre with
+  `--no-default-features --features wasm`, rustc 1.97.1, wasm-bindgen 0.2.92, `wasm-opt -O3`
 
-This binary is not published by the DeepFilterNet project. It is pinned by size and SHA-256
-in `scripts/fetch-deepfilter-assets.cjs`, which refuses to build if the bytes change.
+The DeepFilterNet project does not publish a WebAssembly artifact, so this one is compiled from
+its sources. It is pinned by size and SHA-256 in `scripts/fetch-deepfilter-assets.cjs`, which
+refuses to build if the bytes change.
 
 ## deepfilter-standalone
 

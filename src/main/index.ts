@@ -129,11 +129,6 @@ const isDev = !app.isPackaged;
 
 const DEEPFILTER_ASSETS = new Set(['pkg/df_bg.wasm', 'models/DeepFilterNet3_onnx.tar.gz']);
 const MIN_DEEPFILTER_ASSET_BYTES = 100 * 1024;
-const MAX_DEEPFILTER_ASSET_BYTES = 64 * 1024 * 1024;
-
-function deepFilterCacheDir(): string {
-  return join(app.getPath('userData'), 'model-cache', app.getVersion());
-}
 
 let bundledAssetBase: string | null = null;
 
@@ -142,7 +137,6 @@ function bundledAssetBases(): string[] {
     join(__dirname, '../renderer'),
     join(app.getAppPath(), 'out/renderer'),
     join(app.getAppPath(), 'src/renderer/public'),
-    deepFilterCacheDir(),
     join(process.resourcesPath || '', 'renderer'),
     process.resourcesPath || ''
   ];
@@ -651,24 +645,6 @@ app.whenReady().then(() => {
   ipcMain.handle('load-deepfilter-asset', async (_event, assetPath: unknown) => {
     if (typeof assetPath !== 'string' || !DEEPFILTER_ASSETS.has(assetPath)) return null;
     return readBundledAsset(join('deepfilternet3', ...assetPath.split('/')));
-  });
-
-  ipcMain.handle('save-deepfilter-asset', async (_event, assetPath: unknown, bytes: unknown) => {
-    if (typeof assetPath !== 'string' || !DEEPFILTER_ASSETS.has(assetPath)) return false;
-    if (!(bytes instanceof Uint8Array) || bytes.byteLength < MIN_DEEPFILTER_ASSET_BYTES) return false;
-    if (bytes.byteLength > MAX_DEEPFILTER_ASSET_BYTES) return false;
-    try {
-      const target = join(deepFilterCacheDir(), 'deepfilternet3', ...assetPath.split('/'));
-      await fsPromises.mkdir(join(target, '..'), { recursive: true });
-      const temporary = `${target}.partial`;
-      await fsPromises.writeFile(temporary, bytes);
-      await fsPromises.rename(temporary, target);
-      console.log(`[DeepFilter] cached ${assetPath} in ${deepFilterCacheDir()}`);
-      return true;
-    } catch (error) {
-      console.warn(`[DeepFilter] failed to cache ${assetPath}:`, error);
-      return false;
-    }
   });
 
   ipcMain.handle('get-auto-launch', () => {
