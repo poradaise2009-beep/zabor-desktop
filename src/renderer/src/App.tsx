@@ -277,6 +277,7 @@ export default function App() {
   const [manualThresholdValue, setManualThresholdValue] = useState(-42);
   const [smartNoiseModel, setSmartNoiseModel] = useState<SmartNoiseModel>(() => webrtc.getSmartNoiseModel());
   const [suppressionStrength, setSuppressionStrength] = useState(() => webrtc.getSuppressionStrength());
+  const [speechAnalyzerEnabled, setSpeechAnalyzerEnabled] = useState(() => webrtc.isSpeechAnalyzerEnabled());
   const [isSwitchingChannel, setIsSwitchingChannel] = useState(false);
   const [autoLaunch, setAutoLaunch] = useState(false);
   const [minimizeToTray, setMinimizeToTray] = useState(true);
@@ -1249,7 +1250,7 @@ export default function App() {
     resetToDefaults, applySettings, t]);
 
   const handleManualCalibration = useCallback(async () => {
-    if (isCalibrating) return;
+    if (isCalibrating || !webrtc.isCalibrationAvailable()) return;
 
     setIsCalibrating(true);
     setCalibrationSuccess(false);
@@ -2888,6 +2889,11 @@ export default function App() {
                   onSmartModelChange={m => {
                     setSmartNoiseModel(m);
                     webrtc.setSmartNoiseModel(m);
+                  }}
+                  speechAnalyzer={speechAnalyzerEnabled}
+                  onSpeechAnalyzerChange={v => {
+                    setSpeechAnalyzerEnabled(v);
+                    webrtc.setSpeechAnalyzerEnabled(v);
                   }}
                   suppressionStrength={suppressionStrength}
                   onSuppressionStrengthChange={v => {

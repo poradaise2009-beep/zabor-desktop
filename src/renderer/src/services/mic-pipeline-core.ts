@@ -1,3 +1,5 @@
+import { TonalNoiseSuppressor, VoiceShaper } from './voice-shaping'
+
 const WASM_ASSET = 'pkg/df_bg.wasm'
 const MODEL_ASSET = 'models/DeepFilterNet3_onnx.tar.gz'
 
@@ -73,23 +75,30 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
   private readonly VAD_ON_MARGIN = 0.05
   private readonly VAD_OFF_RATIO = 0.4
   private readonly VAD_OFF_MIN = 0.02
-  private readonly VAD_UNVOICED_ON = 0.6
-  private readonly VAD_SEMI_VOICED_ON = 0.35
+  private readonly VAD_UNVOICED_ON = 0.52
+  private readonly VAD_SEMI_VOICED_ON = 0.32
+  private readonly VAD_FIXED_SEMI_MARGIN = 0.06
+  private readonly VAD_FIXED_UNVOICED_MARGIN = 0.14
   private readonly NOISE_PROB_QUANTILE = 0.9
   private readonly noiseProbHistory = new Float32Array(64)
   private readonly noiseProbScratch = new Float32Array(64)
   private noiseProbHistoryIndex = 0
   private noiseProbHistoryCount = 0
   private readonly NOISE_TRACKER_SETTLE_WINDOWS = 8
-  private readonly VAD_ATTACK_RESULTS = 3
+  private readonly VAD_ATTACK_RESULTS = 2
   private readonly VAD_ATTACK_GAP_MAX = 3
   private readonly VAD_WINDOW_FRAMES = 3.2
   private readonly VAD_RELEASE_MIN_RESULTS = 5
   private readonly VAD_RELEASE_MAX_RESULTS = 12
   private readonly MANUAL_HOLD_FRAMES = 30
   private readonly DECISION_DELAY_FRAMES = 24
-  private readonly SPEECH_PREROLL_FRAMES = 9
+  private readonly SPEECH_PREROLL_FRAMES = 14
+  private readonly ANALYZERLESS_HOLD_FRAMES = 30
+  private readonly ANALYZERLESS_SNR_RATIO = 2
+  private analyzerlessHoldFrames = 0
+  private gateOpen = false
   private noiseProbHigh = 0.05
+  private vadFixedThreshold = 0
   private vadOnThreshold = this.VAD_ON_MIN
   private vadOffThreshold = this.VAD_OFF_MIN
   private vadSemiVoicedOn = this.VAD_SEMI_VOICED_ON
@@ -126,7 +135,6 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
   private voicingLag = 0
   private previousVoicingLag = 0
   private voicingHoldWindows = 0
-  private rejectedUnvoicedFrames = 0
 
   private readonly voicingRingFrameIds = new Int32Array(12).fill(-1)
   private readonly voicingRingVoiced = new Uint8Array(12)
@@ -153,30 +161,24 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
   private noiseRmsHistoryCount = 0
   private readonly NOISE_RMS_REFRESH_FRAMES = 5
   private readonly NOISE_TRACKER_SETTLE_FRAMES = 25
-  private readonly HUMAN_SOUND_RISE_RATIO = 3.2
-  private readonly HUMAN_SOUND_MAX_ZCR = 0.45
-  private readonly HUMAN_SOUND_MAX_TILT = 8
-  private readonly HUMAN_SOUND_HOLD_FRAMES = 15
-  private readonly HUMAN_SOUND_MIN_FRAMES = 3
-  private readonly HUMAN_SOUND_MIN_RMS = 0.0006
+  private readonly AUDIBLE_MIN_RMS = 0.0006
   private noiseRmsHigh = 0.003
   private closedFramesSinceSpeech = 0
-  private humanSoundHoldFrames = 0
-  private humanSoundFrames = 0
 
   private readonly ALC_TARGET_RMS = 0.1
   private readonly ALC_PEAK_CEILING = 0.891
   private readonly ALC_MAX_GAIN = 15.85
   private readonly ALC_MIN_SPEECH_RMS = 0.0015
-  private readonly ALC_MAX_PEAK_OVER_RMS = 8
   private readonly ALC_RMS_RATE = 0.004
-  private readonly ALC_PEAK_RISE = 0.3
   private readonly ALC_PEAK_FALL = 0.004
   private readonly ALC_GAIN_SMOOTH = 0.008
+  private readonly ALC_LIMIT_ATTACK = 1 / 24
+  private readonly ALC_LIMIT_RELEASE = 1 / 5760
   private readonly ALC_SEED_FRAMES = 50
   private readonly ALC_SEED_GAIN_SMOOTH = 0.05
+  private readonly ALC_OUTPUT_CEILING = 0.999
   private alcSpeechRms = 0
-  private alcSpeechPeak = 0
+  private alcPeakEnvelope = 0
   private alcSpeechFrames = 0
   private alcGain = 1
   private alcAppliedGain = 1
@@ -184,24 +186,37 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
   private alcLoggedGain = 1
   private alcLogFrames = 0
 
+  private readonly voiceShaper = new VoiceShaper()
+
+  private readonly toneSuppressor = new TonalNoiseSuppressor()
+  private readonly TONE_ADAPT_NOISE_RATIO = 2
+  private readonly TONE_LOG_INTERVAL_FRAMES = 300
+  private toneLogFrames = 0
+  private toneLoggedHumCount = -1
+  private toneLoggedWhineCount = -1
+
   private readonly ENGINE_INPUT_TARGET_RMS = 0.1
-  private readonly ENGINE_INPUT_PEAK_CEILING = 0.9
+  private readonly ENGINE_INPUT_PEAK_CEILING = 0.7
   private readonly ENGINE_INPUT_MAX_GAIN = 31.62
   private readonly ENGINE_INPUT_MIN_SPEECH_RMS = 0.0015
-  private readonly ENGINE_INPUT_MAX_PEAK_OVER_RMS = 8
   private readonly ENGINE_INPUT_RMS_RATE = 0.004
-  private readonly ENGINE_INPUT_PEAK_RISE = 0.3
   private readonly ENGINE_INPUT_PEAK_FALL = 0.004
   private readonly ENGINE_INPUT_GAIN_SMOOTH = 0.008
   private readonly ENGINE_INPUT_SEED_FRAMES = 50
   private readonly ENGINE_INPUT_SEED_GAIN_SMOOTH = 0.05
   private readonly ENGINE_INPUT_LEARN_FLOOR_RATIO = 0.35
+  private readonly ENGINE_GAIN_SLEW = Math.pow(10, 0.25 / 20)
+  private readonly ENGINE_SAMPLE_CEILING = 0.999
   private engineInputSpeechRms = 0
-  private engineInputSpeechPeak = 0
+  private engineInputPeakEnvelope = 0
   private engineInputSpeechFrames = 0
   private engineInputGain = 1
+  private engineAppliedGain = 1
   private engineInputLoggedGain = 1
   private engineInputLogFrames = 0
+
+  private readonly LEVEL_REPORT_FRAMES = 100
+  private levelReportFrames = 0
 
   private readonly speechRingSpeech: Uint8Array
   private readonly speechRingFrames: Float32Array[] = []
@@ -214,7 +229,7 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
   private speechRingCount = 0
   private gateGain = 0
   private readonly GATE_FLOOR = 0
-  private readonly GATE_HOLD_FRAMES = 22
+  private readonly GATE_HOLD_FRAMES = 32
   private readonly GATE_ATTACK_COEFFICIENT = 1 / 48
   private readonly GATE_RELEASE_COEFFICIENT = 1 / 5760
   private readonly GATE_SILENCE_EPSILON = 0.004
@@ -345,14 +360,34 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
           this.preloadedModelBytes = event.data.modelBytes
         }
         this.engineRetrySamples = 0
-        void this.startEngine()
+        if (this.noiseSuppression) void this.startEngine()
+      } else if (event.data.type === 'setLevelSeed') {
+        this.applyLevelSeed(event.data)
       } else if (event.data.type === 'setConfig') {
         if (event.data.noiseSuppression !== undefined) {
-          this.noiseSuppression = event.data.noiseSuppression
+          const nextNoiseSuppression = Boolean(event.data.noiseSuppression)
+          if (nextNoiseSuppression !== this.noiseSuppression) {
+            this.toneSuppressor.reset()
+            this.toneLoggedHumCount = -1
+            this.toneLoggedWhineCount = -1
+            this.gateHoldFrames = 0
+            this.dfVetoFrames = 0
+            this.dfVetoLatched = false
+          }
+          this.noiseSuppression = nextNoiseSuppression
         }
         if (event.data.sileroVadEnabled !== undefined) {
           this.sileroVadEnabled = event.data.sileroVadEnabled
-          if (!this.sileroVadEnabled) this.sileroVadHealthy = false
+          if (!this.sileroVadEnabled) {
+            this.sileroVadHealthy = false
+            this.speechSegmentOpen = false
+            this.consecutiveVadSpeechResults = 0
+            this.consecutiveVadSilenceResults = 0
+            this.attackGapWindows = 0
+            this.attackFirstWindowEndFrameId = -1
+            this.segmentPeakProbability = 0
+            this.segmentWindows = 0
+          }
         }
         if (event.data.monitorWhileMuted !== undefined) {
           this.monitorWhileMuted = Boolean(event.data.monitorWhileMuted)
@@ -382,9 +417,11 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
             this.closedFramesSinceSpeech = 0
             this.segmentPeakProbability = 0
             this.segmentWindows = 0
-            this.humanSoundHoldFrames = 0
-            this.humanSoundFrames = 0
             this.previousFrameRms = 0
+            this.toneSuppressor.reset()
+            this.toneLogFrames = 0
+            this.toneLoggedHumCount = -1
+            this.toneLoggedWhineCount = -1
             this.transientHoldFrames = 0
             this.transientCandidateFrameId = -1
             this.transientCandidateRms = 0
@@ -399,6 +436,8 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
             this.speechRingCount = 0
             this.gateGain = 0
             this.gateHoldFrames = 0
+            this.analyzerlessHoldFrames = 0
+            this.gateOpen = false
             this.speechRingSpeech.fill(0)
             this.speechRingFrameIds.fill(-1)
             this.speechRingRms.fill(0)
@@ -442,7 +481,15 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
           const threshold = Number(event.data.manualThresholdValue)
           this.manualThresholdDb = Math.max(-60, Math.min(-12, Number.isFinite(threshold) ? threshold : -42))
         }
-        if (event.data.vadTrackerSeed !== undefined) {
+        if (event.data.vadFixedThreshold !== undefined) {
+          const fixed = Number(event.data.vadFixedThreshold)
+          const normalized = Number.isFinite(fixed) && fixed > 0 ? Math.min(0.95, fixed) : 0
+          if (normalized !== this.vadFixedThreshold) {
+            this.vadFixedThreshold = normalized
+            this.refreshVadThresholds()
+          }
+        }
+        if (event.data.vadTrackerSeed !== undefined && this.vadFixedThreshold <= 0) {
           const seed = Number(event.data.vadTrackerSeed)
           if (Number.isFinite(seed) && seed >= 0) {
             const seeded = Math.min(this.VAD_ON_MAX, seed)
@@ -460,7 +507,6 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
           this.attenuationFloor = this.attenuationLimit
           this.attenuationTarget = this.attenuationLimit
           this.attenuationLoggedLimit = this.attenuationLimit
-          this.adaptiveAttenuationEnabled = this.thresholdMode !== 'manual'
           try {
             this.engine.setAttenuationLimit(this.attenuationLimit)
             if (this.attenuationLimit !== previous) {
@@ -475,7 +521,7 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
         if (event.data.adaptiveAttenuation !== undefined) {
           this.adaptiveAttenuationEnabled = Boolean(event.data.adaptiveAttenuation)
         }
-        if (event.data.vadThreshold !== undefined) {
+        if (event.data.vadThreshold !== undefined && this.vadFixedThreshold <= 0) {
           const calibrated = Number(event.data.vadThreshold)
           if (Number.isFinite(calibrated) && calibrated > 0) {
             this.voiceProbLow = Math.max(
@@ -562,7 +608,7 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
 
         if (this.speechSegmentOpen) {
           this.closedWindowsSinceSpeech = 0
-        } else {
+        } else if (this.vadFixedThreshold <= 0) {
           this.closedWindowsSinceSpeech++
           const roomWindow = this.voicingHoldWindows === 0 &&
             (!Number.isFinite(windowRms) || windowRms <= this.noiseRmsHigh * this.IMPULSE_CLAMP_RATIO)
@@ -638,7 +684,7 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
             if (this.consecutiveVadSilenceResults >= this.currentReleaseResults()) {
               this.speechSegmentOpen = false
               this.consecutiveVadSilenceResults = 0
-              if (this.segmentWindows >= this.VOICE_PROB_MIN_WINDOWS) {
+              if (this.vadFixedThreshold <= 0 && this.segmentWindows >= this.VOICE_PROB_MIN_WINDOWS) {
                 const rate = this.segmentPeakProbability < this.voiceProbLow
                   ? this.VOICE_PROB_FALL
                   : this.VOICE_PROB_RISE
@@ -662,12 +708,29 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
   }
 
   private refreshVadThresholds() {
+    if (this.vadFixedThreshold > 0) {
+      const on = this.vadFixedThreshold
+      this.vadOnThreshold = on
+      this.vadOffThreshold = Math.max(this.VAD_OFF_MIN, Math.min(on - 0.02, on * this.VAD_OFF_RATIO))
+      this.vadSemiVoicedOn = Math.min(this.VAD_SEMI_VOICED_ON, on + this.VAD_FIXED_SEMI_MARGIN)
+      this.vadUnvoicedOn = Math.min(this.VAD_UNVOICED_ON, on + this.VAD_FIXED_UNVOICED_MARGIN)
+      if (Math.abs(on - this.loggedVadOnThreshold) >= 0.02) {
+        this.loggedVadOnThreshold = on
+        this.port.postMessage({
+          type: 'log',
+          message: `VAD gate fixed at ${on.toFixed(2)}/${this.vadOffThreshold.toFixed(2)} ` +
+            `for voiced, ${this.vadSemiVoicedOn.toFixed(2)} half-voiced, ` +
+            `${this.vadUnvoicedOn.toFixed(2)} unvoiced`
+        })
+      }
+      return
+    }
     const room = Math.max(this.VAD_ON_MIN, Math.min(this.VAD_ON_MAX, this.noiseProbHigh + this.VAD_ON_MARGIN))
     const on = Math.max(this.VAD_ON_MIN, Math.min(room, this.voiceProbLow - this.VOICE_PROB_MARGIN))
     this.vadOnThreshold = on
     this.vadOffThreshold = Math.max(this.VAD_OFF_MIN, Math.min(on - 0.02, on * this.VAD_OFF_RATIO))
-    const semiVoiced = Math.min(this.VAD_SEMI_VOICED_ON, Math.max(on + 0.04, this.voiceProbLow * 0.75))
-    const unvoiced = Math.min(this.VAD_UNVOICED_ON, Math.max(semiVoiced + 0.06, this.voiceProbLow * 1.1))
+    const semiVoiced = Math.min(this.VAD_SEMI_VOICED_ON, Math.max(on + 0.04, this.voiceProbLow * 0.72))
+    const unvoiced = Math.min(this.VAD_UNVOICED_ON, Math.max(semiVoiced + 0.06, this.voiceProbLow * 1.05))
     this.vadSemiVoicedOn = semiVoiced
     this.vadUnvoicedOn = unvoiced
     if (Math.abs(on - this.loggedVadOnThreshold) >= 0.02) {
@@ -901,11 +964,58 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
   }
 
   private driveEngineStartup(samples: number): void {
-    if (!this.engine.isReady && !this.engineStarting) {
+    if (this.noiseSuppression && !this.engine.isReady && !this.engineStarting) {
       if (this.engineRetrySamples > 0) this.engineRetrySamples -= samples
       else void this.startEngine()
     }
     if (this.pendingAssets.size > 0) this.tickAssetBridge(samples)
+  }
+
+  private applyLevelSeed(seed: Record<string, unknown>): void {
+    const positive = (value: unknown): number => {
+      const parsed = Number(value)
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+    }
+    const alcSpeechRms = positive(seed.alcSpeechRms)
+    if (alcSpeechRms > 0) {
+      this.alcSpeechRms = Math.min(1, alcSpeechRms)
+      this.alcPeakEnvelope = Math.min(1, positive(seed.alcPeakEnvelope) || this.alcSpeechRms)
+      this.alcGain = Math.max(1, Math.min(this.ALC_MAX_GAIN, positive(seed.alcGain) || 1))
+      this.alcAppliedGain = this.alcGain
+      this.alcLoggedGain = this.alcGain
+      this.alcSpeechFrames = this.ALC_SEED_FRAMES
+    }
+    const engineInputSpeechRms = positive(seed.engineInputSpeechRms)
+    if (engineInputSpeechRms > 0) {
+      this.engineInputSpeechRms = Math.min(1, engineInputSpeechRms)
+      this.engineInputPeakEnvelope = Math.min(1, positive(seed.engineInputPeakEnvelope) || this.engineInputSpeechRms)
+      this.engineInputGain = Math.max(1, Math.min(this.ENGINE_INPUT_MAX_GAIN, positive(seed.engineInputGain) || 1))
+      this.engineAppliedGain = this.engineInputGain
+      this.engineInputLoggedGain = this.engineInputGain
+      this.engineInputSpeechFrames = this.ENGINE_INPUT_SEED_FRAMES
+    }
+    const noiseRmsHigh = positive(seed.noiseRmsHigh)
+    if (noiseRmsHigh > 0) {
+      this.noiseRmsHigh = Math.min(0.06, noiseRmsHigh)
+      this.noiseRmsHistory.fill(this.noiseRmsHigh)
+      this.noiseRmsHistoryIndex = 0
+      this.noiseRmsHistoryCount = this.noiseRmsHistory.length
+    }
+  }
+
+  private reportLevelState(): void {
+    const alcLearned = this.alcSpeechFrames > 0
+    const engineLearned = this.engineInputSpeechFrames > 0
+    this.port.postMessage({
+      type: 'levelState',
+      alcGain: alcLearned ? this.alcGain : 0,
+      alcSpeechRms: alcLearned ? this.alcSpeechRms : 0,
+      alcPeakEnvelope: alcLearned ? this.alcPeakEnvelope : 0,
+      engineInputGain: engineLearned ? this.engineInputGain : 0,
+      engineInputSpeechRms: engineLearned ? this.engineInputSpeechRms : 0,
+      engineInputPeakEnvelope: engineLearned ? this.engineInputPeakEnvelope : 0,
+      noiseRmsHigh: this.noiseRmsHistoryCount > 0 ? this.noiseRmsHigh : 0
+    })
   }
 
   private pushToBuffer(buffer: Float32Array, data: Float32Array, writeIndex: number, readIndex: number): number {
@@ -977,8 +1087,15 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
     while ((this.inputWriteIndex - this.inputReadIndex + this.BUFFER_SIZE) % this.BUFFER_SIZE >= this.FRAME_SIZE) {
       this.inputReadIndex = this.pullFromBuffer(this.inputBuffer, this.frameToProcess, this.inputWriteIndex, this.inputReadIndex)
 
+      const shapingInput = this.noiseSuppression
+      const adaptingTones = shapingInput && !this.gateOpen &&
+        this.previousFrameRms <= this.noiseRmsHigh * this.TONE_ADAPT_NOISE_RATIO
+
       for (let i = 0; i < this.FRAME_SIZE; i++) {
-        const inputSample = this.frameToProcess[i]
+        const inputSample = shapingInput
+          ? this.toneSuppressor.process(this.frameToProcess[i], adaptingTones)
+          : this.frameToProcess[i]
+        this.frameToProcess[i] = inputSample
         this.vadWindowSquareSum += inputSample * inputSample
         this.vadWindowSampleCount++
         const filteredSample = this.decimateVadSample(inputSample)
@@ -989,8 +1106,6 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
         if (this.pitchFilled < this.pitchBuffer.length) this.pitchFilled++
 
         if (this.vad16kWriteIndex === this.VAD_FRAME_SIZE) {
-          const audioFrame = this.vad16kBuffer.slice()
-          const windowRms = Math.sqrt(this.vadWindowSquareSum / Math.max(1, this.vadWindowSampleCount))
           this.voicing = this.measureVoicing()
           const lag = this.voicingLag
           const previousLag = this.previousVoicingLag
@@ -1005,10 +1120,14 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
           this.voicingRingVoiced[this.voicingRingWriteIndex] = windowVoiced ? 1 : 0
           this.voicingRingWriteIndex = (this.voicingRingWriteIndex + 1) % this.voicingRingFrameIds.length
 
-          this.port.postMessage(
-            { type: 'audio16k', audio: audioFrame, sequence: this.vadSequence++, endFrameId: this.audioFrameId, windowRms },
-            [audioFrame.buffer]
-          )
+          if (this.sileroVadEnabled) {
+            const audioFrame = this.vad16kBuffer.slice()
+            const windowRms = Math.sqrt(this.vadWindowSquareSum / Math.max(1, this.vadWindowSampleCount))
+            this.port.postMessage(
+              { type: 'audio16k', audio: audioFrame, sequence: this.vadSequence++, endFrameId: this.audioFrameId, windowRms },
+              [audioFrame.buffer]
+            )
+          }
           this.vad16kWriteIndex = 0
           this.vadWindowSquareSum = 0
           this.vadWindowSampleCount = 0
@@ -1041,12 +1160,26 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
       const currentZcr = zeroCrossings / (this.FRAME_SIZE - 1)
       const currentTilt = Math.sqrt(highBandSquares / Math.max(1e-12, lowBandSquares))
 
+      if (shapingInput && ++this.toneLogFrames >= this.TONE_LOG_INTERVAL_FRAMES) {
+        this.toneLogFrames = 0
+        const humCount = this.toneSuppressor.activeHumCount
+        const whineCount = this.toneSuppressor.activeWhineCount
+        if (humCount !== this.toneLoggedHumCount || whineCount !== this.toneLoggedWhineCount) {
+          this.toneLoggedHumCount = humCount
+          this.toneLoggedWhineCount = whineCount
+          this.port.postMessage({
+            type: 'log',
+            message: `Tonal notches hum=${humCount > 0 ? `${humCount}@${this.toneSuppressor.lowestHumHz.toFixed(1)}Hz` : 'off'} whine=${whineCount > 0 ? `${whineCount}@${this.toneSuppressor.strongestWhineHz.toFixed(0)}Hz` : 'off'}`
+          })
+        }
+      }
+
       if (this.transientHoldFrames > 0) this.transientHoldFrames--
       const attackDb = 20 * Math.log10(currentRms / Math.max(1e-6, this.previousFrameRms))
       const crest = currentPeak / Math.max(1e-6, currentRms)
       const frameNominatesTransient = attackDb >= this.TRANSIENT_ATTACK_DB &&
         crest >= this.TRANSIENT_CREST &&
-        currentRms >= Math.max(this.noiseRmsHigh * 2, this.HUMAN_SOUND_MIN_RMS)
+        currentRms >= Math.max(this.noiseRmsHigh * 2, this.AUDIBLE_MIN_RMS)
       this.previousFrameRms = currentRms
 
       let convictedTransient = false
@@ -1097,7 +1230,7 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
         this.segmentWindows = 0
       }
 
-      if (this.speechSegmentOpen || this.humanSoundHoldFrames > 0) {
+      if (this.gateOpen) {
         this.closedFramesSinceSpeech = 0
       } else {
         this.closedFramesSinceSpeech++
@@ -1115,30 +1248,6 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
           }
         }
       }
-      const soundIsLoudAndSmooth = this.sileroVadHealthy &&
-        currentRms >= Math.max(this.noiseRmsHigh * this.HUMAN_SOUND_RISE_RATIO, this.HUMAN_SOUND_MIN_RMS) &&
-        currentZcr <= this.HUMAN_SOUND_MAX_ZCR &&
-        currentTilt <= this.HUMAN_SOUND_MAX_TILT &&
-        !inTransient
-      if (soundIsLoudAndSmooth && this.voicingHoldWindows > 0) this.humanSoundFrames++
-      else this.humanSoundFrames = 0
-      const humanSound = this.humanSoundFrames >= this.HUMAN_SOUND_MIN_FRAMES
-      if (soundIsLoudAndSmooth && this.voicingHoldWindows === 0) {
-        this.rejectedUnvoicedFrames++
-        if (this.rejectedUnvoicedFrames % 100 === 1) {
-          this.port.postMessage({
-            type: 'log',
-            message: `VAD rejected non-periodic sound at ${currentDb.toFixed(0)} dB ` +
-              `(voicing ${this.voicing.toFixed(2)}, bar ${this.VOICING_SPEECH_MIN}, ` +
-              `lag ${this.voicingLag} after ${this.previousVoicingLag})`
-          })
-        }
-      }
-      if (humanSound) {
-        this.humanSoundHoldFrames = this.HUMAN_SOUND_HOLD_FRAMES
-      } else if (this.humanSoundHoldFrames > 0) {
-        this.humanSoundHoldFrames--
-      }
 
       if (this.thresholdMode === 'manual') {
         if (currentDb >= this.manualThresholdDb) {
@@ -1152,22 +1261,29 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
         }
       }
 
-      const fallbackSpeech = !this.sileroVadHealthy &&
-        !inTransient &&
-        currentRms >= Math.max(0.0015, this.noiseFloorEstimate * 3.5) &&
-        currentZcr >= 0.025 && currentZcr <= 0.35 &&
-        currentTilt >= 0.16 && currentTilt <= 5
-      if (fallbackSpeech) {
-        this.manualVadHoldFrames = this.MANUAL_HOLD_FRAMES
-      } else if (!this.sileroVadHealthy && this.manualVadHoldFrames > 0) {
-        this.manualVadHoldFrames--
+      const analyzerlessGate = this.thresholdMode !== 'manual' && !this.sileroVadHealthy
+      if (analyzerlessGate) {
+        const analyzerlessSpeech = !inTransient &&
+          this.voicingHoldWindows > 0 &&
+          currentRms >= Math.max(this.AUDIBLE_MIN_RMS, this.noiseRmsHigh * this.ANALYZERLESS_SNR_RATIO)
+        if (analyzerlessSpeech) {
+          if (this.analyzerlessHoldFrames === 0) {
+            this.markBufferedSpeechFrom(this.audioFrameId - this.SPEECH_PREROLL_FRAMES)
+          }
+          this.analyzerlessHoldFrames = this.ANALYZERLESS_HOLD_FRAMES
+        } else if (this.analyzerlessHoldFrames > 0) {
+          this.analyzerlessHoldFrames--
+        }
+      } else if (this.analyzerlessHoldFrames > 0) {
+        this.analyzerlessHoldFrames--
       }
 
       const isSpeaking = this.thresholdMode === 'manual'
         ? this.manualVadHoldFrames > 0
-        : this.sileroVadEnabled && this.sileroVadHealthy
-          ? this.speechSegmentOpen || this.humanSoundHoldFrames > 0
-          : this.manualVadHoldFrames > 0
+        : analyzerlessGate
+          ? this.analyzerlessHoldFrames > 0
+          : this.speechSegmentOpen || this.analyzerlessHoldFrames > 0
+      this.gateOpen = isSpeaking
 
       const writeIndex = this.speechRingWriteIndex
       this.speechRingSpeech[writeIndex] = isSpeaking ? 1 : 0
@@ -1200,11 +1316,21 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
           const magnitude = delayedFrame[i] < 0 ? -delayedFrame[i] : delayedFrame[i]
           if (magnitude > delayedPeak) delayedPeak = magnitude
         }
-        engineGain = delayedPeak > 0
-          ? Math.min(this.engineInputGain, Math.max(1, this.ENGINE_INPUT_PEAK_CEILING / delayedPeak))
-          : this.engineInputGain
+        this.engineInputPeakEnvelope = delayedPeak > this.engineInputPeakEnvelope
+          ? delayedPeak
+          : this.engineInputPeakEnvelope +
+            this.ENGINE_INPUT_PEAK_FALL * (delayedPeak - this.engineInputPeakEnvelope)
+        engineGain = this.engineInputGain > this.engineAppliedGain
+          ? Math.min(this.engineInputGain, this.engineAppliedGain * this.ENGINE_GAIN_SLEW)
+          : Math.max(this.engineInputGain, this.engineAppliedGain / this.ENGINE_GAIN_SLEW)
+        engineGain = Math.max(1, engineGain)
+        this.engineAppliedGain = engineGain
         if (engineGain > 1) {
-          for (let i = 0; i < this.FRAME_SIZE; i++) this.engineInputFrame[i] = delayedFrame[i] * engineGain
+          const ceiling = this.ENGINE_SAMPLE_CEILING
+          for (let i = 0; i < this.FRAME_SIZE; i++) {
+            const scaled = delayedFrame[i] * engineGain
+            this.engineInputFrame[i] = scaled > ceiling ? ceiling : scaled < -ceiling ? -ceiling : scaled
+          }
           engineFrame = this.engineInputFrame
         }
 
@@ -1216,22 +1342,20 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
         if (delayedIsSpeech && delayedRms >= engineLearnFloor) {
           if (this.engineInputSpeechFrames === 0) {
             this.engineInputSpeechRms = delayedRms
-            this.engineInputSpeechPeak = delayedPeak
           } else {
             const learnRms = Math.min(delayedRms, this.engineInputSpeechRms * this.IMPULSE_CLAMP_RATIO)
-            const learnPeak = Math.min(delayedPeak, this.engineInputSpeechRms * this.ENGINE_INPUT_MAX_PEAK_OVER_RMS)
             this.engineInputSpeechRms += this.ENGINE_INPUT_RMS_RATE * (learnRms - this.engineInputSpeechRms)
-            this.engineInputSpeechPeak +=
-              (learnPeak > this.engineInputSpeechPeak ? this.ENGINE_INPUT_PEAK_RISE : this.ENGINE_INPUT_PEAK_FALL) *
-              (learnPeak - this.engineInputSpeechPeak)
           }
           const seeding = ++this.engineInputSpeechFrames <= this.ENGINE_INPUT_SEED_FRAMES
 
           const rmsGain = this.ENGINE_INPUT_TARGET_RMS /
             Math.max(this.ENGINE_INPUT_MIN_SPEECH_RMS, this.engineInputSpeechRms)
           const peakGain = this.ENGINE_INPUT_PEAK_CEILING /
-            Math.max(this.ENGINE_INPUT_MIN_SPEECH_RMS, this.engineInputSpeechPeak)
-          const targetGain = Math.max(1, Math.min(this.ENGINE_INPUT_MAX_GAIN, Math.min(rmsGain, peakGain)))
+            Math.max(this.ENGINE_INPUT_MIN_SPEECH_RMS, this.engineInputPeakEnvelope)
+          const targetGain = Math.max(
+            1,
+            Math.min(this.ENGINE_INPUT_MAX_GAIN, Math.min(rmsGain, peakGain))
+          )
           this.engineInputGain += (targetGain - this.engineInputGain) *
             (seeding ? this.ENGINE_INPUT_SEED_GAIN_SMOOTH : this.ENGINE_INPUT_GAIN_SMOOTH)
 
@@ -1242,9 +1366,9 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
               const dbfs = (value: number) => (20 * Math.log10(Math.max(1e-6, value))).toFixed(1)
               this.port.postMessage({
                 type: 'log',
-                message: `Model input +${(20 * Math.log10(this.engineInputGain)).toFixed(1)}dB: speech ` +
-                  `${dbfs(this.engineInputSpeechRms)}dBFS -> ${dbfs(this.engineInputSpeechRms * this.engineInputGain)}dBFS, ` +
-                  `peak ${dbfs(this.engineInputSpeechPeak * this.engineInputGain)}dBFS`
+                message: `Model input +${(20 * Math.log10(engineGain)).toFixed(1)}dB: speech ` +
+                  `${dbfs(this.engineInputSpeechRms)}dBFS -> ${dbfs(this.engineInputSpeechRms * engineGain)}dBFS, ` +
+                  `peak ${dbfs(this.engineInputPeakEnvelope * engineGain)}dBFS`
               })
             }
           }
@@ -1276,9 +1400,10 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
       if (!hasDelayedFrame) {
         this.processedFrame.fill(0)
         this.gateGain = 0
-      } else if (!this.noiseSuppression) {
+      } else if (!this.noiseSuppression && !this.sileroVadEnabled) {
         this.processedFrame.set(delayedFrame)
         this.gateGain = 1
+        this.gateHoldFrames = 0
       } else {
         const gateSource = outputFrame ?? engineFrame
         if (frameDenoised && outputFrame && this.engine.supportsAttenuationLimit) {
@@ -1294,7 +1419,10 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
           )
           const emptiedByDenoiser = inputSquares > 1e-12 &&
             10 * Math.log10(Math.max(1e-12, outputSquares) / inputSquares) <= -vetoReductionDb
-          if (emptiedByDenoiser) {
+          if (delayedIsSpeech) {
+            this.dfVetoFrames = 0
+            this.dfVetoLatched = false
+          } else if (emptiedByDenoiser) {
             if (this.dfVetoFrames < this.DF_VETO_ENGAGE_FRAMES) this.dfVetoFrames++
             if (this.dfVetoFrames >= this.DF_VETO_ENGAGE_FRAMES) this.dfVetoLatched = true
           } else {
@@ -1306,7 +1434,7 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
           this.dfVetoLatched = false
         }
 
-        const speechNow = delayedIsSpeech && !this.dfVetoLatched
+        const speechNow = delayedIsSpeech
         if (speechNow) this.gateHoldFrames = this.GATE_HOLD_FRAMES
         else if (this.dfVetoLatched) this.gateHoldFrames = 0
         else if (this.gateHoldFrames > 0) this.gateHoldFrames--
@@ -1325,8 +1453,8 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
         }
       }
 
-      if (this.noiseSuppression && !this.isMuted && hasDelayedFrame) {
-        const inputAudible = currentRms >= Math.max(this.HUMAN_SOUND_MIN_RMS, this.noiseRmsHigh)
+      if ((this.noiseSuppression || this.sileroVadEnabled) && !this.isMuted && hasDelayedFrame) {
+        const inputAudible = currentRms >= Math.max(this.AUDIBLE_MIN_RMS, this.noiseRmsHigh)
         if (this.gateGain <= 0.02 && inputAudible) this.silentOutputFrames++
         else this.silentOutputFrames = 0
         if (this.silentOutputFrames > 0 && this.silentOutputFrames % this.SILENCE_REPORT_FRAMES === 0) {
@@ -1335,7 +1463,7 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
             message: `Gate has been closed for ${(this.silentOutputFrames / 100).toFixed(0)}s on audible input: ` +
               `engine ${this.engine.isReady ? 'ready' : `NOT ready (${this.engine.stageName})`}, ` +
               `silero ${this.sileroVadEnabled ? (this.sileroVadHealthy ? 'healthy' : 'stalled') : 'off'}, ` +
-              `mode ${this.thresholdMode}, segment ${this.speechSegmentOpen ? 'open' : 'closed'}, ` +
+              `mode ${this.thresholdMode}, segment ${this.gateOpen ? 'open' : 'closed'}, ` +
               `gate ${this.vadOnThreshold.toFixed(2)}/${this.vadSemiVoicedOn.toFixed(2)}/${this.vadUnvoicedOn.toFixed(2)}, ` +
               `peak ${this.segmentPeakProbability.toFixed(2)}, voicing ${this.voicing.toFixed(2)} ` +
               `(hold ${this.voicingHoldWindows}), veto ${this.dfVetoFrames}, overflow ${this.overflowCount}`
@@ -1345,62 +1473,74 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
         this.silentOutputFrames = 0
       }
 
-      let framePeak = 0
-      let frameSquares = 0
-      for (let i = 0; i < this.FRAME_SIZE; i++) {
-        const sample = this.processedFrame[i]
-        const magnitude = sample < 0 ? -sample : sample
-        if (magnitude > framePeak) framePeak = magnitude
-        frameSquares += sample * sample
-      }
-
-      const frameGain = framePeak > 0
-        ? Math.min(
-          this.alcGain,
-          Math.max(1, this.ALC_PEAK_CEILING / (framePeak * this.alcDownstreamGain))
+      if (this.noiseSuppression) {
+        let framePeak = 0
+        let frameSquares = 0
+        this.voiceShaper.setSpeechReference(
+          this.alcSpeechFrames > 0 ? Math.max(this.ALC_MIN_SPEECH_RMS, this.alcSpeechRms) : 0
         )
-        : this.alcGain
-      if (frameGain < this.alcAppliedGain) this.alcAppliedGain = frameGain
-      const frameGainStep = (frameGain - this.alcAppliedGain) / this.FRAME_SIZE
-      for (let i = 0; i < this.FRAME_SIZE; i++) {
-        this.alcAppliedGain += frameGainStep
-        this.processedFrame[i] *= this.alcAppliedGain
-      }
-      this.alcAppliedGain = frameGain
-
-      const frameRms = Math.sqrt(frameSquares / this.FRAME_SIZE)
-      if (this.gateGain > 0.5 && framePeak >= this.ALC_MIN_SPEECH_RMS) {
-        if (this.alcSpeechFrames === 0) {
-          this.alcSpeechRms = frameRms
-          this.alcSpeechPeak = framePeak
-        } else {
-          const learnRms = Math.min(frameRms, this.alcSpeechRms * this.IMPULSE_CLAMP_RATIO)
-          const learnPeak = Math.min(framePeak, this.alcSpeechRms * this.ALC_MAX_PEAK_OVER_RMS)
-          this.alcSpeechRms += this.ALC_RMS_RATE * (learnRms - this.alcSpeechRms)
-          this.alcSpeechPeak += (learnPeak > this.alcSpeechPeak ? this.ALC_PEAK_RISE : this.ALC_PEAK_FALL) *
-            (learnPeak - this.alcSpeechPeak)
+        for (let i = 0; i < this.FRAME_SIZE; i++) {
+          const sample = this.voiceShaper.process(this.processedFrame[i])
+          this.processedFrame[i] = sample
+          const magnitude = sample < 0 ? -sample : sample
+          if (magnitude > framePeak) framePeak = magnitude
+          frameSquares += sample * sample
         }
-        const seeding = ++this.alcSpeechFrames <= this.ALC_SEED_FRAMES
 
-        const rmsGain = this.ALC_TARGET_RMS / Math.max(this.ALC_MIN_SPEECH_RMS, this.alcSpeechRms)
-        const peakGain = this.ALC_PEAK_CEILING /
-          (Math.max(this.ALC_MIN_SPEECH_RMS, this.alcSpeechPeak) * this.alcDownstreamGain)
-        const targetGain = Math.max(1, Math.min(this.ALC_MAX_GAIN, Math.min(rmsGain, peakGain)))
-        this.alcGain += (targetGain - this.alcGain) *
-          (seeding ? this.ALC_SEED_GAIN_SMOOTH : this.ALC_GAIN_SMOOTH)
+        this.alcPeakEnvelope = framePeak > this.alcPeakEnvelope
+          ? framePeak
+          : this.alcPeakEnvelope + this.ALC_PEAK_FALL * (framePeak - this.alcPeakEnvelope)
 
-        if (++this.alcLogFrames >= 100) {
-          this.alcLogFrames = 0
-          const dbfs = (value: number) => (20 * Math.log10(Math.max(1e-6, value))).toFixed(1)
-          if (Math.abs(20 * Math.log10(this.alcGain / this.alcLoggedGain)) >= 1) {
-            this.alcLoggedGain = this.alcGain
-            this.port.postMessage({
-              type: 'log',
-              message: `ALC ${dbfs(this.alcGain)}dB: active speech ${dbfs(this.alcSpeechRms)}dBFS -> ` +
-                `${dbfs(this.alcSpeechRms * this.alcGain)}dBFS, peak ${dbfs(this.alcSpeechPeak * this.alcGain)}dBFS`
-            })
+        const frameGain = framePeak > 0
+          ? Math.min(
+            this.alcGain,
+            Math.max(1, this.ALC_PEAK_CEILING / (framePeak * this.alcDownstreamGain))
+          )
+          : this.alcGain
+        for (let i = 0; i < this.FRAME_SIZE; i++) {
+          const coefficient = frameGain < this.alcAppliedGain ? this.ALC_LIMIT_ATTACK : this.ALC_LIMIT_RELEASE
+          this.alcAppliedGain += (frameGain - this.alcAppliedGain) * coefficient
+          const amplified = this.processedFrame[i] * this.alcAppliedGain
+          this.processedFrame[i] = amplified > this.ALC_OUTPUT_CEILING
+            ? this.ALC_OUTPUT_CEILING
+            : amplified < -this.ALC_OUTPUT_CEILING ? -this.ALC_OUTPUT_CEILING : amplified
+        }
+
+        const frameRms = Math.sqrt(frameSquares / this.FRAME_SIZE)
+        if (this.gateGain > 0.5 && framePeak >= this.ALC_MIN_SPEECH_RMS) {
+          if (this.alcSpeechFrames === 0) {
+            this.alcSpeechRms = frameRms
+          } else {
+            const learnRms = Math.min(frameRms, this.alcSpeechRms * this.IMPULSE_CLAMP_RATIO)
+            this.alcSpeechRms += this.ALC_RMS_RATE * (learnRms - this.alcSpeechRms)
+          }
+          const seeding = ++this.alcSpeechFrames <= this.ALC_SEED_FRAMES
+
+          const rmsGain = this.ALC_TARGET_RMS / Math.max(this.ALC_MIN_SPEECH_RMS, this.alcSpeechRms)
+          const peakGain = this.ALC_PEAK_CEILING /
+            (Math.max(this.ALC_MIN_SPEECH_RMS, this.alcPeakEnvelope) * this.alcDownstreamGain)
+          const targetGain = Math.max(1, Math.min(this.ALC_MAX_GAIN, Math.min(rmsGain, peakGain)))
+          this.alcGain += (targetGain - this.alcGain) *
+            (seeding ? this.ALC_SEED_GAIN_SMOOTH : this.ALC_GAIN_SMOOTH)
+
+          if (++this.alcLogFrames >= 100) {
+            this.alcLogFrames = 0
+            const dbfs = (value: number) => (20 * Math.log10(Math.max(1e-6, value))).toFixed(1)
+            if (Math.abs(20 * Math.log10(this.alcGain / this.alcLoggedGain)) >= 1) {
+              this.alcLoggedGain = this.alcGain
+              this.port.postMessage({
+                type: 'log',
+                message: `ALC ${dbfs(this.alcGain)}dB: active speech ${dbfs(this.alcSpeechRms)}dBFS -> ` +
+                  `${dbfs(this.alcSpeechRms * this.alcGain)}dBFS, peak ${dbfs(this.alcPeakEnvelope * this.alcGain)}dBFS`
+              })
+            }
           }
         }
+      }
+
+      if (++this.levelReportFrames >= this.LEVEL_REPORT_FRAMES) {
+        this.levelReportFrames = 0
+        this.reportLevelState()
       }
 
       if (this.calibrationFramesLeft <= 0) this.refreshAttenuationLimit()

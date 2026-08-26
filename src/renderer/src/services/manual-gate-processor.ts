@@ -1,4 +1,4 @@
-export {}
+import { TonalNoiseSuppressor, VoiceShaper } from './voice-shaping'
 
 declare abstract class AudioWorkletProcessor {
   readonly port: MessagePort
@@ -22,7 +22,12 @@ class ManualGateProcessor extends AudioWorkletProcessor {
   private readonly MIN_THRESHOLD_DB = -60
   private readonly MAX_THRESHOLD_DB = -12
   private readonly DEFAULT_THRESHOLD_DB = -42
-  private readonly MAKEUP_GAIN = 3.1622776601683795
+  private readonly MAKEUP_TARGET_PEAK = 0.891
+  private readonly MAKEUP_MAX_GAIN = 3.1622776601683795
+  private readonly MAKEUP_MIN_PEAK = 0.0015
+  private readonly MAKEUP_RISE = 0.000004
+  private readonly MAKEUP_FALL = 0.0004
+  private readonly MAKEUP_CEILING = 0.999
   private readonly GATE_ATTACK = 1 / 144
   private readonly GATE_RELEASE = 1 / 5_760
   private readonly METER_INTERVAL_SAMPLES = 2_400
@@ -30,6 +35,8 @@ class ManualGateProcessor extends AudioWorkletProcessor {
   private readonly delayLine = new Float32Array(this.LOOKAHEAD_SAMPLES)
   private delayIndex = 0
   private monoInput = new Float32Array(0)
+  private readonly voiceShaper = new VoiceShaper()
+  private readonly toneSuppressor = new TonalNoiseSuppressor()
 
   private thresholdDb = this.DEFAULT_THRESHOLD_DB
   private isMuted = false
@@ -37,6 +44,9 @@ class ManualGateProcessor extends AudioWorkletProcessor {
   private gateOpen = false
   private holdRemaining = 0
   private gateGain = 0
+  private makeupGain = 1
+  private speechPeak = 0
+  private speechRms = 0
   private lastVadSent = false
 
   private meterSquareSum = 0
@@ -96,20 +106,27 @@ class ManualGateProcessor extends AudioWorkletProcessor {
       return true
     }
 
-    let mono = input[0]
+    if (this.monoInput.length !== frames) this.monoInput = new Float32Array(frames)
+    const mono = this.monoInput
     if (input.length > 1) {
-      if (this.monoInput.length !== frames) this.monoInput = new Float32Array(frames)
-      this.monoInput.fill(0)
+      mono.fill(0)
       for (const channel of input) {
-        for (let i = 0; i < frames; i++) this.monoInput[i] += channel[i] || 0
+        for (let i = 0; i < frames; i++) mono[i] += channel[i] || 0
       }
       const scale = 1 / input.length
-      for (let i = 0; i < frames; i++) this.monoInput[i] *= scale
-      mono = this.monoInput
+      for (let i = 0; i < frames; i++) mono[i] *= scale
+    } else {
+      const channel = input[0]
+      for (let i = 0; i < frames; i++) mono[i] = channel[i] || 0
     }
 
+    const adaptingTones = !this.gateOpen
     let squares = 0
-    for (let i = 0; i < frames; i++) squares += mono[i] * mono[i]
+    for (let i = 0; i < frames; i++) {
+      const sample = this.toneSuppressor.process(mono[i], adaptingTones)
+      mono[i] = sample
+      squares += sample * sample
+    }
 
     this.meterSquareSum += squares
     this.meterSampleCount += frames
@@ -144,13 +161,43 @@ class ManualGateProcessor extends AudioWorkletProcessor {
     }
 
     const targetGate = this.gateOpen ? 1 : 0
+    const makeupTarget = this.speechPeak > this.MAKEUP_MIN_PEAK
+      ? Math.max(1, Math.min(this.MAKEUP_MAX_GAIN, this.MAKEUP_TARGET_PEAK / this.speechPeak))
+      : this.MAKEUP_MAX_GAIN
+    const makeupCoefficient = makeupTarget > this.makeupGain ? this.MAKEUP_RISE : this.MAKEUP_FALL
+    this.voiceShaper.setSpeechReference(this.speechRms)
+
+    let shapedPeak = 0
+    let shapedSquares = 0
     for (let i = 0; i < frames; i++) {
       const delayed = this.delayLine[this.delayIndex]
       this.delayLine[this.delayIndex] = mono[i]
       this.delayIndex = this.delayIndex + 1 >= this.LOOKAHEAD_SAMPLES ? 0 : this.delayIndex + 1
       const coefficient = targetGate > this.gateGain ? this.GATE_ATTACK : this.GATE_RELEASE
       this.gateGain += (targetGate - this.gateGain) * coefficient
-      outputChannel[i] = gateMuted ? 0 : delayed * this.gateGain * this.MAKEUP_GAIN
+      this.makeupGain += (makeupTarget - this.makeupGain) * makeupCoefficient
+      const voiced = this.voiceShaper.process(delayed)
+      const magnitude = voiced < 0 ? -voiced : voiced
+      if (magnitude > shapedPeak) shapedPeak = magnitude
+      shapedSquares += voiced * voiced
+      if (gateMuted) {
+        outputChannel[i] = 0
+        continue
+      }
+      const shaped = voiced * this.gateGain * this.makeupGain
+      outputChannel[i] = shaped > this.MAKEUP_CEILING
+        ? this.MAKEUP_CEILING
+        : shaped < -this.MAKEUP_CEILING ? -this.MAKEUP_CEILING : shaped
+    }
+
+    if (this.gateOpen && shapedPeak > this.MAKEUP_MIN_PEAK) {
+      this.speechPeak = shapedPeak > this.speechPeak
+        ? shapedPeak
+        : this.speechPeak + (shapedPeak - this.speechPeak) * 0.05
+      const shapedRms = Math.sqrt(shapedSquares / frames)
+      this.speechRms = this.speechRms > 0
+        ? this.speechRms + (shapedRms - this.speechRms) * 0.05
+        : shapedRms
     }
 
     this.reportSpeaking(this.gateOpen && !this.isMuted)

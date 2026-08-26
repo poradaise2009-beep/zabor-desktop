@@ -15,12 +15,28 @@ import {
   type DeepFilterPayload
 } from './audio-assets'
 
-const DEFAULT_SILERO_THRESHOLD = 0.18
+export const VAD_CALIBRATION_ENABLED: boolean = false
+const FIXED_SILERO_THRESHOLD = 0.15
+
+const DEFAULT_SILERO_THRESHOLD = 0.16
 const MIN_VOICE_CALIBRATION_WINDOWS = 12
+const VAD_CALIBRATION_MARGIN_RATIO = 0.42
+const VAD_CALIBRATION_MARGIN_FLOOR = 0.06
+const VAD_CALIBRATION_MIN_THRESHOLD = 0.05
+const VAD_CALIBRATION_MAX_THRESHOLD = 0.4
+
+const vadThresholdFromVoiceLow = (voiceLow: number): number => {
+  const margin = Math.max(VAD_CALIBRATION_MARGIN_FLOOR, voiceLow * VAD_CALIBRATION_MARGIN_RATIO)
+  return Math.max(
+    VAD_CALIBRATION_MIN_THRESHOLD,
+    Math.min(VAD_CALIBRATION_MAX_THRESHOLD, voiceLow - margin)
+  )
+}
 
 export type SmartNoiseModel = 'deepfilter' | 'rnnoise'
 const SMART_MODEL_STORAGE_KEY = 'zabor_smart_noise_model'
 const SUPPRESSION_STRENGTH_STORAGE_KEY = 'zabor_suppression_strength_db'
+const SPEECH_ANALYZER_STORAGE_KEY = 'zabor_speech_analyzer_enabled'
 const RELAY_ONLY_STORAGE_KEY = 'zabor_relay_only_ice'
 
 export const MIN_SUPPRESSION_STRENGTH_DB = 5
@@ -35,6 +51,7 @@ const SUPPRESSION_ABOVE_KNEE_SLOPE = 0.5
 const DEEPFILTER_SMART_DEFAULT_ATTEN = 15
 const DEEPFILTER_MANUAL_ATTEN = 7
 const DEEPFILTER_POST_FILTER_BETA = 0.02
+const DEEPFILTER_MAX_POST_FILTER_BETA = 0.05
 const TARGET_SPEECH_TO_NOISE_DB = 55
 const ALC_TARGET_DBFS = -20
 const TARGET_RESIDUAL_NOISE_DBFS = ALC_TARGET_DBFS - TARGET_SPEECH_TO_NOISE_DB
@@ -42,6 +59,10 @@ const ASSUMED_SPEECH_LEVEL_DBFS = -30
 const DEFAULT_VAD_TRACKER_SEED = 0.05
 const MIN_CALIBRATION_FRAMES = 20
 const PLAYBACK_MAKEUP_GAIN_DB = 6
+const PLAYBACK_VOICE_LIMIT_DB = -12
+const PLAYBACK_STREAM_LIMIT_DB = -8
+const PLAYBACK_VOICE_SPREAD = 0
+const PLAYBACK_SEAT_GLIDE_S = 0.08
 const OPUS_AUDIO_BITRATE = 64_000
 const MIC_CAPTURE_TIMEOUT_MS = 10_000
 const SILERO_MODEL_LOAD_TIMEOUT_MS = 10_000
@@ -50,8 +71,21 @@ const CALIBRATION_PREPARE_TIMEOUT_MS = 20_000
 const CALIBRATION_CLEANUP_TIMEOUT_MS = 5_000
 const RUMBLE_GUARD_HZ = 70
 const RUMBLE_GUARD_QS = [0.5177, 0.7071, 1.9319]
+const PRE_ENGINE_SEED_FIELDS = [
+  'engineInputGain',
+  'engineInputSpeechRms',
+  'engineInputPeakEnvelope',
+  'noiseRmsHigh'
+] as const
+const ALC_SEED_FIELDS = [
+  'alcGain',
+  'alcSpeechRms',
+  'alcPeakEnvelope'
+] as const
 const MIC_TEST_DURATION_MS = 5_000
 const MIC_TEST_CAPTURE_GRACE_MS = 4_000
+const MIC_TEST_PIPELINE_FLUSH_MS = 280
+const MIC_TEST_MONITOR_SETTLE_MS = 120
 const MIC_TEST_SEEK_TAIL_S = 0.05
 
 export const MIC_TEST_SILENCE_DBFS = -70
@@ -173,6 +207,12 @@ function withTimeout<T>(
   })
 }
 
+const SILENCE_SUPPRESSION_OFF = { voiceActivityDetection: false } as RTCOfferOptions
+const SILENCE_SUPPRESSION_OFF_WITH_ICE_RESTART = {
+  iceRestart: true,
+  voiceActivityDetection: false
+} as RTCOfferOptions
+
 function optimizeSDP(sdp: string): string {
   let lines = sdp.split('\r\n')
 
@@ -180,7 +220,7 @@ function optimizeSDP(sdp: string): string {
   const audioMatch = sdp.match(opusRegex)
   if (audioMatch) {
     const pt = audioMatch[1]
-    const opusFmtp = `useinbandfec=1;usedtx=1;maxaveragebitrate=${OPUS_AUDIO_BITRATE};maxplaybackrate=48000;sprop-maxcapturerate=48000;stereo=0;sprop-stereo=0;cbr=0;minptime=10`
+    const opusFmtp = `useinbandfec=1;usedtx=0;maxaveragebitrate=${OPUS_AUDIO_BITRATE};maxplaybackrate=48000;sprop-maxcapturerate=48000;stereo=0;sprop-stereo=0;cbr=0;minptime=10`
     let fmtpFound = false
     for (let i = 0; i < lines.length; i++) {
       if (lines[i].startsWith(`a=fmtp:${pt}`)) {
@@ -205,9 +245,20 @@ function optimizeSDP(sdp: string): string {
       }
     }
     if (audioSectionIdx !== -1) {
+      const comfortNoisePayloads = new Set<string>()
+      for (const line of lines) {
+        const comfortNoiseMatch = line.match(/^a=rtpmap:(\d+)\s+CN\/\d+/i)
+        if (comfortNoiseMatch) comfortNoisePayloads.add(comfortNoiseMatch[1])
+      }
       const mediaParts = lines[audioSectionIdx].split(' ')
-      const payloads = mediaParts.slice(3)
+      const payloads = mediaParts.slice(3).filter(payload => !comfortNoisePayloads.has(payload))
       lines[audioSectionIdx] = [...mediaParts.slice(0, 3), pt, ...payloads.filter(payload => payload !== pt)].join(' ')
+      if (comfortNoisePayloads.size > 0) {
+        lines = lines.filter(line => {
+          const attributeMatch = line.match(/^a=(?:rtpmap|fmtp|rtcp-fb):(\d+)/)
+          return !attributeMatch || !comfortNoisePayloads.has(attributeMatch[1])
+        })
+      }
 
       let audioSectionEnd = lines.length
       for (let i = audioSectionIdx + 1; i < lines.length; i++) {
@@ -412,6 +463,7 @@ export class WebRTCManager {
   private calibratedPreGainNode: GainNode | null = null
   private micNode: AudioWorkletNode | null = null
   private micNodeReady = false
+  private readonly micLevelSeeds = new Map<string, Record<string, number>>()
   private micEngineError: string | null = null
   private lastMicCaptureError: string | null = null
   private lastReportedMicError: string | null = null
@@ -444,6 +496,8 @@ export class WebRTCManager {
   private suppressionStrengthDb = this.normalizeSuppressionStrength(
     parseFloat(localStorage.getItem(SUPPRESSION_STRENGTH_STORAGE_KEY) || String(DEEPFILTER_SMART_DEFAULT_ATTEN))
   )
+  private speechAnalyzerEnabled = localStorage.getItem(SPEECH_ANALYZER_STORAGE_KEY) !== 'false'
+  private calibrationForcesAnalyzer = false
   private activeStartPromise: Promise<boolean> | null = null
 
   private backgroundContext: AudioContext | null = null
@@ -461,10 +515,14 @@ export class WebRTCManager {
   private speakingIntervals: Map<string, SpeakingEntry> = new Map()
 
   private outputMixContext: AudioContext | null = null
-  private outputCompressor: DynamicsCompressorNode | null = null
+  private outputPeakGuard: WaveShaperNode | null = null
   private outputBusGain: GainNode | null = null
   private mixAudioElement: HTMLAudioElement | null = null
   private userGainNodes: Map<string, GainNode> = new Map()
+  private userLimiterNodes: Map<string, DynamicsCompressorNode> = new Map()
+  private userPannerNodes: Map<string, StereoPannerNode> = new Map()
+  private voiceSeatOrder: string[] = []
+  private streamLimiterNodes: Map<string, DynamicsCompressorNode> = new Map()
   private userSourceNodes: Map<string, MediaStreamAudioSourceNode> = new Map()
   private defaultInputFingerprint: string | null = null
   private defaultOutputFingerprint: string | null = null
@@ -595,13 +653,24 @@ export class WebRTCManager {
       thresholdMode: 'auto',
       vadThreshold: this.calibratedVadThreshold,
       vadTrackerSeed: this.calibratedVadTrackerSeed,
+      vadFixedThreshold: VAD_CALIBRATION_ENABLED ? 0 : FIXED_SILERO_THRESHOLD,
       attenuationLimit: this.suppressionStrengthDb,
       adaptiveAttenuation: false,
-      postFilterBeta: DEEPFILTER_POST_FILTER_BETA,
+      postFilterBeta: this.postFilterBetaForStrength(this.suppressionStrengthDb),
       noiseFloor: this.calibratedNoiseFloor,
       gainFactor,
       downstreamGain: gainFactor
     }
+  }
+
+  private postFilterBetaForStrength(strengthDb: number): number {
+    const span = MAX_SUPPRESSION_STRENGTH_DB - MIN_SUPPRESSION_STRENGTH_DB
+    const normalized = span > 0
+      ? Math.max(0, Math.min(1, (strengthDb - MIN_SUPPRESSION_STRENGTH_DB) / span))
+      : 0
+    const shaped = normalized * normalized
+    return DEEPFILTER_POST_FILTER_BETA +
+      (DEEPFILTER_MAX_POST_FILTER_BETA - DEEPFILTER_POST_FILTER_BETA) * shaped
   }
 
   private getManualGateParams() {
@@ -625,6 +694,17 @@ export class WebRTCManager {
 
   private isSmartMode(): boolean {
     return this.noiseSuppression && this.thresholdMode === 'auto'
+  }
+
+  private usesSmartWorklet(): boolean {
+    if (this.thresholdMode !== 'auto') return false
+    return this.noiseSuppression || this.analyzerFeedsWorklet()
+  }
+
+  private micGraphSignature(): string {
+    if (this.thresholdMode !== 'auto') return this.noiseSuppression ? 'manual-gate' : 'raw'
+    if (this.noiseSuppression) return `smart-${this.smartModel}`
+    return this.analyzerFeedsWorklet() ? 'analyzer-only' : 'raw'
   }
 
   private hasSpeakingWorklet(): boolean {
@@ -726,8 +806,13 @@ export class WebRTCManager {
       ? deviceId
       : `default:${deviceLabel.trim().toLowerCase() || 'unknown'}`
     this.calibrationDeviceId = normalizedDeviceId
-    this.calibratedVadThreshold = DEFAULT_SILERO_THRESHOLD
+    this.calibratedVadThreshold = VAD_CALIBRATION_ENABLED ? DEFAULT_SILERO_THRESHOLD : FIXED_SILERO_THRESHOLD
     this.hasVoiceCalibration = false
+
+    if (!VAD_CALIBRATION_ENABLED) {
+      this.updateThresholds()
+      return
+    }
 
     try {
       const raw = localStorage.getItem(this.calibrationStorageKey(normalizedDeviceId))
@@ -736,7 +821,9 @@ export class WebRTCManager {
         profile?.version === WebRTCManager.CALIBRATION_SCHEMA_VERSION &&
         Number.isFinite(profile.vadThreshold)
       ) {
-        this.calibratedVadThreshold = Math.max(0.05, Math.min(0.45, profile.vadThreshold))
+        this.calibratedVadThreshold = Number.isFinite(profile.voiceLow) && profile.voiceLow > 0
+          ? vadThresholdFromVoiceLow(profile.voiceLow)
+          : Math.max(VAD_CALIBRATION_MIN_THRESHOLD, Math.min(VAD_CALIBRATION_MAX_THRESHOLD, profile.vadThreshold))
         this.hasVoiceCalibration = true
       }
     } catch { }
@@ -744,7 +831,7 @@ export class WebRTCManager {
   }
 
   public resetMicCalibration() {
-    this.calibratedVadThreshold = DEFAULT_SILERO_THRESHOLD
+    this.calibratedVadThreshold = VAD_CALIBRATION_ENABLED ? DEFAULT_SILERO_THRESHOLD : FIXED_SILERO_THRESHOLD
     this.hasVoiceCalibration = false
     try {
       for (let i = localStorage.length - 1; i >= 0; i--) {
@@ -762,7 +849,87 @@ export class WebRTCManager {
     return getDeepFilterAsset(rel)
   }
 
+  private analyzerFeedsWorklet(): boolean {
+    return this.speechAnalyzerEnabled || this.calibrationForcesAnalyzer
+  }
+
+  private levelSeedKeys(): { preEngine: string; alc: string } {
+    const device = this.currentDeviceId || 'default'
+    return {
+      preEngine: `pre:${device}`,
+      alc: `alc:${device}:${this.noiseSuppression ? this.smartModel : 'raw'}`
+    }
+  }
+
+  private mergeLevelSeed(key: string, state: Record<string, unknown>, fields: readonly string[]): void {
+    const seed = { ...(this.micLevelSeeds.get(key) ?? {}) }
+    let changed = false
+    for (const field of fields) {
+      const value = Number(state[field])
+      if (Number.isFinite(value) && value > 0) {
+        seed[field] = value
+        changed = true
+      }
+    }
+    if (changed) this.micLevelSeeds.set(key, seed)
+  }
+
+  private storeLevelSeed(state: Record<string, unknown>, keys: { preEngine: string; alc: string }): void {
+    this.mergeLevelSeed(keys.preEngine, state, PRE_ENGINE_SEED_FIELDS)
+    this.mergeLevelSeed(keys.alc, state, ALC_SEED_FIELDS)
+  }
+
+  private buildLevelSeed(keys: { preEngine: string; alc: string }): Record<string, number> | null {
+    const merged = {
+      ...(this.micLevelSeeds.get(keys.preEngine) ?? {}),
+      ...(this.micLevelSeeds.get(keys.alc) ?? {})
+    }
+    return Object.keys(merged).length > 0 ? merged : null
+  }
+
+  private bindVadProbabilityHandler(micNode: AudioWorkletNode): void {
+    this.vadProbabilityHandler = (data) => {
+      if (this.micNode !== micNode) return
+      micNode.port.postMessage({
+        type: 'setSileroVadProbability',
+        probability: data.probability,
+        sequence: data.sequence,
+        endFrameId: data.endFrameId,
+        windowRms: data.windowRms
+      })
+    }
+  }
+
+  private applyAnalyzerToWorklet(): void {
+    const micNode = this.micNode
+    if (!micNode) return
+    if (!this.analyzerFeedsWorklet()) {
+      micNode.port.postMessage({ type: 'setConfig', sileroVadEnabled: false })
+      this.vadProbabilityHandler = null
+      return
+    }
+    this.bindVadProbabilityHandler(micNode)
+    if (this.vadWorkerReady) {
+      this.vadWorker?.postMessage({ type: 'reset' })
+      micNode.port.postMessage({ type: 'setConfig', sileroVadEnabled: true })
+      return
+    }
+    void this.ensureVadWorker()
+      .then(() => {
+        if (this.micNode !== micNode || !this.analyzerFeedsWorklet()) return
+        this.vadWorker?.postMessage({ type: 'reset' })
+        micNode.port.postMessage({ type: 'setConfig', sileroVadEnabled: true })
+      })
+      .catch(error => {
+        if (this.micNode !== micNode) return
+        this.audioProcessorError = `Silero VAD failed: ${error instanceof Error ? error.message : String(error)}`
+        micNode.port.postMessage({ type: 'setConfig', sileroVadEnabled: false })
+        console.warn('[WebRTC] Silero VAD is unavailable; using voicing-based speech detection:', error)
+      })
+  }
+
   private ensureVadWorker(): Promise<void> {
+    if (!this.analyzerFeedsWorklet()) return Promise.resolve()
     if (this.vadWorker && this.vadWorkerReady) return Promise.resolve()
     if (this.vadWorkerInitPromise) return this.vadWorkerInitPromise
 
@@ -834,8 +1001,10 @@ export class WebRTCManager {
   }
 
   public warmUpSmartNoiseSuppression(enabled = this.noiseSuppression): void {
-    if (!enabled || this.thresholdMode !== 'auto') return
-    void preloadNoiseAssets(this.smartModel)
+    if (this.thresholdMode !== 'auto') return
+    const needsAnalyzer = this.analyzerFeedsWorklet()
+    if (!enabled && !needsAnalyzer) return
+    void preloadNoiseAssets(enabled ? this.smartModel : 'analyzer')
       .then(() => this.ensureVadWorker())
       .catch(error => console.warn('[WebRTC] Smart noise suppression warm-up failed:', error))
   }
@@ -903,7 +1072,7 @@ export class WebRTCManager {
   }
 
   private async createProcessedStream(rawStream: MediaStream): Promise<MediaStream> {
-    if (!this.isSmartMode()) return this.createManualProcessedStream(rawStream)
+    if (!this.usesSmartWorklet()) return this.createManualProcessedStream(rawStream)
     return this.createSmartProcessedStream(rawStream, this.smartModel)
   }
 
@@ -990,6 +1159,7 @@ export class WebRTCManager {
     this.micEngineError = null
     this.audioProcessorError = null
 
+    const levelSeedKeys = this.levelSeedKeys()
     const ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' })
     this.processedContext = ctx
 
@@ -1050,6 +1220,8 @@ export class WebRTCManager {
           }
         } else if (event.data.type === 'micLevelDb') {
           this.publishMicLevel(Number(event.data.db))
+        } else if (event.data.type === 'levelState') {
+          this.storeLevelSeed(event.data, levelSeedKeys)
         } else if (event.data.type === 'resetVad') {
           this.vadWorker?.postMessage({ type: 'reset' })
         } else if (event.data.type === 'fetchRequest') {
@@ -1088,6 +1260,18 @@ export class WebRTCManager {
         console.error('[WebRTC] Mic pipeline worklet could not deserialize a message:', event)
       }
 
+      const initialStore = useAppStore.getState()
+      this.micNode.port.postMessage({
+        type: 'setConfig',
+        noiseSuppression: this.noiseSuppression,
+        sileroVadEnabled: false,
+        isMuted: Boolean(initialStore.currentUser?.isMuted || initialStore.currentUser?.isServerMuted)
+      })
+      const levelSeed = this.buildLevelSeed(levelSeedKeys)
+      if (levelSeed) {
+        this.micNode.port.postMessage({ type: 'setLevelSeed', ...levelSeed })
+      }
+
       const micNodeForAssets = this.micNode
       const sendPayload = (payload: DeepFilterPayload) => {
         micNodeForAssets.port.postMessage({
@@ -1097,41 +1281,40 @@ export class WebRTCManager {
           modelBytes: payload.modelBytes
         }, [payload.wasmBytes, payload.modelBytes])
       }
-      const payload = model === 'deepfilter' ? getDeepFilterPayload() : null
-      if (payload) {
-        sendPayload(payload)
-      } else {
-        micNodeForAssets.port.postMessage({ type: 'loadWasm', assetBase: DEEPFILTER_LOCAL_BASE })
-        if (model === 'deepfilter') {
-          void preloadNoiseAssets('deepfilter')
-            .then(() => {
-              if (this.micNode !== micNodeForAssets || this.micNodeReady) return
-              const late = getDeepFilterPayload()
-              if (late) sendPayload(late)
-            })
-            .catch(error => console.warn('[WebRTC] Late DeepFilter payload delivery failed:', error))
+      if (this.noiseSuppression) {
+        const payload = model === 'deepfilter' ? getDeepFilterPayload() : null
+        if (payload) {
+          sendPayload(payload)
+        } else {
+          micNodeForAssets.port.postMessage({ type: 'loadWasm', assetBase: DEEPFILTER_LOCAL_BASE })
+          if (model === 'deepfilter') {
+            void preloadNoiseAssets('deepfilter')
+              .then(() => {
+                if (this.micNode !== micNodeForAssets || this.micNodeReady) return
+                const late = getDeepFilterPayload()
+                if (late) sendPayload(late)
+              })
+              .catch(error => console.warn('[WebRTC] Late DeepFilter payload delivery failed:', error))
+          }
         }
       }
 
       const micNode = this.micNode
-      this.vadProbabilityHandler = (data) => {
-        if (this.micNode !== micNode) return
-        micNode.port.postMessage({
-          type: 'setSileroVadProbability',
-          probability: data.probability,
-          sequence: data.sequence,
-          endFrameId: data.endFrameId,
-          windowRms: data.windowRms
-        })
-      }
+      this.bindVadProbabilityHandler(micNode)
 
       const attachSileroVad = () => {
         if (this.micNode !== micNode) return
+        if (!this.analyzerFeedsWorklet() || !this.vadWorkerReady) {
+          micNode.port.postMessage({ type: 'setConfig', sileroVadEnabled: false })
+          return
+        }
         this.vadWorker?.postMessage({ type: 'reset' })
         micNode.port.postMessage({ type: 'setConfig', sileroVadEnabled: true })
       }
 
-      if (this.vadWorkerReady) {
+      if (!this.analyzerFeedsWorklet()) {
+        micNode.port.postMessage({ type: 'setConfig', sileroVadEnabled: false })
+      } else if (this.vadWorkerReady) {
         attachSileroVad()
       } else {
         micNode.port.postMessage({ type: 'setConfig', sileroVadEnabled: false })
@@ -1142,7 +1325,7 @@ export class WebRTCManager {
             this.vadProbabilityHandler = null
             this.audioProcessorError = `Silero VAD failed: ${e instanceof Error ? e.message : String(e)}`
             micNode.port.postMessage({ type: 'setConfig', sileroVadEnabled: false })
-            console.warn(`[WebRTC] Silero VAD is unavailable; using energy-based speech detection: ${e instanceof Error ? e.message : String(e)}`)
+            console.warn(`[WebRTC] Silero VAD is unavailable; using voicing-based speech detection: ${e instanceof Error ? e.message : String(e)}`)
           })
       }
 
@@ -1182,22 +1365,17 @@ export class WebRTCManager {
     }
 
     if (this.micNode) {
-      const store = useAppStore.getState()
-      const isMuted = store.currentUser?.isMuted || store.currentUser?.isServerMuted || false
-      this.micNode.port.postMessage({
-        type: 'setConfig',
-        noiseSuppression: this.noiseSuppression,
-        sileroVadEnabled: this.vadWorkerReady,
-        isMuted: isMuted
-      })
       this.micNode.port.postMessage({
         type: 'setCalibratedParams',
         ...this.getSmartGateParams(gainFactor),
       })
-      source.connect(rumbleGuards[0])
-      rumbleGuards[rumbleGuards.length - 1].connect(this.micNode)
-      this.micNode.connect(highpass1)
-      highpass1.connect(calibratedPreGain)
+      if (this.noiseSuppression) {
+        source.connect(rumbleGuards[0])
+        rumbleGuards[rumbleGuards.length - 1].connect(this.micNode)
+      } else {
+        source.connect(this.micNode)
+      }
+      this.micNode.connect(calibratedPreGain)
       calibratedPreGain.connect(inputGain)
     } else {
       source.connect(inputGain)
@@ -1348,6 +1526,7 @@ export class WebRTCManager {
   }
 
   public setNoiseSuppression(enabled: boolean) {
+    if (this.noiseSuppression === enabled) return
     this.noiseSuppression = enabled
     this.warmUpSmartNoiseSuppression(enabled)
     if (this.localStream) void this.updateSettings(this.currentDeviceId, enabled)
@@ -1368,6 +1547,28 @@ export class WebRTCManager {
 
   public getSuppressionStrength(): number {
     return this.suppressionStrengthDb
+  }
+
+  public isSpeechAnalyzerEnabled(): boolean {
+    return this.speechAnalyzerEnabled
+  }
+
+  public setSpeechAnalyzerEnabled(enabled: boolean) {
+    if (this.speechAnalyzerEnabled === enabled) return
+    const previousSignature = this.micGraphSignature()
+    this.speechAnalyzerEnabled = enabled
+    localStorage.setItem(SPEECH_ANALYZER_STORAGE_KEY, enabled ? 'true' : 'false')
+    if (enabled) this.warmUpSmartNoiseSuppression()
+    if (this.micGraphSignature() === previousSignature) {
+      if (this.micNode) this.applyAnalyzerToWorklet()
+      else if (!enabled && !this.calibrationForcesAnalyzer) this.terminateVadWorker()
+      return
+    }
+    if (!enabled && !this.calibrationForcesAnalyzer) {
+      this.micNode?.port.postMessage({ type: 'setConfig', sileroVadEnabled: false })
+      this.terminateVadWorker()
+    }
+    if (this.localStream) void this.updateSettings(this.currentDeviceId, this.noiseSuppression)
   }
 
   public setSuppressionStrength(db: number) {
@@ -1937,6 +2138,7 @@ export class WebRTCManager {
       thresholdMode: this.thresholdMode,
       smartModel: this.smartModel,
       suppressionStrengthDb: this.suppressionStrengthDb,
+      speechAnalyzerEnabled: this.speechAnalyzerEnabled,
       hasMicNode: Boolean(this.micNode),
       micNodeReady: this.micNodeReady,
       micEngineError: this.micEngineError,
@@ -1971,7 +2173,17 @@ export class WebRTCManager {
     this.manualGateNode?.port.postMessage({ type: 'setConfig', ...config })
   }
 
+  public isCalibrationAvailable(): boolean {
+    return VAD_CALIBRATION_ENABLED
+  }
+
   public async calibrateMic(durationMs = 4500, onStarted?: () => void): Promise<CalibrationResult> {
+    if (!VAD_CALIBRATION_ENABLED) {
+      throw new CalibrationError(
+        'CALIBRATION_ENGINE_UNAVAILABLE',
+        'Voice calibration is disabled, the VAD threshold is fixed'
+      )
+    }
     const wasInActiveSession = Boolean(useAppStore.getState().currentChannelId || useAppStore.getState().currentCallUser)
     const engine = this.activeCalibrationEngine()
 
@@ -1985,6 +2197,8 @@ export class WebRTCManager {
     const me = useAppStore.getState().currentUser
     const wasMuted = Boolean(me?.isMuted || me?.isServerMuted)
     let muteLifted = false
+    const analyzerWasOff = !this.speechAnalyzerEnabled
+    if (analyzerWasOff) this.calibrationForcesAnalyzer = true
 
     try {
       await withTimeout(
@@ -2008,6 +2222,11 @@ export class WebRTCManager {
         error instanceof Error ? error.message : String(error)
       )
     } finally {
+      if (analyzerWasOff) {
+        this.calibrationForcesAnalyzer = false
+        this.micNode?.port.postMessage({ type: 'setConfig', sileroVadEnabled: false })
+        this.terminateVadWorker()
+      }
       if (muteLifted) {
         const currentUser = useAppStore.getState().currentUser
         const stillMuted = Boolean(currentUser?.isMuted || currentUser?.isServerMuted)
@@ -2053,6 +2272,9 @@ export class WebRTCManager {
     await this.ensureVadWorker().catch(error => {
       console.warn('[WebRTC] Calibration could not start Silero VAD:', error)
     })
+    if (this.vadWorkerReady) {
+      this.micNode?.port.postMessage({ type: 'setConfig', sileroVadEnabled: true })
+    }
 
     await this.waitForCalibrationReady()
   }
@@ -2141,8 +2363,7 @@ export class WebRTCManager {
           return
         }
 
-        const margin = Math.max(0.05, voiceLow * 0.35)
-        this.calibratedVadThreshold = Math.max(0.05, Math.min(0.45, voiceLow - margin))
+        this.calibratedVadThreshold = vadThresholdFromVoiceLow(voiceLow)
         this.hasVoiceCalibration = true
         this.updateThresholds()
         console.info('[WebRTC] DeepFilter voice calibration', {
@@ -2319,11 +2540,15 @@ export class WebRTCManager {
     try {
       tap.connect(capture)
       this.setMonitorWhileMuted(true)
+      await new Promise(resolve => setTimeout(resolve, MIC_TEST_MONITOR_SETTLE_MS))
+      if (generation !== this.micTestGeneration) throw new Error('MIC_TEST_CANCELLED')
+      onArmed?.()
+      await new Promise(resolve => setTimeout(resolve, MIC_TEST_PIPELINE_FLUSH_MS))
+      if (generation !== this.micTestGeneration) throw new Error('MIC_TEST_CANCELLED')
       capture.port.postMessage({
         type: 'start',
         samples: Math.round((durationMs / 1000) * ctx.sampleRate)
       })
-      onArmed?.()
       const pcm = await captured
       if (generation !== this.micTestGeneration) throw new Error('MIC_TEST_CANCELLED')
       if (pcm.length === 0) throw new Error('MIC_TEST_EMPTY')
@@ -2700,26 +2925,52 @@ export class WebRTCManager {
     if (this.outputMixContext.state === 'suspended') {
       this.outputMixContext.resume().catch(() => { })
     }
-    this.outputCompressor = this.outputMixContext.createDynamicsCompressor()
-
     this.outputBusGain = this.outputMixContext.createGain()
     this.outputBusGain.gain.value = Math.pow(10, PLAYBACK_MAKEUP_GAIN_DB / 20)
-    this.outputBusGain.connect(this.outputCompressor)
 
-    this.outputCompressor.threshold.value = -8
-    this.outputCompressor.knee.value = 6
-    this.outputCompressor.ratio.value = 4
-    this.outputCompressor.attack.value = 0.004
-    this.outputCompressor.release.value = 0.180
+    this.outputPeakGuard = this.createPeakGuard(this.outputMixContext)
+    this.outputBusGain.connect(this.outputPeakGuard)
 
     const dest = this.outputMixContext.createMediaStreamDestination()
-    this.outputCompressor.connect(dest)
+    this.outputPeakGuard.connect(dest)
 
     this.mixAudioElement = new Audio()
     this.mixAudioElement.autoplay = true
     this.mixAudioElement.srcObject = dest.stream
     this.mixAudioElement.muted = this.isDeafened
     void this.applyOutputDevice()
+  }
+
+  private createPlaybackLimiter(
+    thresholdDb: number,
+    kneeDb: number,
+    ratio: number,
+    attackS: number,
+    releaseS: number
+  ): DynamicsCompressorNode {
+    const limiter = this.outputMixContext!.createDynamicsCompressor()
+    limiter.threshold.value = thresholdDb
+    limiter.knee.value = kneeDb
+    limiter.ratio.value = ratio
+    limiter.attack.value = attackS
+    limiter.release.value = releaseS
+    return limiter
+  }
+
+  private applyVoiceSeats() {
+    const ctx = this.outputMixContext
+    if (!ctx) return
+    this.voiceSeatOrder = this.voiceSeatOrder.filter(id => this.userPannerNodes.has(id))
+    const seats = this.voiceSeatOrder
+    const span = Math.max(1, seats.length - 1)
+    const now = ctx.currentTime
+    seats.forEach((id, index) => {
+      const panner = this.userPannerNodes.get(id)
+      if (!panner) return
+      const position = seats.length < 2 ? 0 : ((index / span) * 2 - 1) * PLAYBACK_VOICE_SPREAD
+      panner.pan.cancelScheduledValues(now)
+      panner.pan.setTargetAtTime(position, now, PLAYBACK_SEAT_GLIDE_S)
+    })
   }
 
   private setupPeerHandlers(pc: RTCPeerConnection, userId: string) {
@@ -2756,18 +3007,22 @@ export class WebRTCManager {
           try { this.streamSourceNodes.get(userId)?.disconnect() } catch { }
           try { this.streamDelayNodes.get(userId)?.disconnect() } catch { }
           try { this.streamGainNodes.get(userId)?.disconnect() } catch { }
+          try { this.streamLimiterNodes.get(userId)?.disconnect() } catch { }
         }
 
         const source = this.outputMixContext!.createMediaStreamSource(new MediaStream([event.track]))
         const delay = new DelayNode(this.outputMixContext!, { maxDelayTime: 0.5, delayTime: 0 })
         const gain = this.outputMixContext!.createGain()
+        const limiter = this.createPlaybackLimiter(PLAYBACK_STREAM_LIMIT_DB, 8, 8, 0.006, 0.22)
         source.connect(delay)
-        delay.connect(gain)
+        delay.connect(limiter)
+        limiter.connect(gain)
         gain.connect(this.outputBusGain!)
 
         this.streamSourceNodes.set(userId, source)
         this.streamDelayNodes.set(userId, delay)
         this.streamGainNodes.set(userId, gain)
+        this.streamLimiterNodes.set(userId, limiter)
         this.streamSyncOffsetEma.delete(userId)
         this.streamSyncSkew.delete(userId)
         this.updateRemoteStreamVolume(userId)
@@ -2788,16 +3043,26 @@ export class WebRTCManager {
         if (this.userSourceNodes.has(userId)) {
           try { this.userSourceNodes.get(userId)?.disconnect() } catch { }
           try { this.userGainNodes.get(userId)?.disconnect() } catch { }
+          try { this.userLimiterNodes.get(userId)?.disconnect() } catch { }
+          try { this.userPannerNodes.get(userId)?.disconnect() } catch { }
         }
 
         const source = this.outputMixContext!.createMediaStreamSource(new MediaStream([event.track]))
         const gain = this.outputMixContext!.createGain()
-        source.connect(gain)
-        gain.connect(this.outputBusGain!)
+        const limiter = this.createPlaybackLimiter(PLAYBACK_VOICE_LIMIT_DB, 6, 12, 0.004, 0.12)
+        const panner = new StereoPannerNode(this.outputMixContext!, { pan: 0 })
+        source.connect(limiter)
+        limiter.connect(gain)
+        gain.connect(panner)
+        panner.connect(this.outputBusGain!)
 
         this.userSourceNodes.set(userId, source)
         this.userGainNodes.set(userId, gain)
+        this.userLimiterNodes.set(userId, limiter)
+        this.userPannerNodes.set(userId, panner)
+        if (!this.voiceSeatOrder.includes(userId)) this.voiceSeatOrder.push(userId)
         this.updateRemoteVolume(userId)
+        this.applyVoiceSeats()
       }
     }
 
@@ -3120,7 +3385,9 @@ export class WebRTCManager {
         return false
       }
       this.pendingRenegotiation.delete(userId)
-      const offer = await pc.createOffer(iceRestart ? { iceRestart: true } : undefined)
+      const offer = await pc.createOffer(
+        iceRestart ? SILENCE_SUPPRESSION_OFF_WITH_ICE_RESTART : SILENCE_SUPPRESSION_OFF
+      )
       const optimizedSDP = optimizeSDP(offer.sdp!)
       await pc.setLocalDescription({ type: 'offer', sdp: optimizedSDP })
       signalRService.sendWebRTCOffer(userId, JSON.stringify(pc.localDescription))
@@ -3531,7 +3798,7 @@ export class WebRTCManager {
     this.startIceTimeout(userId)
 
     try {
-      const offer = await pc.createOffer()
+      const offer = await pc.createOffer(SILENCE_SUPPRESSION_OFF)
       const optimizedSDP = optimizeSDP(offer.sdp!)
       await pc.setLocalDescription({ type: 'offer', sdp: optimizedSDP })
       if (this.peerConnections.get(userId) !== pc || !this.isPeerRelevant(userId)) {
@@ -3613,7 +3880,7 @@ export class WebRTCManager {
       }
 
       await pc.setRemoteDescription(new RTCSessionDescription(offer))
-      const answer = await pc.createAnswer()
+      const answer = await pc.createAnswer(SILENCE_SUPPRESSION_OFF)
       const optimizedAnswerSDP = optimizeSDP(answer.sdp!)
       await pc.setLocalDescription({ type: 'answer', sdp: optimizedAnswerSDP })
       await this.drainPendingCandidates(senderId)
@@ -3710,6 +3977,13 @@ export class WebRTCManager {
     const gain = this.userGainNodes.get(userId)
     if (gain) { try { gain.disconnect() } catch { }; this.userGainNodes.delete(userId) }
 
+    const limiter = this.userLimiterNodes.get(userId)
+    if (limiter) { try { limiter.disconnect() } catch { }; this.userLimiterNodes.delete(userId) }
+
+    const panner = this.userPannerNodes.get(userId)
+    if (panner) { try { panner.disconnect() } catch { }; this.userPannerNodes.delete(userId) }
+    this.applyVoiceSeats()
+
     const streamAudio = this.streamAudioElements.get(userId)
     if (streamAudio) { streamAudio.pause(); streamAudio.srcObject = null; this.streamAudioElements.delete(userId) }
 
@@ -3718,6 +3992,9 @@ export class WebRTCManager {
 
     const streamGain = this.streamGainNodes.get(userId)
     if (streamGain) { try { streamGain.disconnect() } catch { }; this.streamGainNodes.delete(userId) }
+
+    const streamLimiter = this.streamLimiterNodes.get(userId)
+    if (streamLimiter) { try { streamLimiter.disconnect() } catch { }; this.streamLimiterNodes.delete(userId) }
 
     const streamDelay = this.streamDelayNodes.get(userId)
     if (streamDelay) { try { streamDelay.disconnect() } catch { }; this.streamDelayNodes.delete(userId) }
@@ -3751,6 +4028,9 @@ export class WebRTCManager {
 
     const streamGain = this.streamGainNodes.get(userId)
     if (streamGain) { try { streamGain.disconnect() } catch { }; this.streamGainNodes.delete(userId) }
+
+    const streamLimiter = this.streamLimiterNodes.get(userId)
+    if (streamLimiter) { try { streamLimiter.disconnect() } catch { }; this.streamLimiterNodes.delete(userId) }
 
     const streamDelay = this.streamDelayNodes.get(userId)
     if (streamDelay) { try { streamDelay.disconnect() } catch { }; this.streamDelayNodes.delete(userId) }

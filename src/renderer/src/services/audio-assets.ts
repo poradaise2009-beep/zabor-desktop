@@ -123,7 +123,7 @@ function preloadSileroAsset(): Promise<void> {
   return sileroPreload
 }
 
-export function preloadNoiseAssets(model: 'deepfilter' | 'rnnoise' = 'deepfilter'): Promise<void> {
+export function preloadNoiseAssets(model: 'deepfilter' | 'rnnoise' | 'analyzer' = 'deepfilter'): Promise<void> {
   const jobs = [preloadSileroAsset()]
   if (model === 'deepfilter') jobs.push(preloadDeepFilterAssets())
   return Promise.all(jobs).then(() => undefined)
