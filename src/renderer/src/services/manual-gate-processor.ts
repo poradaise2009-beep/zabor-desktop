@@ -23,7 +23,7 @@ class ManualGateProcessor extends AudioWorkletProcessor {
   private readonly MAX_THRESHOLD_DB = -12
   private readonly DEFAULT_THRESHOLD_DB = -42
   private readonly MAKEUP_TARGET_PEAK = 0.891
-  private readonly MAKEUP_MAX_GAIN = 3.1622776601683795
+  private readonly MAKEUP_MAX_GAIN = 4.5
   private readonly MAKEUP_MIN_PEAK = 0.0015
   private readonly MAKEUP_RISE = 0.000004
   private readonly MAKEUP_FALL = 0.0004

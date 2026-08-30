@@ -78,13 +78,13 @@ export function NoiseSuppressionSettings({
   );
   const meterPosition = Math.max(0, Math.min(100, ((micLevelDb - MIN_THRESHOLD_DB) / (MAX_THRESHOLD_DB - MIN_THRESHOLD_DB)) * 100));
 
-  const idleCalibrationText = t('settings.audio.calibrateButton', 'Калибровка');
+  const idleCalibrationText = t('settings.audio.calibrateButton', 'калибровка');
   const calibrationText = calibrationPhase === 'voice'
-    ? `${t('settings.audio.calibrationPhrase', '«Съешь ещё этих мягких французских булок»')}${calibrationCountdown > 0 ? ` · ${calibrationCountdown}` : ''}`
+    ? `${t('settings.audio.calibrationPhrase', '«съешь ещё этих мягких французских булок»')}${calibrationCountdown > 0 ? ` · ${calibrationCountdown}` : ''}`
     : calibrationPhase === 'checking'
-      ? t('settings.audio.checking', 'Проверяем')
+      ? t('settings.audio.checking', 'проверяем')
       : calibrationPhase === 'preparing'
-        ? t('settings.audio.preparing', 'Подготовка')
+        ? t('settings.audio.preparing', 'подготовка')
         : idleCalibrationText;
 
   const modelOptionClass =
@@ -92,36 +92,36 @@ export function NoiseSuppressionSettings({
 
   const modelRadioClass = (isActive: boolean) =>
     `flex h-[18px] w-[18px] items-center justify-center rounded-full border-2 transition-colors duration-200 ${isActive
-      ? 'border-[#FF007F]'
-      : 'border-[#4b4752] group-hover:border-[#6d6878]'
+      ? 'border-primaryHover'
+      : 'border-white/20 group-hover:border-white/35'
     }`;
 
   const modelRadioDotClass = (isActive: boolean) =>
-    `h-2.5 w-2.5 rounded-full bg-[#FF007F] transition-transform duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] ${isActive ? 'scale-100' : 'scale-0'
+    `h-2.5 w-2.5 rounded-full bg-primaryHover transition-transform duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] ${isActive ? 'scale-100' : 'scale-0'
     }`;
 
   const modelLabelClass = (isActive: boolean) =>
     `text-xs font-semibold transition-colors duration-200 ${isActive ? 'text-white' : 'text-textMuted group-hover:text-white'
     }`;
 
-  const analyzerAvailable = mode === 'smart';
+  const analyzerAvailable = !isEnabled || mode === 'smart';
 
   return (
     <div className={`space-y-3 ${className}`}>
       <section
         aria-disabled={!analyzerAvailable}
-        className={`rounded-2xl border bg-surface transition-[border-color,background-color,opacity] duration-300 ${speechAnalyzer && analyzerAvailable ? 'border-[#35313a]' : 'border-[#26262B]'
-          } ${analyzerAvailable ? 'hover:border-[#35353C]' : 'pointer-events-none opacity-45'}`}
+        className={`rounded-2xl border glass-row transition-[border-color,background-color,opacity] duration-300 ${speechAnalyzer && analyzerAvailable ? 'border-white/[0.13]' : 'border-white/[0.07]'
+          } ${analyzerAvailable ? 'hover:border-white/[0.13]' : 'pointer-events-none opacity-45'}`}
       >
         <div className="flex min-h-[66px] items-center justify-between gap-3 px-4 py-3">
           <div className="min-w-0">
             <div className="text-[15px] font-bold tracking-wide text-white">
-              {t('settings.audio.speechAnalyzer', 'Анализатор речи (нестабильно)')}
+              {t('settings.audio.speechAnalyzer', 'анализатор речи (нестабильно)')}
             </div>
             <p className="mt-1 text-xs leading-snug text-textMuted">
               {analyzerAvailable
-                ? t('settings.audio.speechAnalyzerHint', 'Нейросеть точнее отделяет речь от шума, но иногда обрезает начало слов. Работает и без шумоподавления — тогда она отделяет речь от сырого звука')
-                : t('settings.audio.speechAnalyzerManualHint', 'Доступен только в умном режиме — в режиме «Вручную» речь определяет ваш порог')}
+                ? t('settings.audio.speechAnalyzerHint', 'нейросеть отделяет голос от других звуков, может плохо работать с некоторыми микрофонами, немного увеличивает задержку')
+                : t('settings.audio.speechAnalyzerManualHint', 'доступен только в умном режиме — в режиме «вручную» речь определяет ваш порог')}
             </p>
           </div>
           <Md3Switch checked={speechAnalyzer} onChange={onSpeechAnalyzerChange} />
@@ -129,11 +129,11 @@ export function NoiseSuppressionSettings({
       </section>
 
       <section
-        className={`overflow-hidden rounded-2xl border bg-surface transition-[border-color,background-color] duration-300 ${isEnabled ? 'border-[#35313a]' : 'border-[#26262B] hover:border-[#35353C]'
+        className={`overflow-hidden rounded-2xl border glass-row transition-[border-color,background-color] duration-300 ${isEnabled ? 'border-white/[0.13]' : 'border-white/[0.07] hover:border-white/[0.13]'
           }`}
       >
         <div className="flex min-h-[66px] items-center justify-between px-4">
-          <span className="text-[15px] font-bold tracking-wide text-white">{t('settings.audio.noiseSuppression', 'Шумоподавление')}</span>
+          <span className="text-[15px] font-bold tracking-wide text-white">{t('settings.audio.noiseSuppression', 'шумоподавление')}</span>
           <Md3Switch checked={isEnabled} onChange={onEnabledChange} />
         </div>
 
@@ -143,21 +143,21 @@ export function NoiseSuppressionSettings({
             }`}
         >
           <div className="min-h-0 overflow-hidden">
-            <div className="space-y-4 border-t border-[#29282e] px-4 pb-4 pt-3">
-              <div className="rounded-xl bg-[#0e0e12] p-1">
-                <div className="grid grid-cols-2 gap-1" role="radiogroup" aria-label={t('settings.audio.noiseSuppressionMode', 'Режим шумоподавления')}>
+            <div className="space-y-4 border-t border-white/[0.07] px-4 pb-4 pt-3">
+              <div className="rounded-xl bg-black/30 p-1">
+                <div className="grid grid-cols-2 gap-1" role="radiogroup" aria-label={t('settings.audio.noiseSuppressionMode', 'режим шумоподавления')}>
                   <button
                     type="button"
                     role="radio"
                     aria-checked={mode === 'smart'}
                     onClick={() => onModeChange('smart')}
                     className={`flex h-10 items-center justify-center gap-2 rounded-lg text-sm font-semibold transition-colors duration-200 ${mode === 'smart'
-                      ? 'bg-[#252229] text-white shadow-sm'
+                      ? 'bg-white/[0.09] text-white'
                       : 'text-textMuted hover:bg-white/[0.035] hover:text-white'
                       }`}
                   >
-                    <Sparkle size={16} weight={mode === 'smart' ? 'fill' : 'regular'} className={mode === 'smart' ? 'text-[#FF007F]' : ''} />
-                    {t('settings.audio.smartMode', 'Умное')}
+                    <Sparkle size={16} weight={mode === 'smart' ? 'fill' : 'regular'} className={mode === 'smart' ? 'text-primaryHover' : ''} />
+                    {t('settings.audio.smartMode', 'умное')}
                   </button>
                   <button
                     type="button"
@@ -165,12 +165,12 @@ export function NoiseSuppressionSettings({
                     aria-checked={mode === 'manual'}
                     onClick={() => onModeChange('manual')}
                     className={`flex h-10 items-center justify-center gap-2 rounded-lg text-sm font-semibold transition-colors duration-200 ${mode === 'manual'
-                      ? 'bg-[#252229] text-white shadow-sm'
+                      ? 'bg-white/[0.09] text-white'
                       : 'text-textMuted hover:bg-white/[0.035] hover:text-white'
                       }`}
                   >
-                    <Sliders size={16} weight="bold" className={mode === 'manual' ? 'text-[#FF007F]' : ''} />
-                    {t('settings.audio.manualMode', 'Вручную')}
+                    <Sliders size={16} weight="bold" className={mode === 'manual' ? 'text-primaryHover' : ''} />
+                    {t('settings.audio.manualMode', 'вручную')}
                   </button>
                 </div>
 
@@ -182,7 +182,7 @@ export function NoiseSuppressionSettings({
                     }`}
                 >
                   <div className="min-h-0 overflow-hidden">
-                    <div className="grid grid-cols-2 gap-1 pt-1" role="radiogroup" aria-label={t('settings.audio.noiseModel', 'Модель шумоподавления')}>
+                    <div className="grid grid-cols-2 gap-1 pt-1" role="radiogroup" aria-label={t('settings.audio.noiseModel', 'модель шумоподавления')}>
                       <button
                         type="button"
                         role="radio"
@@ -195,7 +195,7 @@ export function NoiseSuppressionSettings({
                           <span className={modelRadioDotClass(smartModel === 'deepfilter')} />
                         </span>
                         <span className={modelLabelClass(smartModel === 'deepfilter')}>
-                          {t('settings.audio.model1', 'Модель 1')}
+                          {t('settings.audio.model1', 'модель 1')}
                         </span>
                       </button>
                       <button
@@ -210,7 +210,7 @@ export function NoiseSuppressionSettings({
                           <span className={modelRadioDotClass(smartModel === 'rnnoise')} />
                         </span>
                         <span className={modelLabelClass(smartModel === 'rnnoise')}>
-                          {t('settings.audio.model2', 'Модель 2')}
+                          {t('settings.audio.model2', 'модель 2')}
                         </span>
                       </button>
                     </div>
@@ -223,7 +223,7 @@ export function NoiseSuppressionSettings({
                   {smartModel === 'deepfilter' && (
                     <div className="space-y-2">
                       <div className="px-0.5 text-xs">
-                        <span className="font-semibold text-textMuted">{t('settings.audio.suppressionStrength', 'Сила подавления')}</span>
+                        <span className="font-semibold text-textMuted">{t('settings.audio.suppressionStrength', 'сила подавления')}</span>
                       </div>
                       <div className="relative flex h-9 items-center">
                         <div
@@ -231,7 +231,7 @@ export function NoiseSuppressionSettings({
                           style={{ left: '9px', right: '9px' }}
                         >
                           <div
-                            className="h-full rounded-full bg-[#FF007F]"
+                            className="h-full rounded-full bg-primaryHover"
                             style={{
                               width: `${((strength - MIN_SUPPRESSION_STRENGTH_DB) /
                                 (MAX_SUPPRESSION_STRENGTH_DB - MIN_SUPPRESSION_STRENGTH_DB)) * 100}%`
@@ -245,14 +245,14 @@ export function NoiseSuppressionSettings({
                           step={1}
                           value={strength}
                           onChange={(event) => onSuppressionStrengthChange(Number(event.target.value))}
-                          aria-label={t('settings.audio.suppressionStrength', 'Сила подавления')}
+                          aria-label={t('settings.audio.suppressionStrength', 'сила подавления')}
                           className="threshold-range absolute inset-0 h-full w-full cursor-pointer appearance-none bg-transparent outline-none"
                         />
                       </div>
                       <div className="flex items-center justify-between px-0.5 text-[11px] font-medium text-textMuted">
-                        <span>{t('settings.audio.suppressionStrengthWeaker', 'Слабже')}</span>
+                        <span>{t('settings.audio.suppressionStrengthWeaker', 'слабже')}</span>
                         <span className="font-bold text-white">{strength} dB</span>
-                        <span>{t('settings.audio.suppressionStrengthStronger', 'Сильнее')}</span>
+                        <span>{t('settings.audio.suppressionStrengthStronger', 'сильнее')}</span>
                       </div>
                     </div>
                   )}
@@ -263,23 +263,23 @@ export function NoiseSuppressionSettings({
                       onClick={() => !isCalibrating && !calibrationSuccess && onStartCalibration?.()}
                       disabled={isCalibrating || calibrationSuccess}
                       className={`relative flex min-h-10 w-full items-center justify-center overflow-hidden rounded-xl border px-3 py-2 text-xs font-bold transition-all duration-200 ${isCalibrating
-                        ? 'cursor-default border-[#c70060]/25 bg-[#c70060]/10 text-[#ff7dbd]'
+                        ? 'cursor-default border-primary/25 bg-primary/10 text-primaryText'
                         : calibrationSuccess
-                          ? 'cursor-default border-[#FF007F]/40 bg-[#FF007F]/15 text-white select-none'
-                          : 'border-[#c70060] bg-[#c70060] text-white hover:bg-[#d30068] active:scale-[0.99]'
+                          ? 'cursor-default border-primaryHover/40 bg-primaryHover/15 text-white select-none'
+                          : 'border-primary bg-primary/90 text-white hover:bg-primaryHover active:scale-[0.99]'
                         }`}
                     >
                       {isCalibrating ? (
                         <div className="flex items-center justify-center gap-2">
-                          <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-[#ff7dbd] border-t-transparent" />
+                          <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-primaryText border-t-transparent" />
                           <span className="text-center leading-snug">{calibrationText}</span>
                         </div>
                       ) : calibrationSuccess ? (
                         <>
                           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                            <Check size={52} weight="bold" className="animate-checkmark-pop text-[#FF007F]" />
+                            <Check size={52} weight="bold" className="animate-checkmark-pop text-primaryHover" />
                           </div>
-                          <span className="relative z-10 font-bold tracking-wide text-white">{t('settings.audio.calibrationSuccess', 'Успешно')}</span>
+                          <span className="relative z-10 font-bold tracking-wide text-white">{t('settings.audio.calibrationSuccess', 'успешно')}</span>
                         </>
                       ) : (
                         <span>{idleCalibrationText}</span>
@@ -292,7 +292,7 @@ export function NoiseSuppressionSettings({
               {mode === 'manual' && (
                 <div className="space-y-2">
                   <div className="px-0.5 text-xs">
-                    <span className="font-semibold text-textMuted">{t('settings.audio.threshold', 'Порог')}</span>
+                    <span className="font-semibold text-textMuted">{t('settings.audio.threshold', 'порог')}</span>
                   </div>
                   <div className="relative flex h-9 items-center">
                     <div className="absolute grid h-5 grid-cols-[repeat(32,minmax(0,1fr))] items-center gap-[2px]" style={{ left: '9px', right: '9px' }} aria-hidden="true">
@@ -316,7 +316,7 @@ export function NoiseSuppressionSettings({
                       step={1}
                       value={threshold}
                       onChange={(event) => onManualThresholdChange(Number(event.target.value))}
-                      aria-label={t('settings.audio.thresholdLabel', 'Порог срабатывания микрофона')}
+                      aria-label={t('settings.audio.thresholdLabel', 'порог срабатывания микрофона')}
                       className="threshold-range absolute inset-0 h-full w-full cursor-pointer appearance-none bg-transparent outline-none"
                     />
                   </div>

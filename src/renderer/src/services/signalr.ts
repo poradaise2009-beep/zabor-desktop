@@ -67,6 +67,7 @@ class SignalRService {
   private sfxContext: AudioContext | null = null;
   private sfxElements: Map<string, HTMLAudioElement> = new Map();
   private streamDropTimers: Map<string, NodeJS.Timeout> = new Map();
+  private speakingDebounceTimer: NodeJS.Timeout | null = null;
 
   private isJoiningChannel = false;
   private voiceOperationId = 0;
@@ -89,6 +90,7 @@ class SignalRService {
   private static readonly PEER_CONNECT_STAGGER_MS = 60;
   private static readonly PEER_CONNECT_DELAY_MS = 150;
   private static readonly STREAM_DROP_GRACE_MS = 30000;
+  private static readonly SPEAKING_HANGOVER_MS = 350;
 
   private playSfx(src: string, volume = 0.5) {
     try {
@@ -1447,6 +1449,12 @@ class SignalRService {
       }
     }
 
+    if (this.speakingDebounceTimer) {
+      clearTimeout(this.speakingDebounceTimer);
+      this.speakingDebounceTimer = null;
+    }
+    this.lastSpeakingState = null;
+
     webrtc.leaveAll();
     const appStore = useAppStore.getState();
     appStore.setActiveStreamId(null);
@@ -1563,7 +1571,7 @@ class SignalRService {
         displayName: callerUser.callerName,
         username: callerUser.callerName,
         avatarBase64: callerUser.callerAvatarBase64 ?? null,
-        avatarColor: callerUser.callerAvatarColor ?? '#c70060',
+        avatarColor: callerUser.callerAvatarColor ?? '#C81E70',
         isOnline: true,
         isMuted: false,
         isDeafened: false,
@@ -1579,7 +1587,7 @@ class SignalRService {
         displayName: targetUser.displayName,
         username: targetUser.username,
         avatarBase64: targetUser.avatarBase64 ?? null,
-        avatarColor: targetUser.avatarColor ?? '#c70060',
+        avatarColor: targetUser.avatarColor ?? '#C81E70',
         isOnline: true,
         isMuted: false,
         isDeafened: false,
@@ -1678,9 +1686,25 @@ class SignalRService {
   }
 
   public setSpeakingState(isSpeaking: boolean): void {
-    if (isSpeaking === this.lastSpeakingState) return;
-    this.lastSpeakingState = isSpeaking;
-    if (this.isConnected()) this.connection?.send("SetSpeakingState", isSpeaking);
+    if (isSpeaking) {
+      if (this.speakingDebounceTimer) {
+        clearTimeout(this.speakingDebounceTimer);
+        this.speakingDebounceTimer = null;
+      }
+      if (this.lastSpeakingState === true) return;
+      this.lastSpeakingState = true;
+      if (this.isConnected()) this.connection?.send("SetSpeakingState", true);
+    } else {
+      if (this.lastSpeakingState === false) return;
+      if (this.speakingDebounceTimer) return;
+      this.speakingDebounceTimer = setTimeout(() => {
+        this.speakingDebounceTimer = null;
+        if (this.lastSpeakingState === true) {
+          this.lastSpeakingState = false;
+          if (this.isConnected()) this.connection?.send("SetSpeakingState", false);
+        }
+      }, SignalRService.SPEAKING_HANGOVER_MS);
+    }
   }
 
   public async startStream(quality: string): Promise<boolean> {

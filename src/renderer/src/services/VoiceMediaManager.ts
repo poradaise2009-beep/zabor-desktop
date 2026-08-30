@@ -40,23 +40,23 @@ class VoiceMediaManager {
 
   private handleMicrophoneError(error: any) {
     const store = useAppStore.getState();
-    const message = error?.message || i18n.t('toasts.micUnknownError', 'Неизвестная ошибка микрофона');
+    const message = error?.message || i18n.t('toasts.micUnknownError', 'неизвестная ошибка микрофона');
 
     // The shared classifier checks the concrete device states before the generic
     // MIC_ACCESS_FAILED wrapper, so a busy or missing microphone is no longer
     // reported as a permission problem.
     switch (classifyMicrophoneError(message)) {
       case 'micBusy':
-        store.setSystemToast(i18n.t('toasts.micBusy', 'Микрофон занят другим приложением.'));
+        store.setSystemToast(i18n.t('toasts.micBusy', 'микрофон занят другим приложением.'));
         break;
       case 'micNotFound':
-        store.setSystemToast(i18n.t('toasts.micNotFound', 'Микрофон не найден. Подключите устройство и попробуйте снова.'));
+        store.setSystemToast(i18n.t('toasts.micNotFound', 'микрофон не найден. подключите устройство и попробуйте снова.'));
         break;
       case 'micNoAccess':
-        store.setSystemToast(i18n.t('toasts.micNoAccess', 'Нет доступа к микрофону. Проверьте разрешения в ОС.'));
+        store.setSystemToast(i18n.t('toasts.micNoAccess', 'нет доступа к микрофону. проверьте разрешения в ОС.'));
         break;
       default:
-        store.setSystemToast(i18n.t('toasts.audioError', { message, defaultValue: `Ошибка аудио: ${message}` }));
+        store.setSystemToast(i18n.t('toasts.audioError', { message, defaultValue: `ошибка аудио: ${message}` }));
     }
   }
 }

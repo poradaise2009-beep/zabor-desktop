@@ -79,7 +79,7 @@ export const StreamPicker = ({ onClose, onSelect }: StreamPickerProps) => {
               } catch { }
               return {
                 id: `camera:${d.deviceId}`,
-                name: d.label || `${t('stream.camera', 'Камера')} ${idx + 1}`,
+                name: d.label || `${t('stream.camera', 'камера')} ${idx + 1}`,
                 thumbnail,
                 appIcon: null
               }
@@ -128,55 +128,55 @@ export const StreamPicker = ({ onClose, onSelect }: StreamPickerProps) => {
 
   const getQualityDetailsText = () => {
     if (quality === 'high') {
-      return '1920x1080 60fps (~6 Мбит/с)'
+      return t('stream.detailsHigh', '1920x1080 60fps (~6 Мбит/с)')
     }
-    return '1280x720 30fps (~2.5 Мбит/с)'
+    return t('stream.detailsLow', '1280x720 30fps (~2.5 Мбит/с)')
   }
 
   return (
-    <div className="bg-[#161618] border border-[#303035] rounded-3xl p-6 w-[540px] max-w-full shadow-2xl flex flex-col h-[600px]">
+    <div className="glass-modal p-6 w-[540px] max-w-full flex flex-col h-[600px]">
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-white text-xl font-bold">{t('stream.pickerTitle', 'Выбор источника')}</h2>
+        <h2 className="text-white text-xl font-bold">{t('stream.pickerTitle', 'выбор источника')}</h2>
         <button
           onClick={onClose}
-          className="text-textMuted hover:text-white transition-colors duration-200 p-1.5 rounded-lg hover:bg-surface"
+          className="text-textMuted hover:text-white transition-colors duration-200 p-1.5 rounded-lg hover:bg-surface/70"
         >
           <X weight="bold" size={20} />
         </button>
       </div>
 
-      <div className="flex gap-4 mb-6 border-b border-[#303035] pb-3 items-center">
+      <div className="flex gap-4 mb-6 border-b border-[#303035]/70 pb-3 items-center">
         <button
           onClick={() => setActiveTab('screen')}
-          className={`flex items-center gap-2 pb-2 px-1 font-bold text-sm transition-all relative ${activeTab === 'screen' ? 'text-[#FF007F]' : 'text-textMuted hover:text-white'
+          className={`flex items-center gap-2 pb-2 px-1 font-bold text-sm transition-all relative ${activeTab === 'screen' ? 'text-primaryText' : 'text-textMuted hover:text-white'
             }`}
         >
           <Desktop weight="bold" size={16} />
-          {t('stream.screens', 'Экраны')}
+          {t('stream.screens', 'экраны')}
           {activeTab === 'screen' && (
-            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#FF007F] rounded-full" />
+            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primaryHover rounded-full" />
           )}
         </button>
         <button
           onClick={() => setActiveTab('window')}
-          className={`flex items-center gap-2 pb-2 px-1 font-bold text-sm transition-all relative ${activeTab === 'window' ? 'text-[#FF007F]' : 'text-textMuted hover:text-white'
+          className={`flex items-center gap-2 pb-2 px-1 font-bold text-sm transition-all relative ${activeTab === 'window' ? 'text-primaryText' : 'text-textMuted hover:text-white'
             }`}
         >
           <AppWindow weight="bold" size={16} />
-          {t('stream.apps', 'Приложения')}
+          {t('stream.apps', 'приложения')}
           {activeTab === 'window' && (
-            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#FF007F] rounded-full" />
+            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primaryHover rounded-full" />
           )}
         </button>
         <button
           onClick={() => setActiveTab('camera')}
-          className={`flex items-center gap-2 pb-2 px-1 font-bold text-sm transition-all relative ${activeTab === 'camera' ? 'text-[#FF007F]' : 'text-textMuted hover:text-white'
+          className={`flex items-center gap-2 pb-2 px-1 font-bold text-sm transition-all relative ${activeTab === 'camera' ? 'text-primaryText' : 'text-textMuted hover:text-white'
             }`}
         >
           <Camera weight="bold" size={16} />
-          {t('stream.cameras', 'Камеры')}
+          {t('stream.cameras', 'камеры')}
           {activeTab === 'camera' && (
-            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#FF007F] rounded-full" />
+            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primaryHover rounded-full" />
           )}
         </button>
       </div>
@@ -187,18 +187,18 @@ export const StreamPicker = ({ onClose, onSelect }: StreamPickerProps) => {
             {[0, 1, 2, 3].map((i) => (
               <div
                 key={i}
-                className="bg-[#0B0B0F] border border-[#303035] rounded-2xl p-3 flex flex-col gap-2.5 animate-pulse"
+                className="bg-black/35 border border-[#303035]/70 rounded-2xl p-3 flex flex-col gap-2.5 animate-pulse"
               >
-                <div className="aspect-video rounded-xl bg-[#161618] flex items-center justify-center">
-                  <div className="w-6 h-6 border-2 border-[#FF007F] border-t-transparent rounded-full animate-spin opacity-60" />
+                <div className="aspect-video rounded-xl bg-white/[0.04] flex items-center justify-center">
+                  <div className="w-6 h-6 border-2 border-primaryHover border-t-transparent rounded-full animate-spin opacity-60" />
                 </div>
-                <div className="h-4 bg-[#161618] rounded-md w-3/4" />
+                <div className="h-4 bg-white/[0.04] rounded-md w-3/4" />
               </div>
             ))}
           </div>
         ) : sources.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full pt-16 text-textMuted text-sm font-medium">
-            {t('stream.noSources', 'Источники не найдены')}
+            {t('stream.noSources', 'источники не найдены')}
           </div>
         ) : (
           <div className="flex flex-col gap-4">
@@ -215,12 +215,12 @@ export const StreamPicker = ({ onClose, onSelect }: StreamPickerProps) => {
                           key={src.id}
                           type="button"
                           onClick={() => setSelectedSourceId(src.id)}
-                          className={`group bg-[#0B0B0F] border rounded-2xl p-3 flex flex-col items-stretch text-left transition-all duration-200 hover:-translate-y-0.5 relative ${isSelected
-                              ? 'border-[#FF007F] shadow-[0_0_15px_rgba(255,0,127,0.25)] ring-1 ring-[#FF007F]'
-                              : 'border-[#303035] hover:border-[#FF007F]/60'
+                          className={`group bg-black/35 border rounded-2xl p-3 flex flex-col items-stretch text-left transition-all duration-200 hover:-translate-y-0.5 relative ${isSelected
+                              ? 'border-primaryHover ring-1 ring-primaryHover'
+                              : 'border-[#303035]/70 hover:border-primaryHover/60'
                             }`}
                         >
-                          <div className="relative aspect-video rounded-xl overflow-hidden bg-black mb-2.5 flex items-center justify-center border border-[#252528]">
+                          <div className="relative aspect-video rounded-xl overflow-hidden bg-black mb-2.5 flex items-center justify-center border border-white/[0.06]">
                             {src.thumbnail ? (
                               <img
                                 src={src.thumbnail}
@@ -229,9 +229,9 @@ export const StreamPicker = ({ onClose, onSelect }: StreamPickerProps) => {
                               />
                             ) : (
                               <div className="flex flex-col items-center gap-1.5 text-textMuted group-hover:text-white transition-colors">
-                                <Camera weight="bold" size={28} className="text-[#FF007F]" />
+                                <Camera weight="bold" size={28} className="text-primaryHover" />
                                 <span className="text-[10px] font-bold tracking-wider">
-                                  {t('stream.camera', 'Камера')}
+                                  {t('stream.camera', 'камера')}
                                 </span>
                               </div>
                             )}
@@ -239,17 +239,17 @@ export const StreamPicker = ({ onClose, onSelect }: StreamPickerProps) => {
                               <img
                                 src={src.appIcon}
                                 alt=""
-                                className="absolute bottom-2 left-2 w-6 h-6 rounded-md bg-[#161618] p-0.5 border border-[#303035]"
+                                className="absolute bottom-2 left-2 w-6 h-6 rounded-md bg-panelBg/80 backdrop-blur-sm p-0.5 border border-[#303035]/70"
                               />
                             )}
                             {isSelected && (
-                              <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-[#FF007F] text-white flex items-center justify-center shadow-md">
+                              <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primaryHover text-white flex items-center justify-center">
                                 <Check weight="bold" size={12} />
                               </div>
                             )}
                           </div>
                           <span className="text-white text-xs font-bold truncate" title={src.name}>
-                            {cleanName(src.name, globalIndex, activeTab === 'screen', t('stream.screen', 'Экран'))}
+                            {cleanName(src.name, globalIndex, activeTab === 'screen', t('stream.screen', 'экран'))}
                           </span>
                         </button>
                       )
@@ -266,10 +266,10 @@ export const StreamPicker = ({ onClose, onSelect }: StreamPickerProps) => {
                         transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
                         className="overflow-hidden"
                       >
-                        <div className="bg-[#0B0B0F] border border-[#303035] rounded-2xl p-4 flex flex-col gap-3 my-0.5 shadow-inner">
+                        <div className="bg-black/35 border border-[#303035]/70 rounded-2xl p-4 flex flex-col gap-3 my-0.5">
                           <div className="flex items-center justify-between">
-                            <span className="text-xs font-bold text-textMuted uppercase tracking-wider">
-                              {t('stream.shareAudio', 'Передавать звук?')}
+                            <span className="text-xs font-bold text-textMuted tracking-[0.14em]">
+                              {t('stream.shareAudio', 'передавать звук?')}
                             </span>
                             <label className="flex items-center gap-2 cursor-pointer select-none">
                               <input
@@ -278,22 +278,22 @@ export const StreamPicker = ({ onClose, onSelect }: StreamPickerProps) => {
                                 onChange={(e) => setIncludeAudio(e.target.checked)}
                                 className="sr-only peer"
                               />
-                              <div className="w-8 h-5 bg-[#161618] border border-[#303035] rounded-full relative transition-colors peer-checked:bg-[#FF007F] peer-checked:border-[#FF007F] after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-[#303035] after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:after:translate-x-3 peer-checked:after:bg-white" />
+                              <div className="w-8 h-5 bg-white/[0.06] border border-[#303035]/70 rounded-full relative transition-colors peer-checked:bg-primaryHover peer-checked:border-primaryHover after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-[#303035] after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:after:translate-x-3 peer-checked:after:bg-white" />
                             </label>
                           </div>
 
                           <div className="flex items-center justify-between">
-                            <span className="text-xs font-bold text-textMuted uppercase tracking-wider">
-                              {t('stream.quality', 'Качество')}
+                            <span className="text-xs font-bold text-textMuted tracking-[0.14em]">
+                              {t('stream.quality', 'качество')}
                             </span>
-                            <div className="flex items-center bg-[#161618] border border-[#303035] rounded-full p-1 relative shrink-0 w-28 h-8">
+                            <div className="flex items-center bg-white/[0.06] border border-[#303035]/70 rounded-full p-1 relative shrink-0 w-28 h-8">
                               <button
                                 type="button"
                                 onClick={() => setQuality('low')}
                                 className={`flex-1 flex items-center justify-center h-full rounded-full text-xs font-bold z-10 transition-all duration-200 ${quality === 'low' ? 'text-white' : 'text-textMuted hover:text-white'
                                   }`}
                               >
-                                Low
+                                {t('stream.qualityLow', 'low')}
                               </button>
                               <button
                                 type="button"
@@ -301,14 +301,14 @@ export const StreamPicker = ({ onClose, onSelect }: StreamPickerProps) => {
                                 className={`flex-1 flex items-center justify-center h-full rounded-full text-xs font-bold z-10 transition-all duration-200 ${quality === 'high' ? 'text-white' : 'text-textMuted hover:text-white'
                                   }`}
                               >
-                                High
+                                {t('stream.qualityHigh', 'high')}
                               </button>
                               <div
                                 style={{
                                   transform: quality === 'low' ? 'translateX(0)' : 'translateX(100%)',
                                   willChange: 'transform'
                                 }}
-                                className="absolute top-1 bottom-1 left-1 w-[calc(50%-4px)] bg-[#FF007F] rounded-full transition-transform duration-200 ease-out"
+                                className="absolute top-1 bottom-1 left-1 w-[calc(50%-4px)] bg-primaryHover rounded-full transition-transform duration-200 ease-out"
                               />
                             </div>
                           </div>
@@ -323,7 +323,7 @@ export const StreamPicker = ({ onClose, onSelect }: StreamPickerProps) => {
         )}
       </div>
 
-      <div className="mt-4 pt-4 border-t border-[#303035] flex flex-col items-center">
+      <div className="mt-4 pt-4 border-t border-[#303035]/70 flex flex-col items-center">
         {selectedSourceId && !selectedSourceId.startsWith('camera:') && (
           <span className="text-[11px] text-textMuted font-bold mb-3 tracking-wide text-center">
             {getQualityDetailsText()}
@@ -339,11 +339,11 @@ export const StreamPicker = ({ onClose, onSelect }: StreamPickerProps) => {
             }
           }}
           className={`w-full py-3 rounded-2xl font-bold text-sm transition-all duration-200 hover:scale-[1.01] active:scale-[0.98] ${selectedSourceId
-            ? 'bg-[#FF007F] hover:bg-[#D80073] text-white shadow-[0_0_15px_rgba(255,0,127,0.35)]'
-            : 'bg-[#1C1C1F] text-textMuted border border-[#303035] cursor-not-allowed'
+            ? 'bg-primaryHover hover:bg-primaryActive text-white'
+            : 'bg-white/[0.05] text-textMuted border border-[#303035]/70 cursor-not-allowed'
             }`}
         >
-          {t('stream.confirm', 'Поехали')}
+          {t('stream.confirm', 'поехали')}
         </button>
       </div>
     </div>

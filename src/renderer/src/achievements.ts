@@ -23,8 +23,8 @@ export const ACHIEVEMENTS: AchievementDef[] = [
 
   {
     id: 'first_channel',
-    title: 'Первооткрыватель',
-    description: 'Создать свой первый канал',
+    title: 'первооткрыватель',
+    description: 'создать свой первый канал',
     icon: '🔭',
     maxValue: 1,
     statKey: 'channelsCreated',
@@ -32,8 +32,8 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   },
   {
     id: 'soul_1',
-    title: 'Болтун',
-    description: 'Провести 10 часов в каналах',
+    title: 'болтун',
+    description: 'провести 10 часов в каналах',
     icon: '🗣️',
     maxValue: 600,
     statKey: 'totalVoiceMinutes',
@@ -42,8 +42,8 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   },
   {
     id: 'soul_2',
-    title: 'Душа компании',
-    description: 'Провести 50 часов в каналах',
+    title: 'душа компании',
+    description: 'провести 50 часов в каналах',
     icon: '😜',
     maxValue: 3000,
     statKey: 'totalVoiceMinutes',
@@ -52,8 +52,8 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   },
   {
     id: 'soul_3',
-    title: 'Оратор',
-    description: 'Провести 100 часов в каналах',
+    title: 'оратор',
+    description: 'провести 100 часов в каналах',
     icon: '🎙️',
     maxValue: 6000,
     statKey: 'totalVoiceMinutes',
@@ -62,8 +62,8 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   },
   {
     id: 'crowd',
-    title: 'Массовка',
-    description: 'Быть в канале c 10 участниками',
+    title: 'массовка',
+    description: 'быть в канале c 10 участниками',
     icon: '👥',
     maxValue: 10,
     statKey: 'maxUsersInChannel',
@@ -71,8 +71,8 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   },
   {
     id: 'collector',
-    title: 'Коллекционер',
-    description: 'Побывать в 10 разных каналах',
+    title: 'коллекционер',
+    description: 'побывать в 10 разных каналах',
     icon: '📚',
     maxValue: 10,
     statKey: 'uniqueChannels',
@@ -81,8 +81,8 @@ export const ACHIEVEMENTS: AchievementDef[] = [
 
   {
     id: 'modnik',
-    title: 'Модник',
-    description: 'Загрузить GIF-аватарку',
+    title: 'модник',
+    description: 'загрузить GIF-аватарку',
     icon: '🪩',
     maxValue: 1,
     statKey: 'gifAvatarUploaded',
@@ -90,8 +90,8 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   },
   {
     id: 'victim',
-    title: 'Жертва',
-    description: 'Быть кикнутым из канала',
+    title: 'жертва',
+    description: 'быть кикнутым из канала',
     icon: '🥲',
     maxValue: 1,
     statKey: 'timesKicked',
@@ -101,8 +101,8 @@ export const ACHIEVEMENTS: AchievementDef[] = [
 
   {
     id: 'first_call',
-    title: 'Первый звонок',
-    description: 'Совершить первый звонок',
+    title: 'первый звонок',
+    description: 'совершить первый звонок',
     icon: '📞',
     maxValue: 1,
     statKey: 'totalCalls',
@@ -110,8 +110,8 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   },
   {
     id: 'same_wave',
-    title: 'Переговорщики',
-    description: 'Звонок длительностью 5+ часов',
+    title: 'переговорщики',
+    description: 'звонок длительностью 5+ часов',
     icon: '🫂',
     maxValue: 300,
     statKey: 'longestCallMinutes',
@@ -120,8 +120,8 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   },
   {
     id: 'gossip',
-    title: 'Мошенник',
-    description: 'Совершить 50 звонков',
+    title: 'мошенник',
+    description: 'совершить 50 звонков',
     icon: '🗿',
     maxValue: 50,
     statKey: 'totalCalls',
@@ -129,8 +129,8 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   },
   {
     id: 'busy',
-    title: 'Занят',
-    description: 'Отклонить 5 звонков',
+    title: 'занят',
+    description: 'отклонить 5 звонков',
     icon: '🚫',
     maxValue: 5,
     statKey: 'declinedCalls',
@@ -140,8 +140,8 @@ export const ACHIEVEMENTS: AchievementDef[] = [
 
   {
     id: 'first_friend',
-    title: 'Первый друг',
-    description: 'Добавить первого друга',
+    title: 'первый друг',
+    description: 'добавить первого друга',
     icon: '❤️',
     maxValue: 1,
     statKey: 'friendsCount',
@@ -149,8 +149,8 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   },
   {
     id: 'magnet',
-    title: 'Магнит',
-    description: 'Добавить 20 друзей',
+    title: 'магнит',
+    description: 'добавить 20 друзей',
     icon: '🧲',
     maxValue: 20,
     statKey: 'friendsCount',
@@ -158,8 +158,8 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   },
   {
     id: 'popular',
-    title: 'Глава захолустья',
-    description: 'Твой профиль просмотрели 100 раз',
+    title: 'глава захолустья',
+    description: 'твой профиль просмотрели 100 раз',
     icon: '⭐',
     maxValue: 100,
     statKey: 'profileViews',

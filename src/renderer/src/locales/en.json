@@ -1,363 +1,374 @@
 {
   "settings": {
-    "title": "Settings",
+    "title": "settings",
     "tabs": {
-      "general": "General",
-      "audio": "Audio",
-      "privacy": "Privacy"
+      "general": "general",
+      "audio": "audio",
+      "privacy": "privacy"
     },
     "general": {
-      "system": "SYSTEM",
-      "autoLaunch": "Launch on Startup",
-      "autoLaunchDesc": "ZABOR will open automatically when you turn on your computer",
-      "minimizeToTray": "Minimize to Tray",
-      "minimizeToTrayDesc": "When you click the close button, the app will minimize instead of closing",
-      "language": "App Language",
-      "languageDesc": "Choose the primary interface language"
+      "system": "system",
+      "autoLaunch": "launch on startup",
+      "autoLaunchDesc": "zabor will open automatically when you turn on your computer",
+      "minimizeToTray": "minimize to tray",
+      "minimizeToTrayDesc": "when you click the close button, the app will minimize instead of closing",
+      "language": "app language",
+      "languageDesc": "choose the primary interface language"
     },
     "audio": {
-      "inputDevice": "INPUT DEVICE",
-      "outputDevice": "OUTPUT DEVICE",
-      "inputVolume": "MICROPHONE VOLUME",
-      "outputVolume": "AUDIO VOLUME",
-      "noiseSuppression": "Noise Suppression",
-      "default": "Default",
-      "micFallback": "Microphone",
-      "speakerFallback": "Speakers",
-      "calibrateSensitivity": "Microphone calibration",
-      "calibrateDesc": "Tunes Silero confidence for your voice",
-      "calibrateButton": "Calibration",
-      "calibrating": "Analyzing voice...",
-      "calibrationComplete": "Success",
-      "calibrationSuccess": "Success",
-      "doNotSpeak": "Speak in your normal voice",
-      "speakNormally": "Speak in your normal voice",
-      "micThresholdAuto": "Automatic noise suppression strength",
-      "micThresholdLabel": "MAXIMUM NOISE SUPPRESSION, DB",
-      "noiseSuppressionMode": "Noise suppression mode",
-      "smartMode": "Smart",
-      "manualMode": "Manual",
-      "threshold": "Threshold",
-      "thresholdLabel": "Microphone activation threshold",
-      "checking": "Checking",
-      "preparing": "Preparing",
-      "noiseModel": "Noise suppression model",
-      "model1": "Model 1",
-      "model2": "Model 2",
-      "suppressionStrength": "Suppression strength",
-      "suppressionStrengthWeaker": "Weaker",
-      "suppressionStrengthStronger": "Stronger",
-      "speechAnalyzer": "Speech Analyzer (unstable)",
-      "speechAnalyzerHint": "The neural network separates speech from noise more precisely, but it sometimes clips the start of words. It also works without noise suppression — then it separates speech from the raw sound",
-      "speechAnalyzerManualHint": "Available in Smart mode only — in Manual mode your threshold decides what counts as speech",
-      "micTestListen": "Hear yourself",
-      "micTestArming": "Getting ready…",
-      "micTestTalk": "Keep talking",
-      "micTestRetake": "Record again?",
-      "micTestPlay": "Play",
-      "micTestPause": "Pause",
-      "micTestSeek": "Playback position",
-      "micTestSilent": "No sound captured",
-      "micTestFailed": "Recording failed",
-      "calibrationPhrase": "\"The quick brown fox jumps over the lazy dog\""
+      "inputDevice": "input device",
+      "outputDevice": "output device",
+      "inputVolume": "microphone volume",
+      "outputVolume": "audio volume",
+      "noiseSuppression": "noise suppression",
+      "default": "default",
+      "micFallback": "microphone",
+      "speakerFallback": "speakers",
+      "calibrateSensitivity": "microphone calibration",
+      "calibrateDesc": "tunes Silero confidence for your voice",
+      "calibrateButton": "calibration",
+      "calibrating": "analyzing voice...",
+      "calibrationComplete": "success",
+      "calibrationSuccess": "success",
+      "doNotSpeak": "speak in your normal voice",
+      "speakNormally": "speak in your normal voice",
+      "micThresholdAuto": "automatic noise suppression strength",
+      "micThresholdLabel": "maximum noise suppression, dB",
+      "noiseSuppressionMode": "noise suppression mode",
+      "smartMode": "smart",
+      "manualMode": "manual",
+      "threshold": "threshold",
+      "thresholdLabel": "microphone activation threshold",
+      "checking": "checking",
+      "preparing": "preparing",
+      "noiseModel": "noise suppression model",
+      "model1": "model 1",
+      "model2": "model 2",
+      "suppressionStrength": "suppression strength",
+      "suppressionStrengthWeaker": "weaker",
+      "suppressionStrengthStronger": "stronger",
+      "speechAnalyzer": "speech analyzer (unstable)",
+      "speechAnalyzerHint": "the neural network separates voice from other sounds, may not work well with some microphones, slightly increases latency",
+      "speechAnalyzerManualHint": "available in smart mode only — in manual mode your threshold decides what counts as speech",
+      "micTestListen": "hear yourself",
+      "micTestArming": "getting ready…",
+      "micTestTalk": "keep talking",
+      "micTestRetake": "record again?",
+      "micTestPlay": "play",
+      "micTestPause": "pause",
+      "micTestSeek": "playback position",
+      "micTestSilent": "no sound captured",
+      "micTestFailed": "recording failed",
+      "calibrationPhrase": "\"the quick brown fox jumps over the lazy dog\""
     },
     "privacy": {
-      "newPassword": "NEW PASSWORD",
-      "passwordHint": "Maximum 25 characters",
-      "changePassword": "Change Password",
-      "changePasswordTitle": "Change Password",
-      "logout": "Logout",
-      "changePasswordFailed": "Failed to change password",
-      "network": "NETWORK",
-      "hideIp": "Hide my IP address",
-      "hideIpDesc": "All voice traffic goes through the relay server, so other people cannot see your IP. Slightly higher latency. Applies to new connections."
+      "newPassword": "new password",
+      "passwordHint": "maximum 25 characters",
+      "changePassword": "change password",
+      "changePasswordTitle": "change password",
+      "logout": "logout",
+      "changePasswordFailed": "failed to change password",
+      "network": "network",
+      "hideIp": "hide my IP address",
+      "hideIpDesc": "all voice traffic goes through the relay server, so other people cannot see your IP. slightly higher latency. applies to new connections."
     }
   },
   "auth": {
-    "login": "LOGIN",
-    "password": "PASSWORD",
-    "continue": "CONTINUE",
-    "loading": "LOADING...",
-    "accountNotFound": "Account not found",
-    "createNewProfile": "Create new profile with this login?",
-    "yes": "Yes",
-    "no": "No",
-    "createProfile": "Create Profile",
-    "howOthersSeeYou": "How will others see you?",
-    "displayName": "DISPLAY NAME",
-    "max20chars": "Maximum 20 characters",
-    "creating": "CREATING...",
-    "create": "CREATE",
-    "cropTitle": "Crop Avatar"
+    "login": "login",
+    "password": "password",
+    "continue": "continue",
+    "loading": "loading...",
+    "accountNotFound": "account not found",
+    "createNewProfile": "create new profile with this login?",
+    "yes": "yes",
+    "no": "no",
+    "createProfile": "create profile",
+    "howOthersSeeYou": "how will others see you?",
+    "displayName": "display name",
+    "max20chars": "maximum 20 characters",
+    "creating": "creating...",
+    "create": "create",
+    "cropTitle": "crop avatar"
   },
   "main": {
     "tabs": {
-      "channels": "Channels",
-      "friends": "Friends"
+      "channels": "channels",
+      "friends": "friends"
     },
     "voice": {
-      "endCall": "End Call",
-      "ping": "PING",
-      "offline": "Offline",
-      "voiceChannels": "VOICE CHANNELS",
+      "endCall": "end call",
+      "ping": "ping",
+      "offline": "offline",
+      "voiceChannels": "voice channels",
       "pingValue": "{{ping}} ms"
     },
     "notifications": {
-      "title": "NOTIFICATIONS",
-      "friendRequest": "Friend request",
-      "channelInvite": "Invite from {{name}}",
-      "accept": "Accept",
-      "decline": "Decline",
-      "join": "Join",
-      "none": "No notifications"
+      "title": "notifications",
+      "friendRequest": "friend request",
+      "channelInvite": "invite from {{name}}",
+      "accept": "accept",
+      "decline": "decline",
+      "join": "join",
+      "none": "no notifications"
     },
     "user": {
-      "copyUsername": "Click to copy",
-      "copied": "Copied!"
+      "copyUsername": "click to copy",
+      "copied": "copied!"
     },
     "connection": {
-      "noConnection": "No server connection",
-      "reconnecting": "No server connection. Reconnecting...",
-      "connecting": "CONNECTING",
-      "clientRejectedTitle": "The server rejected this build",
+      "noConnection": "no server connection",
+      "reconnecting": "no server connection. reconnecting...",
+      "connecting": "connecting",
+      "clientRejectedTitle": "the server rejected this build",
       "clientRejected": {
-        "missing": "This build sent no signature. Only apps from the ZABOR releases page can connect to the official server.",
-        "malformed": "The build signature is malformed. Reinstall the app from the ZABOR releases page.",
-        "unknown_channel": "The build channel was not recognised. Only apps from the ZABOR releases page can connect to the official server.",
-        "invalid_signature": "The build signature is invalid. Only apps from the ZABOR releases page can connect to the official server.",
-        "expired": "The build signature has expired. Check your system date and time, then restart the app.",
-        "replay": "This signature has already been used. Restart the app.",
-        "outdated_version": "This app version is out of date. Install the latest build from the ZABOR releases page.",
-        "unknown": "The server rejected the connection from this build."
+        "missing": "this build sent no signature. only apps from the zabor releases page can connect to the official server.",
+        "malformed": "the build signature is malformed. reinstall the app from the zabor releases page.",
+        "unknown_channel": "the build channel was not recognised. only apps from the zabor releases page can connect to the official server.",
+        "invalid_signature": "the build signature is invalid. only apps from the zabor releases page can connect to the official server.",
+        "expired": "the build signature has expired. check your system date and time, then restart the app.",
+        "replay": "this signature has already been used. restart the app.",
+        "outdated_version": "this app version is out of date. install the latest build from the zabor releases page.",
+        "unknown": "the server rejected the connection from this build."
       }
     }
   },
   "modals": {
     "createChannel": {
-      "title": "Create Channel",
-      "label": "CHANNEL NAME",
-      "placeholder": "Maximum 25 characters",
-      "submit": "Create"
+      "title": "create channel",
+      "label": "channel name",
+      "placeholder": "maximum 25 characters",
+      "submit": "create"
     },
     "renameChannel": {
-      "title": "Rename Channel",
-      "label": "NEW NAME",
-      "submit": "Save"
+      "title": "rename channel",
+      "label": "new name",
+      "submit": "save"
     },
     "addFriend": {
-      "title": "Add Friend",
-      "desc": "Enter user login",
-      "placeholder": "Login",
-      "errorNotFound": "User not found",
-      "errorAlreadyFriend": "They are already your friend ;) ",
-      "submit": "Find",
-      "sent": "Sent"
+      "title": "add friend",
+      "desc": "enter user login",
+      "placeholder": "login",
+      "errorNotFound": "user not found",
+      "errorAlreadyFriend": "they are already your friend ;) ",
+      "submit": "find",
+      "sent": "sent"
     },
     "kick": {
-      "title": "Kick User?",
-      "desc": "Are you sure you want to remove <1>{{name}}</1> from the channel?",
-      "submit": "Kick"
+      "title": "kick user?",
+      "desc": "are you sure you want to remove <1>{{name}}</1> from the channel?",
+      "submit": "kick"
     },
     "switchChannel": {
-      "title": "Switch Channel?",
-      "desc": "You will leave the current channel and move to another one.",
-      "stay": "Stay",
-      "switching": "Switching...",
-      "switch": "Switch"
+      "title": "switch channel?",
+      "desc": "you will leave the current channel and move to another one.",
+      "stay": "stay",
+      "switching": "switching...",
+      "switch": "switch"
     },
     "inviteToChannel": {
-      "title": "Invite to Channel",
-      "searchPlaceholder": "Search friends...",
-      "noFriends": "No friends found",
-      "sent": "✓ Sent",
-      "alreadyMember": "Already member"
+      "title": "invite to channel",
+      "searchPlaceholder": "search friends...",
+      "noFriends": "no friends found",
+      "sent": "✓ sent",
+      "alreadyMember": "already member"
     },
     "members": {
-      "title": "Members",
-      "creator": "Creator"
+      "title": "members",
+      "creator": "creator"
     },
     "channelFull": {
-      "title": "Channel is Full",
-      "desc": "Maximum number of participants in the channel is 10 people. Please wait until someone leaves.",
-      "gotIt": "Got it"
+      "title": "channel is full",
+      "desc": "maximum number of participants in the channel is 10 people. please wait until someone leaves.",
+      "gotIt": "got it"
+    },
+    "streamVolume": {
+      "title": "stream volume",
+      "label": "volume"
     },
     "userVolume": {
-      "title": "User Volume",
-      "label": "VOLUME"
+      "title": "user volume",
+      "label": "volume"
     }
   },
   "common": {
-    "cancel": "Cancel",
-    "save": "Save",
-    "close": "Close",
-    "loading": "Loading...",
-    "error": "Error",
-    "apply": "Apply",
-    "fileTooLarge": "Max 5 MB",
-    "onlyImages": "Images only",
-    "invite": "Invite",
-    "channelMembers": "Channel Members",
-    "dismiss": "Dismiss"
+    "cancel": "cancel",
+    "save": "save",
+    "close": "close",
+    "loading": "loading...",
+    "error": "error",
+    "apply": "apply",
+    "fileTooLarge": "max 5 MB",
+    "onlyImages": "images only",
+    "invite": "invite",
+    "channelMembers": "channel members",
+    "dismiss": "dismiss"
   },
   "achievements": {
-    "title": "Achievements",
-    "myTitle": "My Achievements",
-    "toastTitle": "Achievement Unlocked",
-    "empty": "No achievements",
-    "hiddenTitle": "Hidden Achievement",
+    "title": "achievements",
+    "myTitle": "my achievements",
+    "toastTitle": "achievement unlocked",
+    "empty": "no achievements",
+    "hiddenTitle": "hidden achievement",
     "hiddenDesc": "???",
-    "unlocked": "✓ Unlocked",
-    "hiddenBadge": "Hidden",
+    "unlocked": "✓ unlocked",
+    "hiddenBadge": "hidden",
     "hoursUnit": " h",
     "summary": "{{unlocked}} / {{total}} unlocked",
     "first_channel": {
-      "title": "Pioneer",
-      "description": "Create your first channel"
+      "title": "pioneer",
+      "description": "create your first channel"
     },
     "soul_1": {
-      "title": "Chatterbox",
-      "description": "Spend 10 hours in channels"
+      "title": "chatterbox",
+      "description": "spend 10 hours in channels"
     },
     "soul_2": {
-      "title": "Life of the Party",
-      "description": "Spend 50 hours in channels"
+      "title": "life of the party",
+      "description": "spend 50 hours in channels"
     },
     "soul_3": {
-      "title": "Orator",
-      "description": "Spend 100 hours in channels"
+      "title": "orator",
+      "description": "spend 100 hours in channels"
     },
     "crowd": {
-      "title": "Extra",
-      "description": "Be in a channel with 10 participants"
+      "title": "extra",
+      "description": "be in a channel with 10 participants"
     },
     "collector": {
-      "title": "Collector",
-      "description": "Visit 10 different channels"
+      "title": "collector",
+      "description": "visit 10 different channels"
     },
     "modnik": {
-      "title": "Fashionista",
-      "description": "Upload a GIF avatar"
+      "title": "fashionista",
+      "description": "upload a GIF avatar"
     },
     "victim": {
-      "title": "Victim",
-      "description": "Get kicked from a channel"
+      "title": "victim",
+      "description": "get kicked from a channel"
     },
     "first_call": {
-      "title": "First Call",
-      "description": "Make your first call"
+      "title": "first call",
+      "description": "make your first call"
     },
     "same_wave": {
-      "title": "Negotiators",
-      "description": "Call duration of 5+ hours"
+      "title": "negotiators",
+      "description": "call duration of 5+ hours"
     },
     "gossip": {
-      "title": "Scammer",
-      "description": "Make 50 calls"
+      "title": "scammer",
+      "description": "make 50 calls"
     },
     "busy": {
-      "title": "Busy",
-      "description": "Decline 5 calls"
+      "title": "busy",
+      "description": "decline 5 calls"
     },
     "first_friend": {
-      "title": "First Friend",
-      "description": "Add your first friend"
+      "title": "first friend",
+      "description": "add your first friend"
     },
     "magnet": {
-      "title": "Magnet",
-      "description": "Add 20 friends"
+      "title": "magnet",
+      "description": "add 20 friends"
     },
     "popular": {
-      "title": "Mayor of Nowhere",
-      "description": "Your profile was viewed 100 times"
+      "title": "mayor of nowhere",
+      "description": "your profile was viewed 100 times"
     }
   },
   "profile": {
-    "editTitle": "Edit Profile",
-    "displayName": "Display Name",
-    "aboutMe": "About Me",
-    "aboutMePlaceholder": "Write a little about yourself...",
-    "copyLogin": "Copy login",
-    "loginCopied": "Copied!",
-    "inviteToChannel": "Invite to Channel",
-    "inviting": "Inviting...",
-    "kick": "Kick from Channel",
-    "call": "Call",
-    "removeFriend": "Remove Friend",
-    "userOffline": "User is offline"
+    "editTitle": "edit profile",
+    "displayName": "display name",
+    "aboutMe": "about me",
+    "aboutMePlaceholder": "write a little about yourself...",
+    "copyLogin": "copy login",
+    "loginCopied": "copied!",
+    "inviteToChannel": "invite to channel",
+    "inviting": "inviting...",
+    "kick": "kick from channel",
+    "call": "call",
+    "removeFriend": "remove friend",
+    "userOffline": "user is offline"
   },
   "contextMenu": {
-    "rename": "Rename",
-    "leaveChannel": "Leave Channel",
-    "profile": "Profile",
-    "invite": "Invite to Channel",
-    "inviting": "Inviting...",
-    "kick": "Kick",
-    "volume": "Volume",
-    "remove": "Remove"
+    "rename": "rename",
+    "leaveChannel": "leave channel",
+    "profile": "profile",
+    "invite": "invite to channel",
+    "inviting": "inviting...",
+    "kick": "kick",
+    "volume": "volume",
+    "streamVolume": "stream volume",
+    "remove": "remove"
   },
   "toasts": {
-    "calling": "Calling...",
-    "missedCall": "Missed call from: {{name}}",
-    "missedChannelInvite": "Missed channel invite: {{name}}",
-    "noAnswer": "No answer",
-    "notification": "Notification",
-    "accessRestricted": "Access restricted",
-    "adminRestricted": "Administrator restricted this action",
-    "micNotHearing": "You are not heard, check your microphone",
-    "micNoAccess": "No access to microphone. Check OS permissions.",
-    "micBusy": "Microphone is busy with another application.",
-    "micBusyCalibration": "Cannot calibrate microphone during a call",
-    "calibrationFailed": "Failed to access microphone for calibration",
-    "micNotFound": "Microphone not found. Connect the device and try again.",
-    "audioError": "Audio error: {{message}}",
-    "incomingCall": "Incoming call...",
-    "incomingChannelInvite": "You are invited to a channel",
-    "startupCalibration": "Microphone calibration... Speak in your normal voice.",
-    "calibrationComplete": "Microphone successfully calibrated!",
-    "calibrationNeedSilence": "Speak in your normal voice during calibration.",
-    "calibrationNeedVoice": "Keep speaking in your normal voice throughout calibration, then try again.",
-    "calibrationFailedRetry": "Calibration failed. Please try again.",
-    "calibrationEngineUnavailable": "Noise suppression failed to start on this device. Please restart the app.",
-    "calibrationNoMic": "The microphone is unavailable. Check the input device and try again.",
-    "calibrationTimeout": "The microphone stopped sending audio. Check the device and try again.",
-    "calibrationBusy": "Calibration is already running. Please wait for it to finish.",
-    "micUnknownError": "Unknown microphone error",
-    "channelJoinFailed": "Could not join the channel: the server did not respond. Please try again.",
+    "calling": "calling...",
+    "missedCall": "missed call from: {{name}}",
+    "missedChannelInvite": "missed channel invite: {{name}}",
+    "noAnswer": "no answer",
+    "notification": "notification",
+    "accessRestricted": "access restricted",
+    "adminRestricted": "administrator restricted this action",
+    "micNotHearing": "you are not heard, check your microphone",
+    "micNoAccess": "no access to microphone. check OS permissions.",
+    "micBusy": "microphone is busy with another application.",
+    "micBusyCalibration": "cannot calibrate microphone during a call",
+    "calibrationFailed": "failed to access microphone for calibration",
+    "micNotFound": "microphone not found. connect the device and try again.",
+    "audioError": "audio error: {{message}}",
+    "incomingCall": "incoming call...",
+    "incomingChannelInvite": "you are invited to a channel",
+    "startupCalibration": "microphone calibration... speak in your normal voice.",
+    "calibrationComplete": "microphone successfully calibrated!",
+    "calibrationNeedSilence": "speak in your normal voice during calibration.",
+    "calibrationNeedVoice": "keep speaking in your normal voice throughout calibration, then try again.",
+    "calibrationFailedRetry": "calibration failed. please try again.",
+    "calibrationEngineUnavailable": "noise suppression failed to start on this device. please restart the app.",
+    "calibrationNoMic": "the microphone is unavailable. check the input device and try again.",
+    "calibrationTimeout": "the microphone stopped sending audio. check the device and try again.",
+    "calibrationBusy": "calibration is already running. please wait for it to finish.",
+    "micUnknownError": "unknown microphone error",
+    "channelJoinFailed": "could not join the channel: the server did not respond. please try again.",
     "relayUnavailable": "IP hiding is on, but the relay server is unreachable — the connection will not be established."
   },
   "stream": {
-    "pickerTitle": "Select Source",
-    "screens": "Screens",
-    "apps": "Applications",
-    "cameras": "Cameras",
-    "screen": "Screen",
-    "camera": "Camera",
-    "shareAudio": "Share audio?",
-    "quality": "Quality",
-    "noSources": "No sources found",
-    "loadingSources": "Loading sources...",
-    "confirm": "Go Live",
-    "minimizeHint": "Minimize stream to thumbnail",
-    "fullscreenHint": "Enter fullscreen (F)",
-    "exitFullscreenHint": "Return to focus mode (F)",
+    "pickerTitle": "select source",
+    "screens": "screens",
+    "apps": "applications",
+    "cameras": "cameras",
+    "screen": "screen",
+    "camera": "camera",
+    "shareAudio": "share audio?",
+    "quality": "quality",
+    "qualityLow": "low",
+    "qualityHigh": "high",
+    "detailsLow": "1280x720 30fps (~2.5 Mbit/s)",
+    "detailsHigh": "1920x1080 60fps (~6 Mbit/s)",
+    "noSources": "no sources found",
+    "loadingSources": "loading sources...",
+    "confirm": "go live",
+    "minimizeHint": "minimize stream to thumbnail",
+    "stopHint": "stop streaming",
+    "fullscreenHint": "enter fullscreen (F)",
+    "exitFullscreenHint": "return to focus mode (F)",
+    "streamLabel": "{{name}}'s stream",
     "broadcastOf": "{{name}}'s stream",
-    "loading": "Loading stream"
+    "loading": "loading stream"
   },
   "joke": {
-    "title": "JOKE:",
-    "fallback": "Today the server is joking silently."
+    "title": "joke:",
+    "fallback": "today the server is joking silently."
   },
   "validation": {
-    "minChars": "Minimum 4 characters",
-    "maxChars": "Maximum 25 characters",
-    "latinOnly": "Only Latin letters and numbers",
-    "emptyName": "Name cannot be empty",
-    "maxNameChars": "Maximum 20 characters",
-    "connectionError": "Connection error",
-    "invalidPassword": "Incorrect password!",
-    "networkError": "Network error, try again",
-    "registerError": "Registration error",
-    "connectError": "Connection error",
-    "authThrottled": "Too many sign-in attempts. Try again in {{minutes}} min."
+    "minChars": "minimum 4 characters",
+    "maxChars": "maximum 25 characters",
+    "latinOnly": "only latin letters and numbers",
+    "emptyName": "name cannot be empty",
+    "maxNameChars": "maximum 20 characters",
+    "connectionError": "connection error",
+    "invalidPassword": "incorrect password!",
+    "networkError": "network error, try again",
+    "registerError": "registration error",
+    "connectError": "connection error",
+    "authThrottled": "too many sign-in attempts. try again in {{minutes}} min."
   }
 }

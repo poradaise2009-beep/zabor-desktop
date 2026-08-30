@@ -50,6 +50,23 @@ interface ProcessMessage {
   epoch?: number
 }
 
+const VAD_GAIN = 3.5
+const SATURATION_THRESHOLD = 0.6
+const SATURATION_HEADROOM = 1 - SATURATION_THRESHOLD
+
+function amplifyVadSample(sample: number): number {
+  const scaled = sample * VAD_GAIN
+  if (scaled > SATURATION_THRESHOLD) {
+    const excess = scaled - SATURATION_THRESHOLD
+    return SATURATION_THRESHOLD + (SATURATION_HEADROOM * excess) / (SATURATION_HEADROOM + excess)
+  }
+  if (scaled < -SATURATION_THRESHOLD) {
+    const excess = -scaled - SATURATION_THRESHOLD
+    return -SATURATION_THRESHOLD - (SATURATION_HEADROOM * excess) / (SATURATION_HEADROOM + excess)
+  }
+  return scaled
+}
+
 function resetModelState(): void {
   state.fill(0)
   context.fill(0)
@@ -67,7 +84,9 @@ async function processFrame(message: ProcessMessage): Promise<void> {
 
   try {
     modelInput.set(context, 0)
-    modelInput.set(message.audioFrame, CONTEXT_SIZE)
+    for (let i = 0; i < FRAME_SIZE; i++) {
+      modelInput[CONTEXT_SIZE + i] = amplifyVadSample(message.audioFrame[i])
+    }
 
     const feeds: Record<string, Tensor> = {
       [audioInputName]: new Tensor('float32', modelInput, [1, modelInput.length]),
@@ -82,7 +101,7 @@ async function processFrame(message: ProcessMessage): Promise<void> {
 
     const newStateData = results[stateOutputName].data as Float32Array
     state.set(newStateData)
-    context.set(message.audioFrame.subarray(FRAME_SIZE - CONTEXT_SIZE))
+    context.set(modelInput.subarray(modelInput.length - CONTEXT_SIZE))
 
     self.postMessage({
       type: 'probability',

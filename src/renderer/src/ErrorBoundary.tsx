@@ -29,7 +29,7 @@ export class ErrorBoundary extends Component<Props, State> {
           alignItems: 'center', justifyContent: 'center', padding: 32,
           fontFamily: 'monospace', gap: 16
         }}>
-          <h1 style={{ color: '#DA373C', fontSize: 24, margin: 0 }}>React Crash</h1>
+          <h1 style={{ color: '#DA373C', fontSize: 24, margin: 0 }}>React crash</h1>
           <pre style={{
             background: '#161618', padding: 16, borderRadius: 8,
             color: '#f87171', fontSize: 12, maxWidth: 800,
@@ -47,7 +47,7 @@ export class ErrorBoundary extends Component<Props, State> {
               fontSize: 14, fontWeight: 'bold'
             }}
           >
-            Перезапустить
+            перезапустить
           </button>
         </div>
       );

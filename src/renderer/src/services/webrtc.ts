@@ -16,14 +16,14 @@ import {
 } from './audio-assets'
 
 export const VAD_CALIBRATION_ENABLED: boolean = false
-const FIXED_SILERO_THRESHOLD = 0.15
+const FIXED_SILERO_THRESHOLD = 0.4
 
-const DEFAULT_SILERO_THRESHOLD = 0.16
+const DEFAULT_SILERO_THRESHOLD = 0.4
 const MIN_VOICE_CALIBRATION_WINDOWS = 12
 const VAD_CALIBRATION_MARGIN_RATIO = 0.42
 const VAD_CALIBRATION_MARGIN_FLOOR = 0.06
-const VAD_CALIBRATION_MIN_THRESHOLD = 0.05
-const VAD_CALIBRATION_MAX_THRESHOLD = 0.4
+const VAD_CALIBRATION_MIN_THRESHOLD = 0.4
+const VAD_CALIBRATION_MAX_THRESHOLD = 0.85
 
 const vadThresholdFromVoiceLow = (voiceLow: number): number => {
   const margin = Math.max(VAD_CALIBRATION_MARGIN_FLOOR, voiceLow * VAD_CALIBRATION_MARGIN_RATIO)
@@ -481,6 +481,7 @@ export class WebRTCManager {
   private calibratedVadThreshold = DEFAULT_SILERO_THRESHOLD
   private calibratedNoiseFloor = 0.003
   private calibratedPreGainDb = 0
+  private readonly RAW_MIC_BOOST = 1.7
   private calibratedVadTrackerSeed = DEFAULT_VAD_TRACKER_SEED
   private hasVoiceCalibration = false
   private calibrationDeviceId = 'default'
@@ -628,7 +629,7 @@ export class WebRTCManager {
     this.relayWarningShownAt = Date.now()
     const message = i18n.t(
       'toasts.relayUnavailable',
-      'Скрытие IP включено, но сервер ретрансляции недоступен — соединение не будет установлено.'
+      'скрытие IP включено, но сервер ретрансляции недоступен — соединение не будет установлено.'
     )
     useAppStore.getState().setSystemToast(message)
     setTimeout(() => {
@@ -659,7 +660,7 @@ export class WebRTCManager {
       postFilterBeta: this.postFilterBetaForStrength(this.suppressionStrengthDb),
       noiseFloor: this.calibratedNoiseFloor,
       gainFactor,
-      downstreamGain: gainFactor
+      downstreamGain: this.effectiveInputGain()
     }
   }
 
@@ -682,6 +683,11 @@ export class WebRTCManager {
     return normalized / 100
   }
 
+  private effectiveInputGain(): number {
+    const base = this.inputVolumeToGain(this.inputVolume)
+    return this.noiseSuppression ? base : base * this.RAW_MIC_BOOST
+  }
+
   private normalizeManualThreshold(value: number): number {
     if (value >= 0) return -42
     return Math.max(-60, Math.min(-12, Number.isFinite(value) ? value : -42))
@@ -697,13 +703,16 @@ export class WebRTCManager {
   }
 
   private usesSmartWorklet(): boolean {
-    if (this.thresholdMode !== 'auto') return false
-    return this.noiseSuppression || this.analyzerFeedsWorklet()
+    if (this.noiseSuppression) {
+      return this.thresholdMode === 'auto'
+    }
+    return this.analyzerFeedsWorklet()
   }
 
   private micGraphSignature(): string {
-    if (this.thresholdMode !== 'auto') return this.noiseSuppression ? 'manual-gate' : 'raw'
-    if (this.noiseSuppression) return `smart-${this.smartModel}`
+    if (this.noiseSuppression) {
+      return this.thresholdMode === 'auto' ? `smart-${this.smartModel}` : 'manual-gate'
+    }
     return this.analyzerFeedsWorklet() ? 'analyzer-only' : 'raw'
   }
 
@@ -1001,7 +1010,7 @@ export class WebRTCManager {
   }
 
   public warmUpSmartNoiseSuppression(enabled = this.noiseSuppression): void {
-    if (this.thresholdMode !== 'auto') return
+    if (this.noiseSuppression && this.thresholdMode !== 'auto') return
     const needsAnalyzer = this.analyzerFeedsWorklet()
     if (!enabled && !needsAnalyzer) return
     void preloadNoiseAssets(enabled ? this.smartModel : 'analyzer')
@@ -1088,7 +1097,7 @@ export class WebRTCManager {
     const source = ctx.createMediaStreamSource(rawStream)
     this.processedSource = source
     const inputGain = ctx.createGain()
-    inputGain.gain.value = this.inputVolumeToGain(this.inputVolume)
+    inputGain.gain.value = this.effectiveInputGain()
     this.inputGainNode = inputGain
     const peakGuard = this.createPeakGuard(ctx)
     this.micOutputTap = peakGuard
@@ -1352,7 +1361,7 @@ export class WebRTCManager {
     this.calibratedPreGainNode = calibratedPreGain
     const gainFactor = this.inputVolumeToGain(this.inputVolume)
 
-    inputGain.gain.value = gainFactor
+    inputGain.gain.value = this.effectiveInputGain()
     this.inputGainNode = inputGain
 
     try {
@@ -1450,12 +1459,13 @@ export class WebRTCManager {
   public setInputVolume(volume: number) {
     this.inputVolume = Math.max(0, Math.min(200, Number.isFinite(volume) ? volume : 100))
     const gainFactor = this.inputVolumeToGain(this.inputVolume)
+    const effectiveGain = this.effectiveInputGain()
 
     if (this.inputGainNode) {
-      this.inputGainNode.gain.value = gainFactor
+      this.inputGainNode.gain.value = effectiveGain
     }
     if (this.backgroundMeterGain) {
-      this.backgroundMeterGain.gain.value = gainFactor
+      this.backgroundMeterGain.gain.value = effectiveGain
     }
     if (this.micNode) {
       this.micNode.port.postMessage({
@@ -1528,6 +1538,12 @@ export class WebRTCManager {
   public setNoiseSuppression(enabled: boolean) {
     if (this.noiseSuppression === enabled) return
     this.noiseSuppression = enabled
+    if (this.inputGainNode) {
+      this.inputGainNode.gain.value = this.effectiveInputGain()
+    }
+    if (this.backgroundMeterGain) {
+      this.backgroundMeterGain.gain.value = this.effectiveInputGain()
+    }
     this.warmUpSmartNoiseSuppression(enabled)
     if (this.localStream) void this.updateSettings(this.currentDeviceId, enabled)
   }
@@ -1651,7 +1667,7 @@ export class WebRTCManager {
           }
 
           if (silenceFrames > 150 && !hasWarnedSilence) {
-            const toastMsg = i18n.t('toasts.micNotHearing', 'Вас не слышно, проверьте микрофон')
+            const toastMsg = i18n.t('toasts.micNotHearing', 'вас не слышно, проверьте микрофон')
             store.setSystemToast(toastMsg)
             setTimeout(() => {
               const currentStore = useAppStore.getState()
@@ -1997,12 +2013,12 @@ export class WebRTCManager {
     const store = useAppStore.getState()
     const kind = classifyMicrophoneError(detail)
     const toastMsg = kind === 'micBusy'
-      ? i18n.t('toasts.micBusy', 'Микрофон занят другим приложением.')
+      ? i18n.t('toasts.micBusy', 'микрофон занят другим приложением.')
       : kind === 'micNotFound'
-        ? i18n.t('toasts.micNotFound', 'Микрофон не найден. Подключите устройство и попробуйте снова.')
+        ? i18n.t('toasts.micNotFound', 'микрофон не найден. подключите устройство и попробуйте снова.')
         : kind === 'micNoAccess'
-          ? i18n.t('toasts.micNoAccess', 'Нет доступа к микрофону. Проверьте разрешения в ОС.')
-          : i18n.t('toasts.audioError', { message: detail, defaultValue: `Ошибка аудио: ${detail}` })
+          ? i18n.t('toasts.micNoAccess', 'нет доступа к микрофону. проверьте разрешения в ОС.')
+          : i18n.t('toasts.audioError', { message: detail, defaultValue: `ошибка аудио: ${detail}` })
     store.setSystemToast(toastMsg)
     setTimeout(() => {
       const currentStore = useAppStore.getState()
@@ -2328,7 +2344,7 @@ export class WebRTCManager {
       const collector = (probability: number, windowRms: number) => {
         if (Date.now() < settleUntil) return
         if (!Number.isFinite(probability) || !Number.isFinite(windowRms)) return
-        if (windowRms < 0.0006 || probability < 0.05) return
+        if (windowRms < 0.0006 || probability < 0.4) return
         if (probabilities.length >= 512) return
         probabilities.push(probability)
         peakProbability = Math.max(peakProbability, probability)
@@ -2354,7 +2370,7 @@ export class WebRTCManager {
         const voiceMedian = percentile(0.5)
         const voiceHigh = percentile(0.9)
 
-        if (values.length < MIN_VOICE_CALIBRATION_WINDOWS || peakProbability < 0.12) {
+        if (values.length < MIN_VOICE_CALIBRATION_WINDOWS || peakProbability < 0.4) {
           restorePreviousProfile()
           reject(new CalibrationError(
             'CALIBRATION_NEEDS_VOICE',
@@ -2857,7 +2873,7 @@ export class WebRTCManager {
 
           if (this.silenceCounterMs >= 15000 && !this.isSilenceWarningActive) {
             this.isSilenceWarningActive = true;
-            const toastMsg = i18n.t('toasts.micNotHearing', 'Вас не слышно, проверьте микрофон');
+            const toastMsg = i18n.t('toasts.micNotHearing', 'вас не слышно, проверьте микрофон');
             store.setSystemToast(toastMsg);
 
             setTimeout(() => {
@@ -3688,7 +3704,7 @@ export class WebRTCManager {
 
           if (framesDropped > 50) {
             const store = useAppStore.getState()
-            const toastMsg = i18n.t('toasts.streamPerfIssue', 'Проблемы с производительностью, рекомендуется снизить качество')
+            const toastMsg = i18n.t('toasts.streamPerfIssue', 'проблемы с производительностью, рекомендуется снизить качество')
             store.setSystemToast(toastMsg)
             setTimeout(() => {
               if (store.systemToast === toastMsg) {

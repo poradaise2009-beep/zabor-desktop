@@ -70,13 +70,13 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
   private silentOutputFrames = 0
 
   private readonly VAD_FRAME_SIZE = 512
-  private readonly VAD_ON_MIN = 0.05
-  private readonly VAD_ON_MAX = 0.22
+  private readonly VAD_ON_MIN = 0.4
+  private readonly VAD_ON_MAX = 0.85
   private readonly VAD_ON_MARGIN = 0.05
   private readonly VAD_OFF_RATIO = 0.4
-  private readonly VAD_OFF_MIN = 0.02
-  private readonly VAD_UNVOICED_ON = 0.52
-  private readonly VAD_SEMI_VOICED_ON = 0.32
+  private readonly VAD_OFF_MIN = 0.16
+  private readonly VAD_UNVOICED_ON = 0.8
+  private readonly VAD_SEMI_VOICED_ON = 0.65
   private readonly VAD_FIXED_SEMI_MARGIN = 0.06
   private readonly VAD_FIXED_UNVOICED_MARGIN = 0.14
   private readonly NOISE_PROB_QUANTILE = 0.9
@@ -92,6 +92,7 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
   private readonly VAD_RELEASE_MAX_RESULTS = 12
   private readonly MANUAL_HOLD_FRAMES = 30
   private readonly DECISION_DELAY_FRAMES = 24
+  private readonly LOOKAHEAD_DELAY_FRAMES = 1
   private readonly SPEECH_PREROLL_FRAMES = 14
   private readonly ANALYZERLESS_HOLD_FRAMES = 30
   private readonly ANALYZERLESS_SNR_RATIO = 2
@@ -165,9 +166,9 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
   private noiseRmsHigh = 0.003
   private closedFramesSinceSpeech = 0
 
-  private readonly ALC_TARGET_RMS = 0.1
+  private readonly ALC_TARGET_RMS = 0.065
   private readonly ALC_PEAK_CEILING = 0.891
-  private readonly ALC_MAX_GAIN = 15.85
+  private readonly ALC_MAX_GAIN = 5.0
   private readonly ALC_MIN_SPEECH_RMS = 0.0015
   private readonly ALC_RMS_RATE = 0.004
   private readonly ALC_PEAK_FALL = 0.004
@@ -712,8 +713,8 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
       const on = this.vadFixedThreshold
       this.vadOnThreshold = on
       this.vadOffThreshold = Math.max(this.VAD_OFF_MIN, Math.min(on - 0.02, on * this.VAD_OFF_RATIO))
-      this.vadSemiVoicedOn = Math.min(this.VAD_SEMI_VOICED_ON, on + this.VAD_FIXED_SEMI_MARGIN)
-      this.vadUnvoicedOn = Math.min(this.VAD_UNVOICED_ON, on + this.VAD_FIXED_UNVOICED_MARGIN)
+      this.vadSemiVoicedOn = Math.max(on, Math.min(this.VAD_SEMI_VOICED_ON, on + this.VAD_FIXED_SEMI_MARGIN))
+      this.vadUnvoicedOn = Math.max(on, Math.min(this.VAD_UNVOICED_ON, on + this.VAD_FIXED_UNVOICED_MARGIN))
       if (Math.abs(on - this.loggedVadOnThreshold) >= 0.02) {
         this.loggedVadOnThreshold = on
         this.port.postMessage({
@@ -729,8 +730,8 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
     const on = Math.max(this.VAD_ON_MIN, Math.min(room, this.voiceProbLow - this.VOICE_PROB_MARGIN))
     this.vadOnThreshold = on
     this.vadOffThreshold = Math.max(this.VAD_OFF_MIN, Math.min(on - 0.02, on * this.VAD_OFF_RATIO))
-    const semiVoiced = Math.min(this.VAD_SEMI_VOICED_ON, Math.max(on + 0.04, this.voiceProbLow * 0.72))
-    const unvoiced = Math.min(this.VAD_UNVOICED_ON, Math.max(semiVoiced + 0.06, this.voiceProbLow * 1.05))
+    const semiVoiced = Math.max(on, Math.min(this.VAD_SEMI_VOICED_ON, Math.max(on + 0.04, this.voiceProbLow * 0.72)))
+    const unvoiced = Math.max(semiVoiced, Math.min(this.VAD_UNVOICED_ON, Math.max(semiVoiced + 0.06, this.voiceProbLow * 1.05)))
     this.vadSemiVoicedOn = semiVoiced
     this.vadUnvoicedOn = unvoiced
     if (Math.abs(on - this.loggedVadOnThreshold) >= 0.02) {
@@ -1297,8 +1298,11 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
       this.speechRingCount++
       this.audioFrameId++
 
-      const readIndex = this.speechRingWriteIndex
-      const hasDelayedFrame = this.speechRingCount > this.DECISION_DELAY_FRAMES
+      const delayFrames = this.sileroVadEnabled
+        ? this.DECISION_DELAY_FRAMES
+        : (this.noiseSuppression ? this.LOOKAHEAD_DELAY_FRAMES : 0)
+      const readIndex = (writeIndex - delayFrames + this.speechRingSpeech.length) % this.speechRingSpeech.length
+      const hasDelayedFrame = this.speechRingCount > delayFrames
       const delayedIsSpeech = hasDelayedFrame && this.speechRingSpeech[readIndex] === 1
 
       const reportedSpeaking = measureWhileMuted ? false : isSpeaking
