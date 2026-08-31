@@ -9,6 +9,30 @@ interface StreamAudioMetadata {
   isFloat: boolean;
 }
 
+export interface UpdateInfo {
+  version: string;
+  currentVersion: string;
+  releaseName: string;
+  releaseNotes: string;
+  publishedAt: string;
+  downloadUrl: string;
+  releaseUrl: string;
+  fileSize: number;
+}
+
+export interface UpdateProgress {
+  percent: number;
+  transferred: number;
+  total: number;
+}
+
+export interface UpdateCheckResult {
+  updateAvailable: boolean;
+  currentVersion: string;
+  updateInfo?: UpdateInfo;
+  error?: string;
+}
+
 declare global {
   interface Window {
     electron: {
@@ -41,6 +65,19 @@ declare global {
       onStreamAudioData: (
         callback: (data: Uint8Array, metadata: StreamAudioMetadata) => void
       ) => () => void;
+      getAppVersion: () => Promise<string>;
+      checkForUpdates: () => Promise<UpdateCheckResult>;
+      startUpdateDownload: (
+        downloadUrl: string,
+        version: string
+      ) => Promise<{ success: boolean; filePath?: string; error?: string }>;
+      cancelUpdateDownload: () => Promise<boolean>;
+      installUpdate: () => Promise<{ success: boolean; message?: string; error?: string }>;
+      openExternalUrl: (url: string) => Promise<boolean>;
+      onUpdateAvailable: (callback: (info: UpdateInfo) => void) => () => void;
+      onUpdateDownloadProgress: (callback: (progress: UpdateProgress) => void) => () => void;
+      onUpdateDownloaded: (callback: (data: { filePath: string }) => void) => () => void;
+      onUpdateError: (callback: (error: string) => void) => () => void;
     };
   }
 }

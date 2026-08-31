@@ -37,6 +37,7 @@ export type SmartNoiseModel = 'deepfilter' | 'rnnoise'
 const SMART_MODEL_STORAGE_KEY = 'zabor_smart_noise_model'
 const SUPPRESSION_STRENGTH_STORAGE_KEY = 'zabor_suppression_strength_db'
 const SPEECH_ANALYZER_STORAGE_KEY = 'zabor_speech_analyzer_enabled'
+const ECHO_CANCELLATION_STORAGE_KEY = 'zabor_echo_cancellation_enabled'
 const RELAY_ONLY_STORAGE_KEY = 'zabor_relay_only_ice'
 
 export const MIN_SUPPRESSION_STRENGTH_DB = 5
@@ -58,9 +59,9 @@ const TARGET_RESIDUAL_NOISE_DBFS = ALC_TARGET_DBFS - TARGET_SPEECH_TO_NOISE_DB
 const ASSUMED_SPEECH_LEVEL_DBFS = -30
 const DEFAULT_VAD_TRACKER_SEED = 0.05
 const MIN_CALIBRATION_FRAMES = 20
-const PLAYBACK_MAKEUP_GAIN_DB = 6
-const PLAYBACK_VOICE_LIMIT_DB = -12
-const PLAYBACK_STREAM_LIMIT_DB = -8
+const PLAYBACK_MAKEUP_GAIN_DB = 0
+const PLAYBACK_VOICE_LIMIT_DB = -1.5
+const PLAYBACK_STREAM_LIMIT_DB = -1.5
 const PLAYBACK_VOICE_SPREAD = 0
 const PLAYBACK_SEAT_GLIDE_S = 0.08
 const OPUS_AUDIO_BITRATE = 64_000
@@ -498,6 +499,7 @@ export class WebRTCManager {
     parseFloat(localStorage.getItem(SUPPRESSION_STRENGTH_STORAGE_KEY) || String(DEEPFILTER_SMART_DEFAULT_ATTEN))
   )
   private speechAnalyzerEnabled = localStorage.getItem(SPEECH_ANALYZER_STORAGE_KEY) !== 'false'
+  private echoCancellationEnabled = localStorage.getItem(ECHO_CANCELLATION_STORAGE_KEY) === 'true'
   private calibrationForcesAnalyzer = false
   private activeStartPromise: Promise<boolean> | null = null
 
@@ -1066,11 +1068,14 @@ export class WebRTCManager {
 
   private applyLocalSpeaking(isSpeaking: boolean) {
     if (isSpeaking && this.calibrationSuppressesSpeaking) return
+    const store = useAppStore.getState()
+    const inActiveSession = Boolean(store.currentChannelId || store.currentCallUser)
+    if (!inActiveSession && isSpeaking) return
     if (isSpeaking === this.localSpeakingState) return
     this.localSpeakingState = isSpeaking
-    const me = useAppStore.getState().currentUser
+    const me = store.currentUser
     if (!me) return
-    useAppStore.getState().setSpeakingStatus(me.id, isSpeaking)
+    store.setSpeakingStatus(me.id, isSpeaking)
     signalRService.setSpeakingState(isSpeaking)
   }
 
@@ -1587,6 +1592,19 @@ export class WebRTCManager {
     if (this.localStream) void this.updateSettings(this.currentDeviceId, this.noiseSuppression)
   }
 
+  public isEchoCancellationEnabled(): boolean {
+    return this.echoCancellationEnabled
+  }
+
+  public setEchoCancellationEnabled(enabled: boolean) {
+    if (this.echoCancellationEnabled === enabled) return
+    this.echoCancellationEnabled = enabled
+    localStorage.setItem(ECHO_CANCELLATION_STORAGE_KEY, enabled ? 'true' : 'false')
+    if (this.localStream || this.rawStream) {
+      void this.updateSettings(this.currentDeviceId, this.noiseSuppression)
+    }
+  }
+
   public setSuppressionStrength(db: number) {
     const normalized = this.normalizeSuppressionStrength(db)
     if (normalized === this.suppressionStrengthDb) return
@@ -1917,7 +1935,12 @@ export class WebRTCManager {
       late => late.getTracks().forEach(track => track.stop())
     )
 
-    const stream = await capture(true)
+    const wantsEchoCancellation = this.echoCancellationEnabled
+    const stream = await capture(wantsEchoCancellation)
+    if (!wantsEchoCancellation) {
+      return stream
+    }
+
     const settings = stream.getAudioTracks()[0]?.getSettings() ?? {}
     const hitchhikers: string[] = []
     if (settings.autoGainControl === true) hitchhikers.push('AGC')
@@ -2697,10 +2720,14 @@ export class WebRTCManager {
         lapAt = now
       }
       if (!forceRestart && this.localStream && this.localStream.getAudioTracks().length > 0 && this.localStream.getAudioTracks().every(t => t.readyState === 'live')) {
+        this.initOutputMixer()
+        this.startSilenceMonitor()
         const me = useAppStore.getState().currentUser
-        if (me && this.rawStream && !this.speakingIntervals.has(me.id)) {
+        if (me && this.rawStream && !this.hasSpeakingWorklet() && !this.speakingIntervals.has(me.id)) {
           this.setupVAD(this.rawStream, me.id, true)
         }
+        const isMuted = me?.isMuted || me?.isServerMuted || false
+        this.toggleMute(isMuted)
         console.log(`[WebRTC] startLocalStream reused existing stream in ${Math.round(performance.now() - startedAt)}ms`)
         return true
       }
@@ -2823,17 +2850,29 @@ export class WebRTCManager {
     const me = useAppStore.getState().currentUser
     if (me) this.clearVAD(me.id)
     this.stopSilenceMonitor()
-    if (this.localStream) {
-      this.localStream.getTracks().forEach(track => track.stop())
-      this.localStream = null
-    }
-    this.cleanupProcessedStream()
+    this.applyLocalSpeaking(false)
     this.leaveAll()
 
-    if (this.rawStream?.getAudioTracks().some(track => track.readyState === 'live')) {
-      this.startBackgroundMeter()
-    } else {
-      await this.startBackgroundMic()
+    const hasLiveLocalStream = Boolean(
+      this.localStream &&
+      this.localStream.getAudioTracks().length > 0 &&
+      this.localStream.getAudioTracks().every(track => track.readyState === 'live') &&
+      this.processedContext &&
+      this.processedContext.state !== 'closed'
+    )
+
+    if (!hasLiveLocalStream) {
+      if (this.localStream) {
+        this.localStream.getTracks().forEach(track => track.stop())
+        this.localStream = null
+      }
+      this.cleanupProcessedStream()
+
+      if (this.rawStream?.getAudioTracks().some(track => track.readyState === 'live')) {
+        this.startBackgroundMeter()
+      } else {
+        await this.startBackgroundMic()
+      }
     }
   }
 
@@ -3029,7 +3068,7 @@ export class WebRTCManager {
         const source = this.outputMixContext!.createMediaStreamSource(new MediaStream([event.track]))
         const delay = new DelayNode(this.outputMixContext!, { maxDelayTime: 0.5, delayTime: 0 })
         const gain = this.outputMixContext!.createGain()
-        const limiter = this.createPlaybackLimiter(PLAYBACK_STREAM_LIMIT_DB, 8, 8, 0.006, 0.22)
+        const limiter = this.createPlaybackLimiter(PLAYBACK_STREAM_LIMIT_DB, 2, 20, 0.002, 0.080)
         source.connect(delay)
         delay.connect(limiter)
         limiter.connect(gain)
@@ -3065,7 +3104,7 @@ export class WebRTCManager {
 
         const source = this.outputMixContext!.createMediaStreamSource(new MediaStream([event.track]))
         const gain = this.outputMixContext!.createGain()
-        const limiter = this.createPlaybackLimiter(PLAYBACK_VOICE_LIMIT_DB, 6, 12, 0.004, 0.12)
+        const limiter = this.createPlaybackLimiter(PLAYBACK_VOICE_LIMIT_DB, 2, 20, 0.002, 0.060)
         const panner = new StereoPannerNode(this.outputMixContext!, { pan: 0 })
         source.connect(limiter)
         limiter.connect(gain)

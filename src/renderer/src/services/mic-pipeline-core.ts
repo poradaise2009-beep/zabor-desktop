@@ -1498,7 +1498,7 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
         const frameGain = framePeak > 0
           ? Math.min(
             this.alcGain,
-            Math.max(1, this.ALC_PEAK_CEILING / (framePeak * this.alcDownstreamGain))
+            Math.max(0.1, this.ALC_PEAK_CEILING / (framePeak * this.alcDownstreamGain))
           )
           : this.alcGain
         for (let i = 0; i < this.FRAME_SIZE; i++) {

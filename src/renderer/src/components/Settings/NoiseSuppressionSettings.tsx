@@ -25,6 +25,8 @@ export interface NoiseSuppressionSettingsProps {
   onSmartModelChange: (model: SmartNoiseModel) => void;
   speechAnalyzer: boolean;
   onSpeechAnalyzerChange: (enabled: boolean) => void;
+  echoCancellation: boolean;
+  onEchoCancellationChange: (enabled: boolean) => void;
   suppressionStrength: number;
   onSuppressionStrengthChange: (db: number) => void;
   onStartCalibration?: () => void;
@@ -51,6 +53,8 @@ export function NoiseSuppressionSettings({
   onSmartModelChange,
   speechAnalyzer,
   onSpeechAnalyzerChange,
+  echoCancellation,
+  onEchoCancellationChange,
   suppressionStrength,
   onSuppressionStrengthChange,
   onStartCalibration,
@@ -121,10 +125,20 @@ export function NoiseSuppressionSettings({
             <p className="mt-1 text-xs leading-snug text-textMuted">
               {analyzerAvailable
                 ? t('settings.audio.speechAnalyzerHint', 'нейросеть отделяет голос от других звуков, может плохо работать с некоторыми микрофонами, немного увеличивает задержку')
-                : t('settings.audio.speechAnalyzerManualHint', 'доступен только в умном режиме — в режиме «вручную» речь определяет ваш порог')}
+                : t('settings.audio.speechAnalyzerManualHint', 'доступен только в умном режиме — в режиме «ручное» речь определяет ваш порог')}
             </p>
           </div>
           <Md3Switch checked={speechAnalyzer} onChange={onSpeechAnalyzerChange} />
+        </div>
+      </section>
+
+      <section
+        className={`rounded-2xl border glass-row transition-[border-color,background-color] duration-300 ${echoCancellation ? 'border-white/[0.13]' : 'border-white/[0.07] hover:border-white/[0.13]'
+          }`}
+      >
+        <div className="flex min-h-[66px] items-center justify-between px-4">
+          <span className="text-[15px] font-bold tracking-wide text-white">{t('settings.audio.echoCancellation', 'эхоподавление')}</span>
+          <Md3Switch checked={echoCancellation} onChange={onEchoCancellationChange} />
         </div>
       </section>
 
@@ -170,7 +184,7 @@ export function NoiseSuppressionSettings({
                       }`}
                   >
                     <Sliders size={16} weight="bold" className={mode === 'manual' ? 'text-primaryHover' : ''} />
-                    {t('settings.audio.manualMode', 'вручную')}
+                    {t('settings.audio.manualMode', 'ручное')}
                   </button>
                 </div>
 

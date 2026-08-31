@@ -13,7 +13,14 @@
       "minimizeToTray": "сворачивать в трей",
       "minimizeToTrayDesc": "при нажатии на крестик приложение свернётся, а не закроется",
       "language": "язык приложения",
-      "languageDesc": "выберите основной язык интерфейса"
+      "languageDesc": "выберите основной язык интерфейса",
+      "updates": "обновления приложения",
+      "currentVersion": "текущая версия",
+      "checkUpdates": "проверить обновления",
+      "checkingUpdates": "проверка...",
+      "latestVersionInstalled": "у вас установлена актуальная версия",
+      "updateAvailableNotice": "доступна версия v{{version}}",
+      "checkFailed": "не удалось проверить обновления"
     },
     "audio": {
       "inputDevice": "устройство ввода",
@@ -36,7 +43,7 @@
       "micThresholdLabel": "максимальное шумоподавление, дБ",
       "noiseSuppressionMode": "режим шумоподавления",
       "smartMode": "умное",
-      "manualMode": "вручную",
+      "manualMode": "ручное",
       "threshold": "порог",
       "thresholdLabel": "порог срабатывания микрофона",
       "checking": "проверяем",
@@ -49,7 +56,8 @@
       "suppressionStrengthStronger": "сильнее",
       "speechAnalyzer": "анализатор речи (нестабильно)",
       "speechAnalyzerHint": "нейросеть отделяет голос от других звуков, может плохо работать с некоторыми микрофонами, немного увеличивает задержку",
-      "speechAnalyzerManualHint": "доступен только в умном режиме — в режиме «вручную» речь определяет ваш порог",
+      "speechAnalyzerManualHint": "доступен только в умном режиме — в режиме «ручное» речь определяет ваш порог",
+      "echoCancellation": "эхоподавление",
       "micTestListen": "послушать себя",
       "micTestArming": "подготовка…",
       "micTestTalk": "болтайте",
@@ -188,6 +196,20 @@
     "userVolume": {
       "title": "громкость пользователя",
       "label": "громкость"
+    },
+    "update": {
+      "title": "доступно обновление",
+      "whatsNew": "что нового",
+      "noNotes": "вышла новая версия zabor с улучшениями и исправлениями.",
+      "downloading": "скачивание обновления...",
+      "downloadedTitle": "обновление готово к установке",
+      "downloadedDesc": "zabor закроется и запустит установщик.",
+      "errorTitle": "не удалось загрузить обновление",
+      "viewOnGithub": "на GitHub",
+      "later": "позже",
+      "install": "установить",
+      "downloadingBtn": "загрузка...",
+      "updateNow": "обновить"
     }
   },
   "common": {

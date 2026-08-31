@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
-import { Gear as Settings, Microphone as Mic, MicrophoneSlash as MicOff, Headphones, PhoneCall as Phone, Eye, EyeSlash as EyeOff, UserMinus, UserMinus as UserX, Camera, Check, X, SignOut as LogOut, UserPlus, Envelope as Mail, PencilSimple as Edit2, SpeakerHigh as Volume2, SpeakerSlash, PhoneDisconnect as PhoneOff, WifiHigh as Wifi, WifiSlash as WifiOff, Users, SignOut as LeaveIcon, Crown, Globe, Trophy, Plus, Key, UserCircleMinus, UserCheck, Desktop, CornersIn, CornersOut } from '@phosphor-icons/react';
+import { Gear as Settings, Microphone as Mic, MicrophoneSlash as MicOff, Headphones, PhoneCall as Phone, Eye, EyeSlash as EyeOff, UserMinus, UserMinus as UserX, Camera, Check, X, SignOut as LogOut, UserPlus, Envelope as Mail, PencilSimple as Edit2, SpeakerHigh as Volume2, SpeakerSlash, PhoneDisconnect as PhoneOff, WifiHigh as Wifi, WifiSlash as WifiOff, Users, SignOut as LeaveIcon, Crown, Globe, Trophy, Plus, Key, UserCircleMinus, UserCheck, Desktop, CornersIn, CornersOut, Sparkle } from '@phosphor-icons/react';
 import { useTranslation, Trans } from 'react-i18next';
 
 import { useAppStore, User, VoiceChannel } from './store/useAppStore';
@@ -16,11 +16,13 @@ import { translateJoke } from './utils/jokesTranslation';
 import { TitleBar } from './components/Layout/TitleBar';
 import { Md3Slider } from './components/Shared/Md3Slider';
 import { Md3Switch } from './components/Shared/Md3Switch';
+import { GlassSelect } from './components/Shared/GlassSelect';
 import { AvatarImg } from './components/Shared/AvatarImg';
 import { StreamPicker } from './components/Stream/StreamPicker';
 import { StreamCard } from './components/Stream/StreamCard';
 import { NoiseSuppressionSettings, type CalibrationPhase, type SmartNoiseModel } from './components/Settings/NoiseSuppressionSettings';
 import { MIC_TEST_PANEL_GAP_PX, MicTestPanel } from './components/Settings/MicTestPanel';
+import { UpdateModal } from './components/Modals/UpdateModal';
 
 const lastNonZeroUserVolumes = new Map<string, number>();
 const lastNonZeroVolumes = new Map<string, number>();
@@ -181,6 +183,65 @@ export default function App() {
     height: typeof window !== 'undefined' ? window.innerHeight : 720
   });
 
+  const [manualUpdateChecking, setManualUpdateChecking] = useState(false);
+  const [manualUpdateStatus, setManualUpdateStatus] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState<string>('');
+
+  useEffect(() => {
+    window.windowControls?.getAppVersion?.().then(v => {
+      if (v) setAppVersion(v);
+    }).catch(() => {});
+
+    const unsubAvailable = window.windowControls?.onUpdateAvailable?.((info) => {
+      store.setUpdateInfo(info);
+      store.setUpdateStatus('available');
+      store.setModal('update', true);
+    });
+
+    const unsubProgress = window.windowControls?.onUpdateDownloadProgress?.((progress) => {
+      store.setUpdateProgress(progress);
+      store.setUpdateStatus('downloading');
+    });
+
+    const unsubDownloaded = window.windowControls?.onUpdateDownloaded?.(() => {
+      store.setUpdateStatus('downloaded');
+    });
+
+    const unsubError = window.windowControls?.onUpdateError?.((err) => {
+      store.setUpdateStatus('error');
+      store.setUpdateError(err);
+    });
+
+    return () => {
+      unsubAvailable?.();
+      unsubProgress?.();
+      unsubDownloaded?.();
+      unsubError?.();
+    };
+  }, []);
+
+  const handleManualCheckUpdates = useCallback(async () => {
+    setManualUpdateChecking(true);
+    setManualUpdateStatus(null);
+    try {
+      const res = await window.windowControls?.checkForUpdates?.();
+      setManualUpdateChecking(false);
+      if (res?.updateAvailable && res?.updateInfo) {
+        store.setUpdateInfo(res.updateInfo);
+        store.setUpdateStatus('available');
+        store.setModal('update', true);
+        setManualUpdateStatus(t('settings.general.updateAvailableNotice', { version: res.updateInfo.version }));
+      } else if (res?.error) {
+        setManualUpdateStatus(t('settings.general.checkFailed'));
+      } else {
+        setManualUpdateStatus(t('settings.general.latestVersionInstalled'));
+      }
+    } catch {
+      setManualUpdateChecking(false);
+      setManualUpdateStatus(t('settings.general.checkFailed'));
+    }
+  }, [t, store]);
+
   useEffect(() => {
     const handleResize = () => {
       setWindowSize({ width: window.innerWidth, height: window.innerHeight });
@@ -278,6 +339,7 @@ export default function App() {
   const [smartNoiseModel, setSmartNoiseModel] = useState<SmartNoiseModel>(() => webrtc.getSmartNoiseModel());
   const [suppressionStrength, setSuppressionStrength] = useState(() => webrtc.getSuppressionStrength());
   const [speechAnalyzerEnabled, setSpeechAnalyzerEnabled] = useState(() => webrtc.isSpeechAnalyzerEnabled());
+  const [echoCancellationEnabled, setEchoCancellationEnabled] = useState(() => webrtc.isEchoCancellationEnabled());
   const [isSwitchingChannel, setIsSwitchingChannel] = useState(false);
   const [autoLaunch, setAutoLaunch] = useState(false);
   const [minimizeToTray, setMinimizeToTray] = useState(true);
@@ -714,7 +776,13 @@ export default function App() {
   };
 
   const activeUserCount = useMemo(() => {
-    if (store.currentCallUser) return 1;
+    if (store.currentCallUser) {
+      let count = 1;
+      const remoteStream = store.currentCallUser.isStreaming ? store.remoteVideoStreams[store.currentCallUser.id] : null;
+      if (remoteStream) count++;
+      if ((store.currentUser?.isStreaming || !!webrtc.localVideoStream) && webrtc.localVideoStream) count++;
+      return count;
+    }
     let count = store.voiceUsers.length;
     store.voiceUsers.forEach(u => {
       const isStreaming = u.isStreaming || (u.id === store.currentUser?.id && !!webrtc.localVideoStream);
@@ -724,7 +792,7 @@ export default function App() {
       }
     });
     return count;
-  }, [store.voiceUsers, store.currentCallUser, store.currentUser?.id, store.remoteVideoStreams, showStreamPicker]);
+  }, [store.voiceUsers, store.currentCallUser, store.currentUser?.id, store.currentUser?.isStreaming, store.remoteVideoStreams, showStreamPicker]);
 
   const cardSize = useMemo(() => {
     const { w, h, avatarSize } = getCardSize(activeUserCount, containerSize.width, containerSize.height);
@@ -1870,7 +1938,7 @@ export default function App() {
     if (!showCropper || !cropImageSrc) return null;
 
     return (
-      <div className="fixed inset-0 z-[99999] bg-black/90 flex items-center justify-center p-4">
+      <div className="fixed inset-0 z-[100005] bg-black/90 flex items-center justify-center p-4 pt-[3.75rem]">
         <div className="glass-modal p-6 flex flex-col items-center w-[360px] max-w-full">
           <div className="w-full flex items-center justify-between mb-6">
             <h2 className="text-white text-xl font-bold">{t('auth.cropTitle')}</h2>
@@ -2025,7 +2093,7 @@ export default function App() {
           <TitleBar />
           <div className="flex-1 flex items-center justify-center">
             <div className="flex flex-col items-center">
-              <h1 className="text-5xl font-black text-white tracking-widest animate-pulse">zabor</h1>
+              <h1 className="text-5xl font-black text-white tracking-widest animate-pulse">ZABOR</h1>
               {showInitConnectionError && (
                 <div className="flex flex-col items-center mt-2 animate-fade-in">
                   <p className="text-danger font-bold text-center">
@@ -2048,7 +2116,7 @@ export default function App() {
           <TitleBar />
           <div className="flex-1 flex items-center justify-center">
             <div className="flex flex-col items-center">
-              <h1 className="text-5xl font-black text-white tracking-widest animate-pulse">zabor</h1>
+              <h1 className="text-5xl font-black text-white tracking-widest animate-pulse">ZABOR</h1>
               {showErrorText && (
                 <div className="flex flex-col items-center mt-4 animate-fade-in">
                   <p className="text-danger font-bold text-center">
@@ -2290,17 +2358,285 @@ export default function App() {
           <div className="flex-1 flex flex-col relative">
 
             {store.currentCallUser && (
-              <div className="absolute top-0 left-0 right-0 bottom-[120px] p-6 flex items-center justify-center overflow-hidden">
-                <CallUserCard
-                  currentCallUser={store.currentCallUser}
-                  callStatus={store.callStatus}
-                  cardSize={cardSize}
-                  webrtcConnections={store.webrtcConnections}
-                  handleContextMenu={handleContextMenu}
-                  containerRef={containerRef}
-                  t={t}
-                  isIdle={isIdle}
-                />
+              <div className="absolute top-0 left-0 right-0 bottom-[120px] p-3 flex items-center justify-center overflow-hidden">
+                {(() => {
+                  const callUser = store.currentCallUser!;
+                  const currentUser = store.currentUser;
+                  const remoteStream = callUser.isStreaming ? store.remoteVideoStreams[callUser.id] : null;
+                  const localStream = (currentUser?.isStreaming || !!webrtc.localVideoStream) ? webrtc.localVideoStream : null;
+
+                  const hasStreams = Boolean(remoteStream || localStream);
+
+                  if (!hasStreams) {
+                    return (
+                      <div className="w-full h-full p-6 flex items-center justify-center overflow-hidden">
+                        <CallUserCard
+                          currentCallUser={callUser}
+                          callStatus={store.callStatus}
+                          cardSize={cardSize}
+                          webrtcConnections={store.webrtcConnections}
+                          handleContextMenu={handleContextMenu}
+                          containerRef={containerRef}
+                          t={t}
+                          isIdle={isIdle}
+                        />
+                      </div>
+                    );
+                  }
+
+                  const callUsersList = currentUser ? [callUser, currentUser] : [callUser];
+                  const items: any[] = [
+                    { type: 'user', id: `calluser-${callUser.id}`, user: callUser }
+                  ];
+
+                  if (remoteStream) {
+                    items.push({ type: 'stream', id: `stream-${callUser.id}`, user: callUser, stream: remoteStream });
+                  }
+                  if (localStream && currentUser) {
+                    items.push({ type: 'stream', id: `stream-${currentUser.id}`, user: currentUser, stream: localStream });
+                  }
+
+                  const activeStream = items.find(item => item.type === 'stream' && store.activeStreamId === item.user.id)
+                    || items.find(item => item.type === 'stream');
+
+                  if (activeStream && store.isStreamFullscreen) {
+                    const normalMaxW = windowSize.width - 40;
+                    const normalMaxH = windowSize.height - 140;
+                    let normalW = normalMaxW;
+                    let normalH = normalW / streamRatio;
+                    if (normalH > normalMaxH) {
+                      normalH = normalMaxH;
+                      normalW = normalH * streamRatio;
+                    }
+
+                    const normalTop = 40 + (normalMaxH - normalH) / 2;
+                    const normalLeft = (windowSize.width - normalW) / 2;
+
+                    const expMarginX = 8;
+                    const expMarginTop = 38;
+                    const expMarginBottom = 8;
+                    const expMaxW = windowSize.width - expMarginX * 2;
+                    const expMaxH = windowSize.height - expMarginTop - expMarginBottom;
+                    let expW = expMaxW;
+                    let expH = expW / streamRatio;
+                    if (expH > expMaxH) {
+                      expH = expMaxH;
+                      expW = expH * streamRatio;
+                    }
+
+                    const expTop = expMarginTop + (expMaxH - expH) / 2;
+                    const expLeft = (windowSize.width - expW) / 2;
+
+                    const currentW = showOverlays ? normalW : expW;
+                    const currentH = showOverlays ? normalH : expH;
+                    const currentTop = showOverlays ? normalTop : expTop;
+                    const currentLeft = showOverlays ? normalLeft : expLeft;
+
+                    return (
+                      <div className={`fixed inset-0 bg-black z-[9999] ${showOverlays ? '' : 'cursor-none'}`}>
+                        <div
+                          style={{
+                            position: 'absolute',
+                            width: `${currentW}px`,
+                            height: `${currentH}px`,
+                            top: `${currentTop}px`,
+                            left: `${currentLeft}px`,
+                            transition: 'all 300ms cubic-bezier(0.4, 0, 0.2, 1)'
+                          }}
+                          className="rounded-xl overflow-hidden border border-[#303035]/70"
+                        >
+                          <StreamCard
+                            user={activeStream.user}
+                            stream={activeStream.stream}
+                            cardSize={{ w: currentW, h: currentH }}
+                            isFocused={true}
+                            isFullscreen={true}
+                            showOverlays={showOverlays}
+                            onClick={() => { }}
+                            onContextMenu={e => handleContextMenu(e, 'stream', activeStream.user)}
+                            onRatioChange={setStreamRatio}
+                          />
+                        </div>
+
+                        <div className={`absolute left-6 top-1/2 -translate-y-1/2 flex flex-col gap-3 justify-center items-center transition-all duration-300 z-50 ${showOverlays ? 'translate-x-0 opacity-100' : '-translate-x-20 opacity-0 pointer-events-none'}`}>
+                          {callUsersList.map(user => {
+                            const isSpeaking = speakingMap[user.id] ?? false;
+                            return (
+                              <div key={user.id} className="relative group flex items-center">
+                                <div
+                                  onContextMenu={e => handleContextMenu(e, 'voiceUser', user)}
+                                  className={`w-12 h-12 rounded-full border-2 transition-all duration-200 overflow-hidden bg-[#121217] relative cursor-pointer ${isSpeaking ? 'border-[#3BA55C] scale-110' : 'border-[#303035]/70'
+                                    }`}
+                                >
+                                  <AvatarImg src={user.avatarBase64} size={48} bgColor={user.avatarColor} animate={false} />
+                                </div>
+                                <div className="absolute left-14 bg-[#09090B]/90 backdrop-blur-md border border-[#303035]/80 px-3.5 py-1.5 rounded-full pointer-events-none opacity-0 -translate-x-3 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-200 ease-out z-50 whitespace-nowrap">
+                                  <span className="text-white font-bold text-[13px]">{user.displayName}</span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <div className={`absolute bottom-6 left-1/2 -translate-x-1/2 bg-panelBg/80 backdrop-blur-2xl px-6 py-4 rounded-full flex gap-4 items-center border border-white/[0.07] border-t-white/[0.14] transition-all duration-300 z-50 ${showOverlays ? 'translate-y-0 opacity-100' : 'translate-y-28 opacity-0 pointer-events-none'}`}>
+                          <button
+                            onClick={() => store.setStreamFullscreen(false)}
+                            className="group/mode-button relative w-14 h-14 rounded-full flex items-center justify-center bg-surface/70 hover:bg-surfaceHover/80 text-white transition-colors"
+                            aria-label={t('stream.exitFullscreenHint')}
+                          >
+                            <span
+                              role="tooltip"
+                              className="absolute bottom-full left-1/2 mb-3 -translate-x-1/2 pointer-events-none whitespace-nowrap opacity-0 group-hover/mode-button:opacity-100 delay-0 group-hover/mode-button:delay-[2000ms] transition-opacity duration-150 bg-[#09090B]/95 border border-[#303035]/70 rounded-md px-2.5 py-1.5 text-[10px] font-bold text-white"
+                            >
+                              {t('stream.exitFullscreenHint')}
+                            </span>
+                            <div className="flex items-center justify-center transition-transform duration-200 group-hover/mode-button:scale-110">
+                              <CornersIn weight="bold" size={24} />
+                            </div>
+                          </button>
+                          <button
+                            onClick={toggleMute}
+                            className={`group w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${(store.currentUser?.isMuted || store.currentUser?.isServerMuted || store.currentUser?.isServerDeafened)
+                              ? 'bg-[#2B2D31] text-white'
+                              : 'bg-surface/70 hover:bg-surfaceHover/80 text-white'
+                              }`}
+                          >
+                            <div className="flex items-center justify-center transition-transform duration-200 group-active:scale-95 group-hover:scale-110">
+                              <Mic weight="bold" size={24} />
+                              <div className={`absolute w-[30px] h-[3px] bg-danger rounded-full transition-all duration-300 origin-center ${(store.currentUser?.isMuted || store.currentUser?.isServerMuted || store.currentUser?.isServerDeafened) ? 'scale-100 opacity-100 rotate-45' : 'scale-0 opacity-0 rotate-45'}`} />
+                            </div>
+                          </button>
+                          <button
+                            onClick={toggleDeafen}
+                            className={`group w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${(store.currentUser?.isDeafened || store.currentUser?.isServerDeafened)
+                              ? 'bg-[#2B2D31] text-white'
+                              : 'bg-surface/70 hover:bg-surfaceHover/80 text-white'
+                              }`}
+                          >
+                            <div className="flex items-center justify-center transition-transform duration-200 group-active:scale-95 group-hover:scale-110">
+                              <Headphones weight="bold" size={24} />
+                              <div className={`absolute w-[30px] h-[3px] bg-danger rounded-full transition-all duration-300 origin-center ${(store.currentUser?.isDeafened || store.currentUser?.isServerDeafened) ? 'scale-100 opacity-100 rotate-45' : 'scale-0 opacity-0 rotate-45'}`} />
+                            </div>
+                          </button>
+                          {store.currentUser?.isStreaming && (
+                            <button
+                              onClick={handleStopStream}
+                              className="group w-14 h-14 rounded-full flex items-center justify-center bg-primaryHover text-white hover:bg-primaryActive transition-colors"
+                              title={t('stream.stopHint')}
+                            >
+                              <div className="flex items-center justify-center transition-transform duration-200 group-hover:scale-110">
+                                <Desktop weight="bold" size={24} />
+                              </div>
+                            </button>
+                          )}
+                          <button onClick={handleEndCall} className="group bg-danger hover:bg-red-600 text-white font-bold py-3.5 px-8 rounded-full flex items-center gap-3 transition-colors text-[15px]">
+                            <div className="transition-transform duration-300 group-hover:-rotate-12 group-hover:scale-110">
+                              <PhoneOff weight="bold" size={20} />
+                            </div>
+                            {t('main.voice.endCall')}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  if (activeStream) {
+                    const sideItems = items.filter(item => item.id !== activeStream.id);
+                    const maxH = containerSize.height - 150;
+                    const maxW = containerSize.width;
+                    let streamW = maxW;
+                    let streamH = streamW / streamRatio;
+                    if (streamH > maxH) {
+                      streamH = maxH;
+                      streamW = streamH * streamRatio;
+                    }
+
+                    return (
+                      <div ref={containerRef} className="w-full h-full flex flex-col items-center justify-between">
+                        <div
+                          style={{ width: `${streamW}px`, height: `${streamH}px` }}
+                          className="relative overflow-hidden flex items-center justify-center"
+                        >
+                          <StreamCard
+                            user={activeStream.user}
+                            stream={activeStream.stream}
+                            cardSize={{ w: streamW, h: streamH }}
+                            isFocused={true}
+                            onClick={() => store.setActiveStreamId(null)}
+                            onContextMenu={e => handleContextMenu(e, 'stream', activeStream.user)}
+                            onToggleFullscreen={() => store.setStreamFullscreen(true)}
+                            onRatioChange={setStreamRatio}
+                          />
+                        </div>
+                        <div className="w-full h-[120px] shrink-0 flex items-center justify-center gap-4 overflow-x-auto mt-4 px-4 pr-1">
+                          {sideItems.map(item => {
+                            if (item.type === 'user') {
+                              return (
+                                <CallUserCard
+                                  key={`call-${item.id}`}
+                                  currentCallUser={item.user}
+                                  callStatus={store.callStatus}
+                                  cardSize={{ w: 180, h: 101, avatarSize: 40 }}
+                                  webrtcConnections={store.webrtcConnections}
+                                  handleContextMenu={handleContextMenu}
+                                  containerRef={undefined}
+                                  t={t}
+                                  isIdle={isIdle}
+                                />
+                              );
+                            } else {
+                              return (
+                                <StreamCard
+                                  key={item.id}
+                                  user={item.user}
+                                  stream={item.stream}
+                                  cardSize={{ w: 180, h: 101 }}
+                                  isFocused={false}
+                                  onClick={() => store.setActiveStreamId(item.user.id)}
+                                  onContextMenu={e => handleContextMenu(e, 'stream', item.user)}
+                                />
+                              );
+                            }
+                          })}
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div ref={containerRef} className="w-full h-full flex flex-wrap items-center justify-center gap-6" style={{ alignContent: 'center' }}>
+                      {items.map(item => {
+                        if (item.type === 'user') {
+                          return (
+                            <CallUserCard
+                              key={`call-${item.id}`}
+                              currentCallUser={item.user}
+                              callStatus={store.callStatus}
+                              cardSize={cardSize}
+                              webrtcConnections={store.webrtcConnections}
+                              handleContextMenu={handleContextMenu}
+                              containerRef={undefined}
+                              t={t}
+                              isIdle={isIdle}
+                            />
+                          );
+                        } else {
+                          return (
+                            <StreamCard
+                              key={item.id}
+                              user={item.user}
+                              stream={item.stream}
+                              cardSize={cardSize}
+                              isFocused={false}
+                              onClick={() => store.setActiveStreamId(item.user.id)}
+                              onContextMenu={e => handleContextMenu(e, 'stream', item.user)}
+                            />
+                          );
+                        }
+                      })}
+                    </div>
+                  );
+                })()}
               </div>
             )}
 
@@ -2478,7 +2814,7 @@ export default function App() {
                               </div>
                             </button>
                           )}
-                          <button onClick={() => signalRService.leaveChannel()} className="group bg-danger hover:bg-red-600 text-white font-bold py-3.5 px-8 rounded-full flex items-center gap-3 transition-colors text-[15px]">
+                          <button onClick={store.currentCallUser ? handleEndCall : () => signalRService.leaveChannel()} className="group bg-danger hover:bg-red-600 text-white font-bold py-3.5 px-8 rounded-full flex items-center gap-3 transition-colors text-[15px]">
                             <div className="transition-transform duration-300 group-hover:-rotate-12 group-hover:scale-110">
                               <PhoneOff weight="bold" size={20} />
                             </div>
@@ -2614,6 +2950,17 @@ export default function App() {
                   <div className="flex items-center justify-center transition-transform duration-200 group-active:scale-95 group-hover:scale-110">
                     <Headphones weight="bold" size={24} />
                     <div className={`absolute w-[30px] h-[3px] bg-danger rounded-full transition-all duration-300 origin-center ${(store.currentUser?.isDeafened || store.currentUser?.isServerDeafened) ? 'scale-100 opacity-100 rotate-45' : 'scale-0 opacity-0 rotate-45'}`} />
+                  </div>
+                </button>
+                <button
+                  onClick={store.currentUser?.isStreaming || !!webrtc.localVideoStream ? handleStopStream : () => setShowStreamPicker(true)}
+                  className={`group w-14 h-14 rounded-full flex items-center justify-center relative transition-colors ${store.currentUser?.isStreaming || !!webrtc.localVideoStream
+                    ? 'bg-primaryHover text-white hover:bg-primaryActive'
+                    : 'bg-surface/70 hover:bg-surfaceHover/80 text-white'
+                    }`}
+                >
+                  <div className="flex items-center justify-center transition-transform duration-200 group-active:scale-95 group-hover:scale-110">
+                    <Desktop weight="bold" size={24} />
                   </div>
                 </button>
                 <button onClick={handleEndCall} className="group bg-danger hover:bg-red-600 text-white font-bold py-3.5 px-8 rounded-full flex items-center gap-3 transition-colors text-[15px]">
@@ -2786,18 +3133,18 @@ export default function App() {
                       <span className="font-semibold text-white text-[15px]">{t('settings.general.language')}</span>
                       <p className="text-xs text-textMuted mt-1">{t('settings.general.languageDesc')}</p>
                     </div>
-                    <select
+                    <GlassSelect
                       value={language}
-                      onChange={(e) => {
-                        const newLang = e.target.value;
+                      onChange={(newLang) => {
                         setLanguage(newLang);
                         i18n.changeLanguage(newLang);
                       }}
-                      className="bg-[#2B2D31] text-white rounded-xl px-3 py-2 outline-none border border-[#303035]/70 focus:ring-2 focus:ring-primary font-bold text-sm cursor-pointer"
-                    >
-                      <option value="ru">русский</option>
-                      <option value="en">english</option>
-                    </select>
+                      options={[
+                        { value: 'ru', label: 'русский' },
+                        { value: 'en', label: 'english' }
+                      ]}
+                      compact
+                    />
                   </div>
 
                   <div className="flex items-center justify-between glass-row p-4 rounded-xl">
@@ -2818,6 +3165,23 @@ export default function App() {
                       window.windowControls.setMinimizeToTray(v).catch(() => { });
                     }} />
                   </div>
+
+                  <div className="flex items-center justify-between glass-row p-4 rounded-xl mt-3">
+                    <div className="mr-4 flex-1">
+                      <span className="font-semibold text-white text-[15px]">{t('settings.general.updates', 'обновления приложения')}</span>
+                      <p className="text-xs text-textMuted mt-1">
+                        {manualUpdateStatus || (appVersion ? `${t('settings.general.currentVersion', 'текущая версия')}: v${appVersion}` : '')}
+                      </p>
+                    </div>
+                    <button
+                      onClick={handleManualCheckUpdates}
+                      disabled={manualUpdateChecking}
+                      className="px-3.5 py-2 rounded-xl text-xs font-bold text-white bg-primary/90 hover:opacity-90 transition-all flex items-center gap-1.5 shrink-0 active:scale-[0.98] disabled:opacity-50"
+                    >
+                      <Sparkle weight="bold" size={14} />
+                      <span>{manualUpdateChecking ? t('settings.general.checkingUpdates', 'проверка...') : t('settings.general.checkUpdates', 'проверить')}</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -2825,23 +3189,43 @@ export default function App() {
               <div className="space-y-6">
                 <div>
                   <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">{t('settings.audio.inputDevice')}</label>
-                  <select value={selectedInput} onChange={e => { setSelectedInput(e.target.value); webrtc.updateSettings(e.target.value, noiseSuppression); }} className="w-full glass-field text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-primary">
-                    <option value="default">{t('settings.audio.default')}</option>
-                    {audioDevices.inputs.length === 0 && selectedInput !== 'default' && (
-                      <option value={selectedInput}>{t('common.loading')}</option>
-                    )}
-                    {audioDevices.inputs.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || t('settings.audio.micFallback')}</option>)}
-                  </select>
+                  <GlassSelect
+                    value={selectedInput}
+                    onChange={(val) => {
+                      setSelectedInput(val);
+                      webrtc.updateSettings(val, noiseSuppression);
+                    }}
+                    options={[
+                      { value: 'default', label: t('settings.audio.default') },
+                      ...(audioDevices.inputs.length === 0 && selectedInput !== 'default'
+                        ? [{ value: selectedInput, label: t('common.loading') }]
+                        : []),
+                      ...audioDevices.inputs.map((d) => ({
+                        value: d.deviceId,
+                        label: d.label || t('settings.audio.micFallback')
+                      }))
+                    ]}
+                  />
                 </div>
                 <div>
                   <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">{t('settings.audio.outputDevice')}</label>
-                  <select value={selectedOutput} onChange={e => { setSelectedOutput(e.target.value); webrtc.setOutputDevice(e.target.value); }} className="w-full glass-field text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-primary">
-                    <option value="default">{t('settings.audio.default')}</option>
-                    {audioDevices.outputs.length === 0 && selectedOutput !== 'default' && (
-                      <option value={selectedOutput}>{t('common.loading')}</option>
-                    )}
-                    {audioDevices.outputs.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || t('settings.audio.speakerFallback')}</option>)}
-                  </select>
+                  <GlassSelect
+                    value={selectedOutput}
+                    onChange={(val) => {
+                      setSelectedOutput(val);
+                      webrtc.setOutputDevice(val);
+                    }}
+                    options={[
+                      { value: 'default', label: t('settings.audio.default') },
+                      ...(audioDevices.outputs.length === 0 && selectedOutput !== 'default'
+                        ? [{ value: selectedOutput, label: t('common.loading') }]
+                        : []),
+                      ...audioDevices.outputs.map((d) => ({
+                        value: d.deviceId,
+                        label: d.label || t('settings.audio.speakerFallback')
+                      }))
+                    ]}
+                  />
                 </div>
                 <div>
                   <Md3Slider
@@ -2895,6 +3279,11 @@ export default function App() {
                   onSpeechAnalyzerChange={v => {
                     setSpeechAnalyzerEnabled(v);
                     webrtc.setSpeechAnalyzerEnabled(v);
+                  }}
+                  echoCancellation={echoCancellationEnabled}
+                  onEchoCancellationChange={v => {
+                    setEchoCancellationEnabled(v);
+                    webrtc.setEchoCancellationEnabled(v);
                   }}
                   suppressionStrength={suppressionStrength}
                   onSuppressionStrengthChange={v => {
@@ -3206,32 +3595,34 @@ export default function App() {
             <div className="px-8 pb-8 relative mt-[-56px]">
               <div className="flex items-start gap-6 mb-6 relative z-10">
                 <div className="relative group shrink-0">
-                  <div className="w-[112px] h-[112px] rounded-full border-[6px] border-panelBg bg-panelBg relative">
+                  <div className="w-[112px] h-[112px] rounded-full border-[6px] border-panelBg bg-panelBg relative overflow-hidden">
                     <AvatarImg
                       src={isEditingProfile ? (editProfileAvatarBase64 || store.selectedProfileUser?.avatarBase64) : store.selectedProfileUser?.avatarBase64}
                       size={100}
                       bgColor={isEditingProfile ? (editProfileAvatarBase64 ? editProfileAvatarColor : store.selectedProfileUser?.avatarColor) : store.selectedProfileUser?.avatarColor}
                     />
+                    {isEditingProfile && (
+                      <div
+                        className="absolute inset-0 bg-black/60 rounded-full opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center cursor-pointer backdrop-blur-sm"
+                        onClick={() => profileFileInputRef.current?.click()}
+                      >
+                        <Camera weight="bold" size={32} className="text-white" />
+                        <input
+                          ref={profileFileInputRef}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={e => onFileChange(e, 'profile')}
+                        />
+                      </div>
+                    )}
                   </div>
-                  <div className={`absolute bottom-1.5 right-1.5 w-7 h-7 rounded-full border-[4px] border-panelBg ${store.selectedProfileUser?.id === store.currentUser?.id
-                    ? (serverConnected ? 'bg-success' : 'bg-gray-500')
-                    : (store.selectedProfileUser?.isOnline ? 'bg-success' : 'bg-gray-500')
-                    }`} />
 
-                  {isEditingProfile && (
-                    <div
-                      className="absolute inset-[6px] bg-black/60 rounded-full opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center cursor-pointer backdrop-blur-sm"
-                      onClick={() => profileFileInputRef.current?.click()}
-                    >
-                      <Camera weight="bold" size={32} className="text-white" />
-                      <input
-                        ref={profileFileInputRef}
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={e => onFileChange(e, 'profile')}
-                      />
-                    </div>
+                  {!isEditingProfile && (
+                    <div className={`absolute bottom-1.5 right-1.5 w-7 h-7 rounded-full border-[4px] border-panelBg ${store.selectedProfileUser?.id === store.currentUser?.id
+                      ? (serverConnected ? 'bg-success' : 'bg-gray-500')
+                      : (store.selectedProfileUser?.isOnline ? 'bg-success' : 'bg-gray-500')
+                      }`} />
                   )}
                 </div>
 
@@ -3594,6 +3985,10 @@ export default function App() {
             <span className="text-xs text-textMuted">{t('achievements.summary', { unlocked: store.achievementsData?.unlockedIds?.length ?? 0, total: ACHIEVEMENTS.length, defaultValue: '{{unlocked}} / {{total}} получено' })}</span>
           </div>
         </div>
+      )}
+
+      {renderModal('update',
+        <UpdateModal onClose={() => store.setModal('update', false)} />
       )}
 
       {offlineToast && createPortal(

@@ -2,6 +2,7 @@ import { app, shell, BrowserWindow, ipcMain, Tray, Menu, nativeImage, dialog, sa
 import { join } from 'path';
 import { existsSync, rmSync, readFileSync, writeFileSync, promises as fsPromises } from 'fs';
 import { createHmac, randomBytes } from 'crypto';
+import { setupUpdater } from './updater';
 
 declare const __ZABOR_CLIENT_SECRET__: string;
 declare const __ZABOR_CLIENT_CHANNEL__: string;
@@ -731,6 +732,7 @@ app.whenReady().then(() => {
 
   createWindow();
   createTray();
+  setupUpdater(() => mainWindow);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

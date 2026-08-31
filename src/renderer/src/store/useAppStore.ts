@@ -161,7 +161,17 @@ interface AppState {
     adminConsole: boolean;
     adminUserSettings: boolean;
     incomingChannelInvite: boolean;
+    update: boolean;
   };
+
+  updateInfo: import('../global').UpdateInfo | null;
+  updateProgress: import('../global').UpdateProgress | null;
+  updateStatus: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'error';
+  updateError: string | null;
+  setUpdateInfo: (info: import('../global').UpdateInfo | null) => void;
+  setUpdateProgress: (progress: import('../global').UpdateProgress | null) => void;
+  setUpdateStatus: (status: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'error') => void;
+  setUpdateError: (err: string | null) => void;
 
   setModal: (modalName: keyof AppState['modals'], isOpen: boolean) => void;
   closeAllModals: () => void;
@@ -445,7 +455,17 @@ export const useAppStore = create<AppState>((set) => ({
     adminConsole: false,
     adminUserSettings: false,
     incomingChannelInvite: false,
+    update: false,
   },
+
+  updateInfo: null,
+  updateProgress: null,
+  updateStatus: 'idle',
+  updateError: null,
+  setUpdateInfo: (info) => set({ updateInfo: info }),
+  setUpdateProgress: (progress) => set({ updateProgress: progress }),
+  setUpdateStatus: (status) => set({ updateStatus: status }),
+  setUpdateError: (err) => set({ updateError: err }),
 
   setModal: (name, isOpen) => set((state) => ({
     modals: { ...state.modals, [name]: isOpen }
@@ -470,6 +490,7 @@ export const useAppStore = create<AppState>((set) => ({
       adminConsole: false,
       adminUserSettings: false,
       incomingChannelInvite: false,
+      update: false,
     },
     pendingChannelSwitch: null
   }),

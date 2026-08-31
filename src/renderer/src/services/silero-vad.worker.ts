@@ -50,9 +50,10 @@ interface ProcessMessage {
   epoch?: number
 }
 
-const VAD_GAIN = 3.5
-const SATURATION_THRESHOLD = 0.6
-const SATURATION_HEADROOM = 1 - SATURATION_THRESHOLD
+const VAD_GAIN = 6.5
+const SATURATION_THRESHOLD = 0.65
+const SATURATION_CEILING = 0.98
+const SATURATION_HEADROOM = SATURATION_CEILING - SATURATION_THRESHOLD
 
 function amplifyVadSample(sample: number): number {
   const scaled = sample * VAD_GAIN

@@ -3,6 +3,7 @@
 @tailwind utilities;
 
 :root {
+  color-scheme: dark;
   --z-black: 9 9 11;
   --z-app: 19 19 19;
   --z-panel: 22 22 24;
@@ -92,6 +93,20 @@
 
 .glass-field-warning {
   box-shadow: 0 0 0 2px #FACC15;
+}
+
+select {
+  color-scheme: dark;
+}
+
+select option {
+  background-color: #161618;
+  color: rgb(242, 243, 245);
+}
+
+select option:checked {
+  background-color: rgb(var(--z-primary)) !important;
+  color: #ffffff !important;
 }
 
 

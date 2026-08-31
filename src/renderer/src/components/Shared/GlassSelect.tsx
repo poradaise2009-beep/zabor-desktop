@@ -1,0 +1,201 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { CaretDown, Check } from '@phosphor-icons/react';
+
+export interface GlassSelectOption {
+  value: string;
+  label: string;
+}
+
+export interface GlassSelectProps {
+  value: string;
+  onChange: (value: string) => void;
+  options: GlassSelectOption[];
+  disabled?: boolean;
+  className?: string;
+  compact?: boolean;
+  placeholder?: string;
+}
+
+export function GlassSelect({
+  value,
+  onChange,
+  options,
+  disabled = false,
+  className = '',
+  compact = false,
+  placeholder = ''
+}: GlassSelectProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [direction, setDirection] = useState<'down' | 'up'>('down');
+  const [highlightedIndex, setHighlightedIndex] = useState(-1);
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const selectedOption = options.find((opt) => opt.value === value);
+  const displayLabel = selectedOption?.label ?? placeholder ?? value;
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    if (triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      const spaceBelow = window.innerHeight - rect.bottom;
+      if (spaceBelow < 220 && rect.top > spaceBelow) {
+        setDirection('up');
+      } else {
+        setDirection('down');
+      }
+    }
+
+    const selectedIdx = options.findIndex((opt) => opt.value === value);
+    setHighlightedIndex(selectedIdx >= 0 ? selectedIdx : 0);
+
+    const handleClickOutside = (event: MouseEvent | TouchEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+
+    const handleWindowKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('touchstart', handleClickOutside);
+    document.addEventListener('keydown', handleWindowKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('touchstart', handleClickOutside);
+      document.removeEventListener('keydown', handleWindowKeyDown);
+    };
+  }, [isOpen, value, options]);
+
+  useEffect(() => {
+    if (isOpen && listRef.current && highlightedIndex >= 0) {
+      const items = listRef.current.querySelectorAll<HTMLButtonElement>('[data-select-item]');
+      items[highlightedIndex]?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [highlightedIndex, isOpen]);
+
+  const handleTriggerKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (disabled) return;
+
+    if (!isOpen) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        setIsOpen(true);
+      }
+      return;
+    }
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setHighlightedIndex((prev) => (options.length === 0 ? -1 : (prev + 1) % options.length));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHighlightedIndex((prev) => (options.length === 0 ? -1 : (prev - 1 + options.length) % options.length));
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      if (highlightedIndex >= 0 && highlightedIndex < options.length) {
+        onChange(options[highlightedIndex].value);
+        setIsOpen(false);
+      }
+    } else if (e.key === 'Tab') {
+      setIsOpen(false);
+    }
+  };
+
+  return (
+    <div
+      ref={containerRef}
+      className={`relative ${compact ? 'w-auto shrink-0 min-w-[130px]' : 'w-full'} ${
+        isOpen ? 'z-30' : 'z-0'
+      } ${className}`}
+    >
+      <button
+        ref={triggerRef}
+        type="button"
+        disabled={disabled}
+        onClick={() => !disabled && setIsOpen((prev) => !prev)}
+        onKeyDown={handleTriggerKeyDown}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        className={`group relative flex items-center justify-between text-left transition-all duration-150 outline-none select-none active:scale-[0.99] ${
+          compact
+            ? 'w-full glass-field text-white rounded-xl px-3 py-2 text-sm font-semibold'
+            : 'w-full glass-field text-white rounded-xl px-3.5 py-3 text-[14px]'
+        } ${isOpen ? 'ring-2 ring-primary bg-white/[0.06]' : 'hover:bg-white/[0.06] focus:ring-2 focus:ring-primary'} ${
+          disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+        }`}
+      >
+        <span className="truncate pr-2 lowercase font-medium">{displayLabel}</span>
+        <CaretDown
+          weight="bold"
+          size={compact ? 13 : 15}
+          className={`text-textMuted shrink-0 ml-2 transition-transform duration-200 ${
+            isOpen ? 'rotate-180 text-primary' : 'group-hover:text-white'
+          }`}
+        />
+      </button>
+
+      {isOpen && (
+        <div
+          className={`absolute z-50 ${
+            compact ? 'min-w-[140px] right-0' : 'left-0 right-0'
+          } ${
+            direction === 'up' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'
+          } glass-sheet bg-[#161618]/95 backdrop-blur-xl border border-white/[0.07] border-t-white/[0.14] rounded-xl p-1.5 shadow-none overflow-hidden animate-fade-in`}
+          style={{ willChange: 'transform, opacity' }}
+        >
+          <div
+            ref={listRef}
+            role="listbox"
+            tabIndex={-1}
+            className="max-h-56 overflow-y-auto space-y-0.5"
+            style={{ scrollbarGutter: 'stable' }}
+          >
+            {options.map((opt, index) => {
+              const isSelected = opt.value === value;
+              const isHighlighted = highlightedIndex === index;
+
+              return (
+                <button
+                  type="button"
+                  key={opt.value}
+                  data-select-item
+                  role="option"
+                  aria-selected={isSelected}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onChange(opt.value);
+                    setIsOpen(false);
+                    triggerRef.current?.focus();
+                  }}
+                  onMouseEnter={() => setHighlightedIndex(index)}
+                  className={`w-full text-left px-3 py-2 rounded-lg flex items-center justify-between text-sm transition-colors duration-100 cursor-pointer select-none ${
+                    isSelected
+                      ? 'bg-primary/20 text-white font-semibold'
+                      : isHighlighted
+                        ? 'bg-surfaceHover/80 text-white font-medium'
+                        : 'text-white/80 hover:bg-surfaceHover/80 hover:text-white font-medium'
+                  }`}
+                >
+                  <span className="truncate pr-2 lowercase">{opt.label}</span>
+                  {isSelected && (
+                    <Check weight="bold" size={14} className="text-primary shrink-0 ml-2" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
