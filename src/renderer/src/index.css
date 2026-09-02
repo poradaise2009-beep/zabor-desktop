@@ -44,6 +44,7 @@
   border: 1px solid var(--z-hair);
   border-top-color: var(--z-hair-top);
   border-radius: var(--z-r-panel);
+  background-clip: padding-box;
 }
 
 .glass-slab {
@@ -53,6 +54,7 @@
   border: 1px solid var(--z-hair);
   border-top-color: var(--z-hair-top);
   border-radius: var(--z-r-panel);
+  background-clip: padding-box;
 }
 
 .glass-modal {
@@ -62,6 +64,7 @@
   border: 1px solid var(--z-hair);
   border-top-color: var(--z-hair-top);
   border-radius: var(--z-r-modal);
+  background-clip: padding-box;
 }
 
 .glass-sheet {
@@ -71,6 +74,7 @@
   border: 1px solid var(--z-hair);
   border-top-color: var(--z-hair-top);
   border-radius: var(--z-r-lg);
+  background-clip: padding-box;
 }
 
 .glass-row {
@@ -85,6 +89,7 @@
 .glass-field {
   background: var(--z-surf);
   box-shadow: inset 0 0 0 1px var(--z-hair);
+  background-clip: padding-box;
 }
 
 .glass-field-danger {
@@ -111,10 +116,20 @@ select option:checked {
 
 
 body {
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  text-rendering: optimizeLegibility;
-  image-rendering: -webkit-optimize-contrast;
+  -webkit-font-smoothing: subpixel-antialiased;
+  -moz-osx-font-smoothing: auto;
+  text-rendering: geometricPrecision;
+  image-rendering: high-quality;
+  font-smooth: always;
+}
+
+svg {
+  shape-rendering: geometricPrecision;
+  text-rendering: geometricPrecision;
+}
+
+img, canvas, video {
+  image-rendering: auto;
 }
 
 .gpu-accelerated,

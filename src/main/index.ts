@@ -93,10 +93,21 @@ function reportGpuStatus() {
 if (app) {
   gpuFallbackTier = process.env.ZABOR_DISABLE_GPU === '1' ? MAX_GPU_FALLBACK_TIER : readGpuFallbackTier();
 
+  app.commandLine.appendSwitch('high-dpi-support', '1');
   app.commandLine.appendSwitch('force-color-profile', 'srgb');
+  app.commandLine.appendSwitch('enable-font-antialiasing');
+  app.commandLine.appendSwitch('enable-subpixel-font-rendering');
   app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
   app.commandLine.appendSwitch('disable-renderer-backgrounding');
   app.commandLine.appendSwitch('disable-background-timer-throttling');
+  if (process.env.ZABOR_SCALE_FACTOR) {
+    app.commandLine.appendSwitch('force-device-scale-factor', process.env.ZABOR_SCALE_FACTOR);
+  }
+
+  if (gpuFallbackTier === 0) {
+    app.commandLine.appendSwitch('enable-gpu-rasterization');
+    app.commandLine.appendSwitch('enable-zero-copy');
+  }
 
   if (gpuFallbackTier >= 1) {
     app.commandLine.appendSwitch('disable-accelerated-2d-canvas');

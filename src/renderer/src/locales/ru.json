@@ -370,6 +370,7 @@
     "confirm": "поехали",
     "streamLabel": "трансляция {{name}}",
     "minimizeHint": "свернуть трансляцию в миниатюру",
+    "startHint": "начать трансляцию",
     "stopHint": "остановить трансляцию",
     "fullscreenHint": "развернуть на весь экран (F)",
     "exitFullscreenHint": "вернуться в режим фокуса (F)",

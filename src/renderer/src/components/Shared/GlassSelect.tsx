@@ -31,6 +31,7 @@ export function GlassSelect({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   const selectedOption = options.find((opt) => opt.value === value);
@@ -52,6 +53,48 @@ export function GlassSelect({
     const selectedIdx = options.findIndex((opt) => opt.value === value);
     setHighlightedIndex(selectedIdx >= 0 ? selectedIdx : 0);
 
+    const SAFE_MARGIN = 32;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const trigger = triggerRef.current;
+      const popup = popupRef.current;
+      if (!trigger && !popup) return;
+
+      const triggerRect = trigger ? trigger.getBoundingClientRect() : null;
+      const popupRect = popup ? popup.getBoundingClientRect() : null;
+
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+
+      if (triggerRect && triggerRect.width > 0) {
+        minX = Math.min(minX, triggerRect.left);
+        maxX = Math.max(maxX, triggerRect.right);
+        minY = Math.min(minY, triggerRect.top);
+        maxY = Math.max(maxY, triggerRect.bottom);
+      }
+
+      if (popupRect && popupRect.width > 0) {
+        minX = Math.min(minX, popupRect.left);
+        maxX = Math.max(maxX, popupRect.right);
+        minY = Math.min(minY, popupRect.top);
+        maxY = Math.max(maxY, popupRect.bottom);
+      }
+
+      if (minX === Infinity) return;
+
+      const isInsideOrNear =
+        e.clientX >= minX - SAFE_MARGIN &&
+        e.clientX <= maxX + SAFE_MARGIN &&
+        e.clientY >= minY - SAFE_MARGIN &&
+        e.clientY <= maxY + SAFE_MARGIN;
+
+      if (!isInsideOrNear) {
+        setIsOpen(false);
+      }
+    };
+
     const handleClickOutside = (event: MouseEvent | TouchEvent) => {
       if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
         setIsOpen(false);
@@ -65,14 +108,48 @@ export function GlassSelect({
       }
     };
 
+    const handleWheel = (e: WheelEvent) => {
+      if (listRef.current && listRef.current.contains(e.target as Node)) {
+        return;
+      }
+      setIsOpen(false);
+    };
+
+    const handleScroll = (e: Event) => {
+      if (listRef.current && listRef.current.contains(e.target as Node)) {
+        return;
+      }
+      setIsOpen(false);
+    };
+
+    const handleWindowBlur = () => {
+      setIsOpen(false);
+    };
+
+    const handleMouseLeaveDoc = (e: MouseEvent) => {
+      if (!e.relatedTarget && !e.toElement) {
+        setIsOpen(false);
+      }
+    };
+
     document.addEventListener('mousedown', handleClickOutside);
     document.addEventListener('touchstart', handleClickOutside);
     document.addEventListener('keydown', handleWindowKeyDown);
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('wheel', handleWheel, { passive: true });
+    window.addEventListener('scroll', handleScroll, { capture: true, passive: true });
+    window.addEventListener('blur', handleWindowBlur);
+    document.addEventListener('mouseleave', handleMouseLeaveDoc);
 
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
       document.removeEventListener('touchstart', handleClickOutside);
       document.removeEventListener('keydown', handleWindowKeyDown);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('wheel', handleWheel);
+      window.removeEventListener('scroll', handleScroll, { capture: true });
+      window.removeEventListener('blur', handleWindowBlur);
+      document.removeEventListener('mouseleave', handleMouseLeaveDoc);
     };
   }, [isOpen, value, options]);
 
@@ -146,11 +223,12 @@ export function GlassSelect({
 
       {isOpen && (
         <div
+          ref={popupRef}
           className={`absolute z-50 ${
             compact ? 'min-w-[140px] right-0' : 'left-0 right-0'
           } ${
             direction === 'up' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'
-          } glass-sheet bg-[#161618]/95 backdrop-blur-xl border border-white/[0.07] border-t-white/[0.14] rounded-xl p-1.5 shadow-none overflow-hidden animate-fade-in`}
+          } glass-sheet rounded-xl p-1.5 shadow-none overflow-hidden animate-fade-in`}
           style={{ willChange: 'transform, opacity' }}
         >
           <div

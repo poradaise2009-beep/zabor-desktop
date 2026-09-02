@@ -1,7 +1,6 @@
 import { app, BrowserWindow, shell, ipcMain } from 'electron';
 import { join } from 'path';
-import { createWriteStream, mkdirSync, existsSync } from 'fs';
-import { spawn } from 'child_process';
+import { createWriteStream, mkdirSync, existsSync, rmSync } from 'fs';
 
 export interface UpdateInfo {
   version: string;
@@ -29,6 +28,19 @@ export interface UpdateCheckResult {
 
 const GITHUB_REPO = 'vnkdevelop/zabor-desktop';
 const GITHUB_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+
+function getUpdateTempDir(): string {
+  return join(app.getPath('temp'), 'zabor-update');
+}
+
+export function cleanUpdateDirectory(): void {
+  try {
+    const tempDir = getUpdateTempDir();
+    if (existsSync(tempDir)) {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  } catch {}
+}
 
 export function isNewerVersion(remote: string, current: string): boolean {
   const cleanRemote = remote.replace(/^v/i, '').trim();
@@ -112,6 +124,8 @@ export async function checkGitHubRelease(): Promise<UpdateCheckResult> {
 }
 
 export function setupUpdater(getMainWindow: () => BrowserWindow | null): void {
+  cleanUpdateDirectory();
+
   ipcMain.handle('check-for-updates', async () => {
     return await checkGitHubRelease();
   });
@@ -134,8 +148,10 @@ export function setupUpdater(getMainWindow: () => BrowserWindow | null): void {
       return { success: false, message: 'Invalid download url' };
     }
 
+    cleanUpdateDirectory();
+
     const window = getMainWindow();
-    const tempDir = join(app.getPath('temp'), 'zabor-update');
+    const tempDir = getUpdateTempDir();
     try {
       if (!existsSync(tempDir)) {
         mkdirSync(tempDir, { recursive: true });
@@ -198,6 +214,8 @@ export function setupUpdater(getMainWindow: () => BrowserWindow | null): void {
     } catch (err: any) {
       isDownloading = false;
       downloadAbortController = null;
+      downloadedInstallerPath = null;
+      cleanUpdateDirectory();
       if (window && !window.isDestroyed()) {
         window.webContents.send('update-error', err?.message || 'Download error');
       }
@@ -210,26 +228,44 @@ export function setupUpdater(getMainWindow: () => BrowserWindow | null): void {
       downloadAbortController.abort();
       downloadAbortController = null;
       isDownloading = false;
+      downloadedInstallerPath = null;
+      cleanUpdateDirectory();
       return true;
     }
     return false;
   });
 
-  ipcMain.handle('install-update', () => {
+  ipcMain.handle('install-update', async () => {
     if (!downloadedInstallerPath || !existsSync(downloadedInstallerPath)) {
       return { success: false, message: 'Installer not found' };
     }
 
+    const installerPath = downloadedInstallerPath;
+    const tempDir = getUpdateTempDir();
+
     try {
-      const child = spawn(downloadedInstallerPath, [], {
-        detached: true,
-        stdio: 'ignore'
-      });
-      child.unref();
+      const openError = await shell.openPath(installerPath);
+      if (openError) {
+        return { success: false, error: openError };
+      }
+
+      if (process.platform === 'win32') {
+        try {
+          const { spawn } = require('child_process');
+          const cleanupCmd = `for /l %i in (1,1,30) do (timeout /t 5 /nobreak >nul & rmdir /s /q "${tempDir}" 2>nul & if not exist "${tempDir}" exit /b 0)`;
+          const cleanupProcess = spawn('cmd.exe', ['/c', cleanupCmd], {
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: true
+          });
+          cleanupProcess.on('error', () => {});
+          cleanupProcess.unref();
+        } catch {}
+      }
 
       setTimeout(() => {
         app.quit();
-      }, 500);
+      }, 1000);
 
       return { success: true };
     } catch (err: any) {

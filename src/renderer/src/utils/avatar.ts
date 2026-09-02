@@ -55,23 +55,27 @@ export async function getStaticFrame(src: string): Promise<string> {
     const imgSrc = packed ? packed.g : src;
     const img = new Image();
     img.onload = () => {
+      const scaleFactor = 2;
+      const targetSize = 200 * scaleFactor;
       const canvas = document.createElement('canvas');
-      canvas.width = 200;
-      canvas.height = 200;
+      canvas.width = targetSize;
+      canvas.height = targetSize;
       const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
 
       if (packed) {
-        const ratio = Math.min(200 / img.naturalWidth, 200 / img.naturalHeight);
+        const ratio = Math.min(targetSize / img.naturalWidth, targetSize / img.naturalHeight);
         const baseW = img.naturalWidth * ratio;
         const baseH = img.naturalHeight * ratio;
         ctx.fillStyle = '#000';
-        ctx.fillRect(0, 0, 200, 200);
-        ctx.translate(100, 100);
+        ctx.fillRect(0, 0, targetSize, targetSize);
+        ctx.translate(targetSize / 2, targetSize / 2);
         ctx.scale(packed.s, packed.s);
-        ctx.translate(packed.x / packed.s, packed.y / packed.s);
+        ctx.translate((packed.x * scaleFactor) / packed.s, (packed.y * scaleFactor) / packed.s);
         ctx.drawImage(img, -baseW / 2, -baseH / 2, baseW, baseH);
       } else {
-        ctx.drawImage(img, 0, 0, 200, 200);
+        ctx.drawImage(img, 0, 0, targetSize, targetSize);
       }
 
       const png = canvas.toDataURL('image/png');

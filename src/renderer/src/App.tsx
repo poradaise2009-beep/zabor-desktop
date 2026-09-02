@@ -72,13 +72,12 @@ const VoiceUserCard = memo(({ user, cardSize, isIdle, t, handleContextMenu, webr
 });
 VoiceUserCard.displayName = 'VoiceUserCard';
 
-const CallUserCard = memo(({ currentCallUser, callStatus, cardSize, webrtcConnections, handleContextMenu, containerRef, t, isIdle }: {
+const CallUserCard = memo(({ currentCallUser, callStatus, cardSize, webrtcConnections, handleContextMenu, t, isIdle }: {
   currentCallUser: User;
   callStatus: string;
   cardSize: any;
   webrtcConnections: any;
   handleContextMenu: any;
-  containerRef: any;
   t: any;
   isIdle: boolean;
 }) => {
@@ -86,80 +85,80 @@ const CallUserCard = memo(({ currentCallUser, callStatus, cardSize, webrtcConnec
   const isConnected = webrtcConnections[currentCallUser.id];
 
   return (
-    <div ref={containerRef} className="w-full h-full flex items-center justify-center">
+    <div
+      onContextMenu={e => handleContextMenu(e, 'voiceUser', currentCallUser)}
+      className={`relative flex flex-col items-center justify-center overflow-hidden shrink-0 transition-all duration-200 animate-avatar-in
+        ${(isSpeaking && callStatus === 'connected' && isConnected)
+          ? 'shadow-[inset_0_0_0_3px_#3BA55C,inset_0_0_0_5px_#181818,0_10px_15px_-3px_rgba(0,0,0,0.5)] z-10'
+          : ''
+        }`}
+      style={{
+        backgroundColor: currentCallUser.avatarColor,
+        width: `${cardSize.w}px`,
+        height: `${cardSize.h}px`,
+        borderRadius: '24px'
+      }}
+    >
       <div
-        onContextMenu={e => handleContextMenu(e, 'voiceUser', currentCallUser)}
-        className={`relative flex flex-col items-center justify-center overflow-hidden shrink-0 transition-[box-shadow,background-color] duration-200
-          ${(isSpeaking && callStatus === 'connected' && isConnected)
-            ? 'shadow-[inset_0_0_0_3px_#3BA55C,inset_0_0_0_5px_#181818,0_10px_15px_-3px_rgba(0,0,0,0.5)]'
-            : ''
-          }`}
+        className="relative"
         style={{
-          backgroundColor: currentCallUser.avatarColor,
-          width: `${cardSize.w}px`,
-          height: `${cardSize.h}px`,
-          borderRadius: '24px'
+          width: `${cardSize.avatarSize}px`,
+          height: `${cardSize.avatarSize}px`,
+          marginBottom: cardSize.avatarSize <= 48 ? '4px' : '16px'
         }}
       >
-        <div
-          className="relative"
-          style={{
-            width: `${cardSize.avatarSize}px`,
-            height: `${cardSize.avatarSize}px`,
-            marginBottom: '16px'
-          }}
-        >
-          <AvatarImg src={currentCallUser.avatarBase64} size={cardSize.avatarSize} bgColor="transparent" />
+        <AvatarImg src={currentCallUser.avatarBase64} size={cardSize.avatarSize} bgColor="transparent" />
+      </div>
+
+      {(!isConnected && callStatus !== 'calling') && (
+        <div className="absolute inset-0 bg-black/40 flex flex-col items-center justify-center z-20 backdrop-blur-[2px]" style={{ borderRadius: '24px' }}>
+          <div className="flex gap-2.5">
+            <div className="w-3 h-3 bg-primary/90 rounded-full animate-pulse" />
+            <div className="w-3 h-3 bg-primary/90 rounded-full animate-pulse" style={{ animationDelay: '0.15s' }} />
+            <div className="w-3 h-3 bg-primary/90 rounded-full animate-pulse" style={{ animationDelay: '0.3s' }} />
+          </div>
         </div>
+      )}
 
-        {(!isConnected && callStatus !== 'calling') && (
-          <div className="absolute inset-0 bg-black/40 flex flex-col items-center justify-center z-20 backdrop-blur-[2px]" style={{ borderRadius: '24px' }}>
-            <div className="flex gap-2.5">
-              <div className="w-3 h-3 bg-primary/90 rounded-full animate-pulse" />
-              <div className="w-3 h-3 bg-primary/90 rounded-full animate-pulse" style={{ animationDelay: '0.15s' }} />
-              <div className="w-3 h-3 bg-primary/90 rounded-full animate-pulse" style={{ animationDelay: '0.3s' }} />
-            </div>
+      {callStatus === 'calling' && (
+        <div
+          className="absolute inset-0 bg-black/25 flex items-center justify-center"
+          style={{ borderRadius: '24px' }}
+        >
+          <div className="flex gap-2.5">
+            <div className="w-3 h-3 bg-white/90 rounded-full animate-bounce" />
+            <div className="w-3 h-3 bg-white/90 rounded-full animate-bounce" style={{ animationDelay: '0.15s' }} />
+            <div className="w-3 h-3 bg-white/90 rounded-full animate-bounce" style={{ animationDelay: '0.3s' }} />
           </div>
-        )}
+        </div>
+      )}
 
-        {callStatus === 'calling' && (
-          <div
-            className="absolute inset-0 bg-black/25 flex items-center justify-center"
-            style={{ borderRadius: '24px' }}
-          >
-            <div className="flex gap-2.5">
-              <div className="w-3 h-3 bg-white/90 rounded-full animate-bounce" />
-              <div className="w-3 h-3 bg-white/90 rounded-full animate-bounce" style={{ animationDelay: '0.15s' }} />
-              <div className="w-3 h-3 bg-white/90 rounded-full animate-bounce" style={{ animationDelay: '0.3s' }} />
-            </div>
-          </div>
-        )}
-
-        {(isConnected || callStatus === 'calling') && <div
-          className={`absolute bottom-4 left-1/2 -translate-x-1/2 transition-all duration-300 ${isIdle && callStatus === 'connected'
+      {(isConnected || callStatus === 'calling') && (
+        <div
+          className={`absolute ${cardSize.avatarSize <= 48 ? 'bottom-2' : 'bottom-4'} left-1/2 -translate-x-1/2 transition-all duration-300 ${isIdle && callStatus === 'connected'
             ? 'translate-y-8 opacity-0 pointer-events-none'
             : 'translate-y-0 opacity-100'
             }`}
         >
           <div
-            className="bg-[#09090B]/80 backdrop-blur-md border border-[#303035]/50 px-4 py-1.5 rounded-full flex items-center gap-2 whitespace-nowrap"
-            style={{ maxWidth: `${cardSize.w - 40}px` }}
+            className={`bg-[#09090B]/80 backdrop-blur-md border border-[#303035]/50 rounded-full flex items-center gap-1.5 whitespace-nowrap ${cardSize.avatarSize <= 48 ? 'px-2 py-0.5' : 'px-4 py-1.5'}`}
+            style={{ maxWidth: `${cardSize.w - 20}px` }}
           >
-            <span className="text-white font-bold text-sm truncate">{currentCallUser.displayName}</span>
+            <span className={`text-white font-bold truncate ${cardSize.avatarSize <= 48 ? 'text-[11px]' : 'text-sm'}`}>{currentCallUser.displayName}</span>
 
             {callStatus === 'calling' && (
               <span className="text-textMuted text-xs font-medium">{t('toasts.calling', 'дозвон...')}</span>
             )}
 
             {callStatus === 'connected' && (currentCallUser.isMuted || currentCallUser.isServerMuted) && (
-              <MicOff weight="bold" size={14} className="text-danger shrink-0" />
+              <MicOff weight="bold" size={cardSize.avatarSize <= 48 ? 10 : 14} className="text-danger shrink-0" />
             )}
             {callStatus === 'connected' && (currentCallUser.isDeafened || currentCallUser.isServerDeafened) && (
-              <SpeakerSlash weight="bold" size={14} className="text-danger shrink-0" />
+              <SpeakerSlash weight="bold" size={cardSize.avatarSize <= 48 ? 10 : 14} className="text-danger shrink-0" />
             )}
           </div>
-        </div>}
-      </div>
+        </div>
+      )}
     </div>
   );
 });
@@ -278,12 +277,17 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!document.hasFocus() || event.repeat || event.code !== 'KeyF' || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (!document.hasFocus() || event.repeat) return;
       const target = event.target as HTMLElement | null;
       if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
-      if (!store.activeStreamId) return;
-      event.preventDefault();
-      store.setStreamFullscreen(!store.isStreamFullscreen);
+      if (event.code === 'KeyF' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        if (!store.activeStreamId) return;
+        event.preventDefault();
+        store.setStreamFullscreen(!store.isStreamFullscreen);
+      } else if (event.key === 'Escape' && store.isStreamFullscreen) {
+        event.preventDefault();
+        store.setStreamFullscreen(false);
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -348,6 +352,7 @@ export default function App() {
     visible: boolean; x: number; y: number;
     type: 'channel' | 'friend' | 'voiceUser' | 'channelMember' | 'stream'; item: any;
   } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const [showInvitesPanel, setShowInvitesPanel] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'general' | 'audio' | 'privacy'>('general');
   const [relayOnlyIce, setRelayOnlyIce] = useState(() => webrtc.isRelayOnlyIce());
@@ -688,7 +693,11 @@ export default function App() {
       setStreamRatio(16 / 9);
       return;
     }
-    const activeStream = store.voiceUsers.map(user => {
+    const relevantUsers = store.currentCallUser
+      ? (store.currentUser ? [store.currentCallUser, store.currentUser] : [store.currentCallUser])
+      : store.voiceUsers;
+
+    const activeStream = relevantUsers.map(user => {
       const isStreaming = user.isStreaming || (user.id === store.currentUser?.id && !!webrtc.localVideoStream);
       if (isStreaming) {
         const stream = user.id === store.currentUser?.id ? webrtc.localVideoStream : store.remoteVideoStreams[user.id];
@@ -708,13 +717,14 @@ export default function App() {
       }
     }
     setStreamRatio(16 / 9);
-  }, [store.activeStreamId, store.remoteVideoStreams]);
+  }, [store.activeStreamId, store.remoteVideoStreams, store.voiceUsers, store.currentCallUser, store.currentUser]);
 
   useEffect(() => {
-    store.voiceUsers.forEach(user => {
+    const relevantUsers = store.currentCallUser ? [store.currentCallUser] : store.voiceUsers;
+    relevantUsers.forEach(user => {
       webrtc.updateRemoteStreamVolume(user.id);
     });
-  }, [store.activeStreamId, store.voiceUsers]);
+  }, [store.activeStreamId, store.voiceUsers, store.currentCallUser]);
 
   useEffect(() => {
     webrtc.scheduleStreamViewInterestReport();
@@ -778,7 +788,7 @@ export default function App() {
   const activeUserCount = useMemo(() => {
     if (store.currentCallUser) {
       let count = 1;
-      const remoteStream = store.currentCallUser.isStreaming ? store.remoteVideoStreams[store.currentCallUser.id] : null;
+      const remoteStream = (store.currentCallUser.isStreaming || !!store.remoteVideoStreams[store.currentCallUser.id]) ? store.remoteVideoStreams[store.currentCallUser.id] : null;
       if (remoteStream) count++;
       if ((store.currentUser?.isStreaming || !!webrtc.localVideoStream) && webrtc.localVideoStream) count++;
       return count;
@@ -1081,10 +1091,70 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const handleClick = () => setContextMenu(null);
-    document.addEventListener('click', handleClick);
-    return () => document.removeEventListener('click', handleClick);
-  }, []);
+    if (!contextMenu?.visible) return;
+
+    const SAFE_MARGIN = 32;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!contextMenuRef.current) return;
+      const rect = contextMenuRef.current.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+
+      const isInsideOrNear =
+        e.clientX >= rect.left - SAFE_MARGIN &&
+        e.clientX <= rect.right + SAFE_MARGIN &&
+        e.clientY >= rect.top - SAFE_MARGIN &&
+        e.clientY <= rect.bottom + SAFE_MARGIN;
+
+      if (!isInsideOrNear) {
+        setContextMenu(null);
+      }
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setContextMenu(null);
+      }
+    };
+
+    const handleScrollOrWheel = () => {
+      setContextMenu(null);
+    };
+
+    const handleWindowBlur = () => {
+      setContextMenu(null);
+    };
+
+    const handleMouseLeaveDoc = (e: MouseEvent) => {
+      if (!e.relatedTarget && !e.toElement) {
+        setContextMenu(null);
+      }
+    };
+
+    const handlePointerDown = (e: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(e.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('wheel', handleScrollOrWheel, { passive: true });
+    window.addEventListener('scroll', handleScrollOrWheel, { capture: true, passive: true });
+    window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('mouseleave', handleMouseLeaveDoc);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('wheel', handleScrollOrWheel);
+      window.removeEventListener('scroll', handleScrollOrWheel, { capture: true });
+      window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('mouseleave', handleMouseLeaveDoc);
+    };
+  }, [contextMenu?.visible]);
 
   useEffect(() => {
     const has = store.channelInvites.length > 0 || store.friendRequests.length > 0;
@@ -1743,7 +1813,11 @@ export default function App() {
   const handleContextMenu = useCallback((e: React.MouseEvent, type: 'channel' | 'friend' | 'voiceUser' | 'channelMember' | 'stream', item: any) => {
     e.preventDefault();
     if ((type === 'voiceUser' || type === 'channelMember' || type === 'stream') && item.id === store.currentUser?.id) return;
-    setContextMenu({ visible: true, x: e.clientX, y: e.clientY, type, item });
+    const menuWidth = 192;
+    const menuHeight = 180;
+    const x = Math.max(8, Math.min(e.clientX, window.innerWidth - menuWidth - 8));
+    const y = Math.max(8, Math.min(e.clientY, window.innerHeight - menuHeight - 8));
+    setContextMenu({ visible: true, x, y, type, item });
   }, [store.currentUser?.id]);
 
   const loadDevices = useCallback(async () => {
@@ -1850,24 +1924,28 @@ export default function App() {
     if (!imgRef.current) return;
     const img = imgRef.current;
 
+    const scaleFactor = 2;
+    const targetSize = 200 * scaleFactor;
     const canvas = document.createElement('canvas');
-    canvas.width = 200;
-    canvas.height = 200;
+    canvas.width = targetSize;
+    canvas.height = targetSize;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
 
-    const ratio = Math.min(200 / img.naturalWidth, 200 / img.naturalHeight);
+    const ratio = Math.min(targetSize / img.naturalWidth, targetSize / img.naturalHeight);
     const baseW = img.naturalWidth * ratio;
     const baseH = img.naturalHeight * ratio;
 
     ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, 200, 200);
-    ctx.translate(100, 100);
+    ctx.fillRect(0, 0, targetSize, targetSize);
+    ctx.translate(targetSize / 2, targetSize / 2);
     ctx.scale(cropScale, cropScale);
-    ctx.translate(cropPos.x / cropScale, cropPos.y / cropScale);
+    ctx.translate((cropPos.x * scaleFactor) / cropScale, (cropPos.y * scaleFactor) / cropScale);
     ctx.drawImage(img, -baseW / 2, -baseH / 2, baseW, baseH);
 
-    const hex = getDominantColor(ctx, 200, 200);
+    const hex = getDominantColor(ctx, targetSize, targetSize);
 
     let base64: string;
 
@@ -1958,7 +2036,13 @@ export default function App() {
           </div>
 
           <div
-            className="w-[200px] h-[200px] rounded-full overflow-hidden relative cursor-move bg-black"
+            className="w-[200px] h-[200px] rounded-full overflow-hidden relative cursor-move bg-black shrink-0"
+            style={{
+              WebkitMaskImage: 'radial-gradient(circle closest-side at 50% 50%, #000 calc(100% - 1px), transparent 100%)',
+              maskImage: 'radial-gradient(circle closest-side at 50% 50%, #000 calc(100% - 1px), transparent 100%)',
+              WebkitBackfaceVisibility: 'hidden',
+              WebkitTransform: 'translate3d(0, 0, 0)',
+            }}
             onMouseDown={e => {
               setIsDragging(true);
               setDragStart({ x: e.clientX - cropPos.x, y: e.clientY - cropPos.y });
@@ -2362,21 +2446,20 @@ export default function App() {
                 {(() => {
                   const callUser = store.currentCallUser!;
                   const currentUser = store.currentUser;
-                  const remoteStream = callUser.isStreaming ? store.remoteVideoStreams[callUser.id] : null;
+                  const remoteStream = (callUser.isStreaming || !!store.remoteVideoStreams[callUser.id]) ? store.remoteVideoStreams[callUser.id] : null;
                   const localStream = (currentUser?.isStreaming || !!webrtc.localVideoStream) ? webrtc.localVideoStream : null;
 
                   const hasStreams = Boolean(remoteStream || localStream);
 
                   if (!hasStreams) {
                     return (
-                      <div className="w-full h-full p-6 flex items-center justify-center overflow-hidden">
+                      <div ref={containerRef} className="w-full h-full p-6 flex items-center justify-center overflow-hidden">
                         <CallUserCard
                           currentCallUser={callUser}
                           callStatus={store.callStatus}
                           cardSize={cardSize}
                           webrtcConnections={store.webrtcConnections}
                           handleContextMenu={handleContextMenu}
-                          containerRef={containerRef}
                           t={t}
                           isIdle={isIdle}
                         />
@@ -2396,8 +2479,7 @@ export default function App() {
                     items.push({ type: 'stream', id: `stream-${currentUser.id}`, user: currentUser, stream: localStream });
                   }
 
-                  const activeStream = items.find(item => item.type === 'stream' && store.activeStreamId === item.user.id)
-                    || items.find(item => item.type === 'stream');
+                  const activeStream = items.find(item => item.type === 'stream' && store.activeStreamId === item.user.id);
 
                   if (activeStream && store.isStreamFullscreen) {
                     const normalMaxW = windowSize.width - 40;
@@ -2518,7 +2600,7 @@ export default function App() {
                               <div className={`absolute w-[30px] h-[3px] bg-danger rounded-full transition-all duration-300 origin-center ${(store.currentUser?.isDeafened || store.currentUser?.isServerDeafened) ? 'scale-100 opacity-100 rotate-45' : 'scale-0 opacity-0 rotate-45'}`} />
                             </div>
                           </button>
-                          {store.currentUser?.isStreaming && (
+                          {(store.currentUser?.isStreaming || !!webrtc.localVideoStream) && (
                             <button
                               onClick={handleStopStream}
                               className="group w-14 h-14 rounded-full flex items-center justify-center bg-primaryHover text-white hover:bg-primaryActive transition-colors"
@@ -2579,7 +2661,6 @@ export default function App() {
                                   cardSize={{ w: 180, h: 101, avatarSize: 40 }}
                                   webrtcConnections={store.webrtcConnections}
                                   handleContextMenu={handleContextMenu}
-                                  containerRef={undefined}
                                   t={t}
                                   isIdle={isIdle}
                                 />
@@ -2615,7 +2696,6 @@ export default function App() {
                               cardSize={cardSize}
                               webrtcConnections={store.webrtcConnections}
                               handleContextMenu={handleContextMenu}
-                              containerRef={undefined}
                               t={t}
                               isIdle={isIdle}
                             />
@@ -2803,7 +2883,7 @@ export default function App() {
                               <div className={`absolute w-[30px] h-[3px] bg-danger rounded-full transition-all duration-300 origin-center ${(store.currentUser?.isDeafened || store.currentUser?.isServerDeafened) ? 'scale-100 opacity-100 rotate-45' : 'scale-0 opacity-0 rotate-45'}`} />
                             </div>
                           </button>
-                          {store.currentUser?.isStreaming && (
+                          {(store.currentUser?.isStreaming || !!webrtc.localVideoStream) && (
                             <button
                               onClick={handleStopStream}
                               className="group w-14 h-14 rounded-full flex items-center justify-center bg-primaryHover text-white hover:bg-primaryActive transition-colors"
@@ -2923,7 +3003,7 @@ export default function App() {
               </div>
             )}
 
-            {store.currentCallUser && (
+            {store.currentCallUser && !store.isStreamFullscreen && (
               <div className={[
                 "absolute bottom-10 left-1/2 -translate-x-1/2 bg-panelBg/70 backdrop-blur-xl px-6 py-4 rounded-full flex gap-4 items-center border border-white/[0.07] border-t-white/[0.14] z-50",
                 controlsShake ? "animate-shake" : ""
@@ -2958,6 +3038,7 @@ export default function App() {
                     ? 'bg-primaryHover text-white hover:bg-primaryActive'
                     : 'bg-surface/70 hover:bg-surfaceHover/80 text-white'
                     }`}
+                  title={store.currentUser?.isStreaming || !!webrtc.localVideoStream ? t('stream.stopHint') : t('stream.startHint')}
                 >
                   <div className="flex items-center justify-center transition-transform duration-200 group-active:scale-95 group-hover:scale-110">
                     <Desktop weight="bold" size={24} />
@@ -3007,6 +3088,7 @@ export default function App() {
                     ? 'bg-primaryHover text-white hover:bg-primaryActive'
                     : 'bg-surface/70 hover:bg-surfaceHover/80 text-white'
                     }`}
+                  title={store.currentUser?.isStreaming || !!webrtc.localVideoStream ? t('stream.stopHint') : t('stream.startHint')}
                 >
                   <div className="flex items-center justify-center transition-transform duration-200 group-active:scale-95 group-hover:scale-110">
                     <Desktop weight="bold" size={24} />
@@ -4046,7 +4128,8 @@ export default function App() {
 
       {contextMenu?.visible && (
         <div
-          className="fixed z-[999999] glass-sheet py-2 w-48"
+          ref={contextMenuRef}
+          className="fixed z-[999999] glass-sheet py-2 w-48 animate-fade-in select-none"
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={e => e.stopPropagation()}
           onContextMenu={e => e.stopPropagation()}

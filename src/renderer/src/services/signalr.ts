@@ -726,6 +726,8 @@ class SignalRService {
       store().setModal('incomingCall', false);
       store().setCurrentCallUser(null);
       store().setCallStatus('idle');
+      store().setActiveStreamId(null);
+      store().setStreamFullscreen(false);
       this.stopRingtone();
 
       if (callStatus === 'connected') {
@@ -1645,6 +1647,8 @@ class SignalRService {
     useAppStore.getState().setIncomingCall(null);
     useAppStore.getState().setCurrentCallUser(null);
     useAppStore.getState().setCallStatus('idle');
+    useAppStore.getState().setActiveStreamId(null);
+    useAppStore.getState().setStreamFullscreen(false);
 
     if (callStatus === 'connected') {
       this.playSfx(channelLeaveSound, 0.3);

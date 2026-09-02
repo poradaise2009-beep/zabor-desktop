@@ -9,8 +9,8 @@ export function AvatarImg({ src, size, bgColor, animate = true, className = '' }
   className?: string;
 }) {
   const containerStyle: React.CSSProperties = {
-    WebkitMaskImage: 'radial-gradient(circle, white calc(100% - 0.5px), transparent 100%)',
-    maskImage: 'radial-gradient(circle, white calc(100% - 0.5px), transparent 100%)',
+    WebkitMaskImage: 'radial-gradient(circle closest-side at 50% 50%, #000 calc(100% - 1px), transparent 100%)',
+    maskImage: 'radial-gradient(circle closest-side at 50% 50%, #000 calc(100% - 1px), transparent 100%)',
     backgroundColor: !src ? bgColor : 'transparent',
     WebkitBackfaceVisibility: 'hidden',
     WebkitTransform: 'translate3d(0, 0, 0)',

@@ -42,7 +42,11 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({ onClose }) => {
 
   const handleInstall = async () => {
     try {
-      await window.windowControls.installUpdate();
+      const res = await window.windowControls.installUpdate();
+      if (res && !res.success && (res.error || res.message)) {
+        setUpdateStatus('error');
+        setUpdateError(res.error || res.message || 'ошибка установки');
+      }
     } catch (err: any) {
       setUpdateStatus('error');
       setUpdateError(err?.message || 'ошибка установки');

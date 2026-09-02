@@ -369,6 +369,7 @@
     "loadingSources": "loading sources...",
     "confirm": "go live",
     "minimizeHint": "minimize stream to thumbnail",
+    "startHint": "start streaming",
     "stopHint": "stop streaming",
     "fullscreenHint": "enter fullscreen (F)",
     "exitFullscreenHint": "return to focus mode (F)",

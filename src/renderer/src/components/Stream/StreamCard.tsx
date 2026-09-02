@@ -212,8 +212,8 @@ export const StreamCard = ({
           width: `${cardSize.w}px`,
           height: `${cardSize.h}px`,
           borderRadius: '12px',
-          WebkitMaskImage: '-webkit-radial-gradient(white, black)',
-          maskImage: 'radial-gradient(white, black)'
+          WebkitTransform: 'translate3d(0, 0, 0)',
+          transform: 'translate3d(0, 0, 0)'
         }}
       >
         <div className="absolute inset-[1.5px] overflow-hidden bg-[#0B0B0F] flex items-center justify-center rounded-[10.5px]">
@@ -254,8 +254,8 @@ export const StreamCard = ({
       transition={{ type: 'spring', stiffness: 300, damping: 25 }}
       onContextMenu={onContextMenu}
       style={{
-        WebkitMaskImage: '-webkit-radial-gradient(white, black)',
-        maskImage: 'radial-gradient(white, black)'
+        WebkitTransform: 'translate3d(0, 0, 0)',
+        transform: 'translate3d(0, 0, 0)'
       }}
       className={`relative overflow-hidden group ${isFullscreen ? 'w-full h-full bg-[#0B0B0F] rounded-none' : 'w-full h-full bg-transparent rounded-xl'
         }`}
