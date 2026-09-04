@@ -16,10 +16,11 @@ export interface AchievementsPayload {
   stats: Record<string, number>;
   unlockedIds: string[];
   visitedChannelIds: string[];
+  totalHiddenCount?: number;
+  unlockedHiddenDefs?: HiddenAchievementPayload[];
 }
 
 export const ACHIEVEMENTS: AchievementDef[] = [
-  // не не, читерить запрещено, иди отдыхай
 
   {
     id: 'first_channel',
@@ -165,9 +166,107 @@ export const ACHIEVEMENTS: AchievementDef[] = [
     statKey: 'profileViews',
     category: 'social'
   },
+
+
+  // не не, читерить запрещено, иди отдыхай
 ];
 
-export const getAchievementDef = (id: string) => ACHIEVEMENTS.find(a => a.id === id);
+export interface HiddenAchievementPayload {
+  id: string;
+  icon: string;
+  maxValue: number;
+  statKey: string;
+  unit?: 'min';
+  category?: 'voice' | 'calls' | 'social' | 'hidden';
+  titleRu: string;
+  descriptionRu: string;
+  titleEn: string;
+  descriptionEn: string;
+}
+
+const STORAGE_KEY = 'zabor_unlocked_hidden_achievements_v1';
+const hiddenAchievementsCache = new Map<string, HiddenAchievementPayload>();
+
+export const registerHiddenAchievementI18n = (def: HiddenAchievementPayload) => {
+  if (!def || !def.id) return;
+  i18n.addResourceBundle('ru', 'translation', {
+    achievements: {
+      [def.id]: {
+        title: def.titleRu,
+        description: def.descriptionRu
+      }
+    }
+  }, true, true);
+
+  i18n.addResourceBundle('en', 'translation', {
+    achievements: {
+      [def.id]: {
+        title: def.titleEn,
+        description: def.descriptionEn
+      }
+    }
+  }, true, true);
+};
+
+export const registerHiddenAchievement = (def: HiddenAchievementPayload, persist: boolean = true) => {
+  if (!def || !def.id) return;
+  hiddenAchievementsCache.set(def.id, def);
+  registerHiddenAchievementI18n(def);
+
+  if (persist) {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      const map: Record<string, HiddenAchievementPayload> = stored ? JSON.parse(stored) : {};
+      map[def.id] = def;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
+    } catch { }
+  }
+};
+
+export const initHiddenAchievementsCache = () => {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (!stored) return;
+    const map: Record<string, HiddenAchievementPayload> = JSON.parse(stored);
+    for (const id of Object.keys(map)) {
+      const def = map[id];
+      if (def && def.id) {
+        hiddenAchievementsCache.set(def.id, def);
+        registerHiddenAchievementI18n(def);
+      }
+    }
+  } catch { }
+};
+
+// Immediately hydrate cache from localStorage on module load
+initHiddenAchievementsCache();
+
+export const getAchievementDef = (id: string): AchievementDef | undefined => {
+  const standard = ACHIEVEMENTS.find(a => a.id === id);
+  if (standard) return standard;
+
+  const hidden = hiddenAchievementsCache.get(id);
+  if (hidden) {
+    const isEn = i18n.language === 'en';
+    return {
+      id: hidden.id,
+      title: isEn ? hidden.titleEn : hidden.titleRu,
+      description: isEn ? hidden.descriptionEn : hidden.descriptionRu,
+      icon: hidden.icon,
+      maxValue: hidden.maxValue,
+      statKey: hidden.statKey,
+      category: 'hidden',
+      hidden: true,
+      unit: hidden.unit
+    };
+  }
+
+  return undefined;
+};
+
+export const getCachedHiddenAchievement = (id: string): HiddenAchievementPayload | undefined => {
+  return hiddenAchievementsCache.get(id);
+};
 
 export const formatProgress = (value: number, max: number, unit?: string): string => {
   const safeValue = Math.min(value ?? 0, max);

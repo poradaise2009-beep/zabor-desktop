@@ -78,7 +78,14 @@
       "changePasswordFailed": "failed to change password",
       "network": "network",
       "hideIp": "hide my IP address",
-      "hideIpDesc": "all voice traffic goes through the relay server, so other people cannot see your IP. slightly higher latency. applies to new connections."
+      "hideIpDesc": "all voice traffic goes through the relay server, so other people cannot see your IP. slightly higher latency. applies to new connections.",
+      "deleteAccount": "delete account",
+      "deleteAccountTitle": "delete account",
+      "deleteAccountWarning": "this action cannot be undone. all your data, achievements, friends list, and created channels will be permanently deleted.",
+      "deleteAccountPrompt": "to confirm, type «confirm»:",
+      "deleteAccountConfirmWord": "confirm",
+      "deleteAccountConfirmBtn": "delete permanently",
+      "deleteAccountFailed": "failed to delete account"
     }
   },
   "auth": {

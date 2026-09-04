@@ -214,8 +214,17 @@ const SILENCE_SUPPRESSION_OFF_WITH_ICE_RESTART = {
   voiceActivityDetection: false
 } as RTCOfferOptions
 
-function optimizeSDP(sdp: string): string {
+function optimizeSDP(sdp: string, isRelayOnly = false): string {
   let lines = sdp.split('\r\n')
+
+  if (isRelayOnly) {
+    lines = lines.filter(line => {
+      if (line.startsWith('a=candidate:')) {
+        return line.includes('typ relay')
+      }
+      return true
+    })
+  }
 
   const opusRegex = /a=rtpmap:(\d+)\s+opus\/48000\/2/i
   const audioMatch = sdp.match(opusRegex)
@@ -3122,7 +3131,12 @@ export class WebRTCManager {
     }
 
     pc.onicecandidate = (e) => {
-      if (e.candidate) signalRService.sendIceCandidate(userId, JSON.stringify(e.candidate))
+      if (!e.candidate) return
+      if (this.relayOnlyIce) {
+        const cand = e.candidate.candidate || ''
+        if (!cand.includes('typ relay')) return
+      }
+      signalRService.sendIceCandidate(userId, JSON.stringify(e.candidate))
     }
 
     const checkState = () => {
@@ -3443,7 +3457,7 @@ export class WebRTCManager {
       const offer = await pc.createOffer(
         iceRestart ? SILENCE_SUPPRESSION_OFF_WITH_ICE_RESTART : SILENCE_SUPPRESSION_OFF
       )
-      const optimizedSDP = optimizeSDP(offer.sdp!)
+      const optimizedSDP = optimizeSDP(offer.sdp!, this.relayOnlyIce)
       await pc.setLocalDescription({ type: 'offer', sdp: optimizedSDP })
       signalRService.sendWebRTCOffer(userId, JSON.stringify(pc.localDescription))
       return true
@@ -3854,7 +3868,7 @@ export class WebRTCManager {
 
     try {
       const offer = await pc.createOffer(SILENCE_SUPPRESSION_OFF)
-      const optimizedSDP = optimizeSDP(offer.sdp!)
+      const optimizedSDP = optimizeSDP(offer.sdp!, this.relayOnlyIce)
       await pc.setLocalDescription({ type: 'offer', sdp: optimizedSDP })
       if (this.peerConnections.get(userId) !== pc || !this.isPeerRelevant(userId)) {
         this.disconnectFromPeer(userId)
@@ -3936,7 +3950,7 @@ export class WebRTCManager {
 
       await pc.setRemoteDescription(new RTCSessionDescription(offer))
       const answer = await pc.createAnswer(SILENCE_SUPPRESSION_OFF)
-      const optimizedAnswerSDP = optimizeSDP(answer.sdp!)
+      const optimizedAnswerSDP = optimizeSDP(answer.sdp!, this.relayOnlyIce)
       await pc.setLocalDescription({ type: 'answer', sdp: optimizedAnswerSDP })
       await this.drainPendingCandidates(senderId)
       if (this.peerConnections.get(senderId) !== pc || !this.isPeerRelevant(senderId)) {

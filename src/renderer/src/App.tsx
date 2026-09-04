@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
-import { Gear as Settings, Microphone as Mic, MicrophoneSlash as MicOff, Headphones, PhoneCall as Phone, Eye, EyeSlash as EyeOff, UserMinus, UserMinus as UserX, Camera, Check, X, SignOut as LogOut, UserPlus, Envelope as Mail, PencilSimple as Edit2, SpeakerHigh as Volume2, SpeakerSlash, PhoneDisconnect as PhoneOff, WifiHigh as Wifi, WifiSlash as WifiOff, Users, SignOut as LeaveIcon, Crown, Globe, Trophy, Plus, Key, UserCircleMinus, UserCheck, Desktop, CornersIn, CornersOut, Sparkle } from '@phosphor-icons/react';
+import { Gear as Settings, Microphone as Mic, MicrophoneSlash as MicOff, Headphones, PhoneCall as Phone, Eye, EyeSlash as EyeOff, UserMinus, UserMinus as UserX, Camera, Check, X, SignOut as LogOut, UserPlus, Envelope as Mail, PencilSimple as Edit2, SpeakerHigh as Volume2, SpeakerSlash, PhoneDisconnect as PhoneOff, WifiHigh as Wifi, WifiSlash as WifiOff, Users, SignOut as LeaveIcon, Crown, Globe, Trophy, Plus, Key, UserCircleMinus, UserCheck, Desktop, CornersIn, CornersOut, Sparkle, Trash } from '@phosphor-icons/react';
 import { useTranslation, Trans } from 'react-i18next';
 
 import { useAppStore, User, VoiceChannel } from './store/useAppStore';
@@ -10,7 +10,7 @@ import { webrtc, CalibrationError } from './services/webrtc';
 import { isPackedGif, packGif, unpackGif, getDisplaySrc, getStaticFrameSync, preloadStaticFrame } from './utils/avatar';
 import i18n from './i18n';
 
-import { ACHIEVEMENTS, getAchievementDef, formatProgress, AchievementsPayload, getProgressPercent } from './achievements';
+import { ACHIEVEMENTS, getAchievementDef, formatProgress, AchievementsPayload, getProgressPercent, AchievementDef } from './achievements';
 import { translateJoke } from './utils/jokesTranslation';
 
 import { TitleBar } from './components/Layout/TitleBar';
@@ -356,6 +356,10 @@ export default function App() {
   const [showInvitesPanel, setShowInvitesPanel] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'general' | 'audio' | 'privacy'>('general');
   const [relayOnlyIce, setRelayOnlyIce] = useState(() => webrtc.isRelayOnlyIce());
+  const [showDeleteAccountModal, setShowDeleteAccountModal] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deleteAccountError, setDeleteAccountError] = useState('');
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [micTestPanelHeight, setMicTestPanelHeight] = useState(0);
   const micTestPanelOpen = noiseSuppression && settingsTab === 'audio';
   const micTestPanelReserve = micTestPanelOpen && micTestPanelHeight > 0 ? micTestPanelHeight + MIC_TEST_PANEL_GAP_PX : 0;
@@ -1543,6 +1547,36 @@ export default function App() {
       else setPrivacyError(t('settings.privacy.changePasswordFailed', 'не удалось сменить пароль'));
     }
   }, [newPassword, password, validateInput, saveLocalCache, closeChangePasswordModal, t]);
+
+  const handleDeleteAccount = useCallback(async () => {
+    const expectedWord = t('settings.privacy.deleteAccountConfirmWord', 'подтверждаю').trim().toLowerCase();
+    const normalizedInput = deleteConfirmText.trim().toLowerCase();
+    if (normalizedInput !== expectedWord && normalizedInput !== 'подтверждаю' && normalizedInput !== 'confirm') {
+      return;
+    }
+    setIsDeletingAccount(true);
+    setDeleteAccountError('');
+    try {
+      const ok = await signalRService.deleteAccount();
+      if (ok) {
+        setShowDeleteAccountModal(false);
+        setDeleteConfirmText('');
+        store.closeAllModals();
+        await deepWipeOnLogout();
+        store.logout();
+        setIsAuth(false);
+        setLogin('');
+        setPassword('');
+        credentialsRef.current = { login: '', password: '' };
+      } else {
+        setDeleteAccountError(t('settings.privacy.deleteAccountFailed', 'не удалось удалить аккаунт'));
+      }
+    } catch {
+      setDeleteAccountError(t('settings.privacy.deleteAccountFailed', 'не удалось удалить аккаунт'));
+    } finally {
+      setIsDeletingAccount(false);
+    }
+  }, [deleteConfirmText, t, store, deepWipeOnLogout]);
 
   const saveProfileChanges = useCallback(async () => {
     const user = store.currentUser;
@@ -3410,6 +3444,17 @@ export default function App() {
                   </div>
                   {t('settings.privacy.logout')}
                 </button>
+                <button
+                  onClick={() => {
+                    setDeleteConfirmText('');
+                    setDeleteAccountError('');
+                    setShowDeleteAccountModal(true);
+                  }}
+                  className="group w-full bg-danger/15 hover:bg-danger/25 text-danger border border-danger/20 py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all duration-200 active:scale-98"
+                >
+                  <Trash weight="bold" size={18} />
+                  {t('settings.privacy.deleteAccount', 'удалить аккаунт')}
+                </button>
               </div>
             )}
           </div>
@@ -3644,6 +3689,59 @@ export default function App() {
             <div className="flex gap-4">
               <button onClick={closeChangePasswordModal} className="flex-1 bg-surface/70 text-white py-3 rounded-xl font-bold hover:bg-surfaceHover/80 transition-colors">{t('common.cancel')}</button>
               <button onClick={changePassword} className="flex-1 bg-primary/90 text-white py-3 rounded-xl font-bold hover:opacity-90 transition-opacity">{t('settings.privacy.changePassword')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeleteAccountModal && (
+        <div className="fixed inset-0 z-[100000] bg-black/70 backdrop-blur-md flex items-center justify-center p-3 pt-[3.75rem]">
+          <div className="glass-modal p-8 w-[420px]">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold text-white">{t('settings.privacy.deleteAccountTitle', 'удаление аккаунта')}</h2>
+              <button
+                onClick={() => { setShowDeleteAccountModal(false); setDeleteConfirmText(''); setDeleteAccountError(''); }}
+                className="group text-textMuted hover:text-white transition-colors duration-200 p-1.5 rounded-lg hover:bg-surface/70"
+              >
+                <X weight="bold" size={24} />
+              </button>
+            </div>
+            <p className="text-sm text-textMuted mb-4 leading-relaxed">
+              {t('settings.privacy.deleteAccountWarning', 'это действие необратимо. все ваши данные, достижения, список друзей и созданные каналы будут удалены навсегда.')}
+            </p>
+            <label className="text-xs font-bold text-textMuted mb-2 block tracking-wider">
+              {t('settings.privacy.deleteAccountPrompt', 'для подтверждения введите «подтверждаю»:')}
+            </label>
+            <div className="mb-6">
+              <input
+                type="text"
+                value={deleteConfirmText}
+                onChange={e => { setDeleteConfirmText(e.target.value); setDeleteAccountError(''); }}
+                placeholder={t('settings.privacy.deleteAccountConfirmWord', 'подтверждаю')}
+                autoFocus
+                className="w-full glass-field text-white rounded-xl p-3 outline-none focus:ring-2 focus:ring-danger"
+              />
+            </div>
+            {deleteAccountError && <p className="text-danger text-sm mb-4 font-medium">{deleteAccountError}</p>}
+            <div className="flex gap-4">
+              <button
+                onClick={() => { setShowDeleteAccountModal(false); setDeleteConfirmText(''); setDeleteAccountError(''); }}
+                className="flex-1 bg-surface/70 text-white py-3 rounded-xl font-bold hover:bg-surfaceHover/80 transition-colors active:scale-98"
+              >
+                {t('common.cancel', 'отмена')}
+              </button>
+              <button
+                disabled={
+                  isDeletingAccount ||
+                  (deleteConfirmText.trim().toLowerCase() !== t('settings.privacy.deleteAccountConfirmWord', 'подтверждаю').trim().toLowerCase() &&
+                   deleteConfirmText.trim().toLowerCase() !== 'подтверждаю' &&
+                   deleteConfirmText.trim().toLowerCase() !== 'confirm')
+                }
+                onClick={handleDeleteAccount}
+                className="flex-1 bg-danger hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed text-white py-3 rounded-xl font-bold transition-all active:scale-98"
+              >
+                {isDeletingAccount ? t('auth.loading', 'загрузка...') : t('settings.privacy.deleteAccountConfirmBtn', 'удалить навсегда')}
+              </button>
             </div>
           </div>
         </div>
@@ -4000,16 +4098,22 @@ export default function App() {
               const stats = data.stats || {};
               const unlocked = data.unlockedIds || [];
 
+              const unlockedHiddenItems: AchievementDef[] = [];
+              for (const id of unlocked) {
+                const def = getAchievementDef(id);
+                if (def && def.category === 'hidden') {
+                  unlockedHiddenItems.push(def);
+                }
+              }
+
               const categoryOrder: Record<string, number> = { voice: 0, calls: 1, social: 2, hidden: 3 };
 
-              const bandOf = (a: typeof ACHIEVEMENTS[number]) =>
+              const bandOf = (a: AchievementDef) =>
                 a.hidden ? (unlocked.includes(a.id) ? 0 : 2) : 1;
 
-              const filtered = ACHIEVEMENTS
-                .filter(a => {
-                  if (a.hidden && !unlocked.includes(a.id) && !isOwnProfile) return false;
-                  return true;
-                })
+              const knownItems = [...ACHIEVEMENTS, ...unlockedHiddenItems];
+
+              const filtered = knownItems
                 .sort((a, b) => {
                   const bandDiff = bandOf(a) - bandOf(b);
                   if (bandDiff !== 0) return bandDiff;
@@ -4027,44 +4131,62 @@ export default function App() {
                   return (categoryOrder[a.category] ?? 99) - (categoryOrder[b.category] ?? 99);
                 });
 
-              if (filtered.length === 0) return <p className="text-textMuted text-center py-8 font-medium">{t('achievements.empty', 'нет достижений')}</p>;
+              const totalHidden = data.totalHiddenCount ?? 10;
+              const lockedHiddenCount = isOwnProfile ? Math.max(0, totalHidden - unlockedHiddenItems.length) : 0;
 
-              return filtered.map(a => {
-                const isUnlocked = unlocked.includes(a.id);
-                const statVal = stats[a.statKey] ?? 0;
-                const effectiveStatVal = isUnlocked ? Math.max(statVal, a.maxValue) : statVal;
-                const progress = getProgressPercent(effectiveStatVal, a.maxValue, a.unit);
-                const showHidden = a.hidden && !isUnlocked;
-                return (
-                  <div key={a.id} className={`p-4 rounded-xl border transition-colors ${isUnlocked ? 'bg-primary/10 border-primary/30' : 'glass-row border-transparent'}`}>
-                    <div className="flex items-center gap-4">
-                      <span className={`text-3xl ${showHidden ? 'blur-sm' : ''}`}>{showHidden ? '❓' : a.icon}</span>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="font-bold text-white truncate">{showHidden ? t('achievements.hiddenTitle', 'скрытое достижение') : t(`achievements.${a.id}.title`, a.title)}</span>
-                          {a.hidden && isUnlocked && (
-                            <span className="text-[10px] font-bold bg-white/10 text-white/80 px-2 py-0.5 rounded-md shrink-0">{t('achievements.hiddenBadge', 'скрытое')}</span>
-                          )}
-                          {isUnlocked && <span className="text-[10px] font-bold bg-primary/20 text-primaryText px-2 py-0.5 rounded-md shrink-0">{t('achievements.unlocked', '✓ получено')}</span>}
-                        </div>
-                        <p className="text-textMuted text-sm truncate">{showHidden ? t('achievements.hiddenDesc', '???') : t(`achievements.${a.id}.description`, a.description)}</p>
-                        {!showHidden && (
-                          <div className="mt-2 flex items-center gap-3">
-                            <div className="flex-1 h-1.5 bg-black/30 rounded-full overflow-hidden">
-                              <div className="h-full rounded-full transition-all duration-500" style={{ width: `${progress * 100}%`, backgroundColor: isUnlocked ? '#C81E70' : '#555' }} />
+              if (filtered.length === 0 && lockedHiddenCount === 0) return <p className="text-textMuted text-center py-8 font-medium">{t('achievements.empty', 'нет достижений')}</p>;
+
+              return (
+                <>
+                  {filtered.map(a => {
+                    const isUnlocked = unlocked.includes(a.id);
+                    const statVal = stats[a.statKey] ?? 0;
+                    const effectiveStatVal = isUnlocked ? Math.max(statVal, a.maxValue) : statVal;
+                    const progress = getProgressPercent(effectiveStatVal, a.maxValue, a.unit);
+                    return (
+                      <div key={a.id} className={`p-4 rounded-xl border transition-colors ${isUnlocked ? 'bg-primary/10 border-primary/30' : 'glass-row border-transparent'}`}>
+                        <div className="flex items-center gap-4">
+                          <span className="text-3xl">{a.icon}</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="font-bold text-white truncate">{t(`achievements.${a.id}.title`, a.title)}</span>
+                              {a.hidden && (
+                                <span className="text-[10px] font-bold bg-white/10 text-white/80 px-2 py-0.5 rounded-md shrink-0">{t('achievements.hiddenBadge', 'скрытое')}</span>
+                              )}
+                              {isUnlocked && <span className="text-[10px] font-bold bg-primary/20 text-primaryText px-2 py-0.5 rounded-md shrink-0">{t('achievements.unlocked', '✓ получено')}</span>}
                             </div>
-                            <span className="text-xs text-textMuted font-mono shrink-0">{formatProgress(effectiveStatVal, a.maxValue, a.unit)}</span>
+                            <p className="text-textMuted text-sm truncate">{t(`achievements.${a.id}.description`, a.description)}</p>
+                            <div className="mt-2 flex items-center gap-3">
+                              <div className="flex-1 h-1.5 bg-black/30 rounded-full overflow-hidden">
+                                <div className="h-full rounded-full transition-all duration-500" style={{ width: `${progress * 100}%`, backgroundColor: isUnlocked ? '#C81E70' : '#555' }} />
+                              </div>
+                              <span className="text-xs text-textMuted font-mono shrink-0">{formatProgress(effectiveStatVal, a.maxValue, a.unit)}</span>
+                            </div>
                           </div>
-                        )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {Array.from({ length: lockedHiddenCount }).map((_, idx) => (
+                    <div key={`locked_hidden_${idx}`} className="p-4 rounded-xl border transition-colors glass-row border-transparent">
+                      <div className="flex items-center gap-4">
+                        <span className="text-3xl blur-sm">❓</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="font-bold text-white truncate">{t('achievements.hiddenTitle', 'скрытое достижение')}</span>
+                            <span className="text-[10px] font-bold bg-white/10 text-white/80 px-2 py-0.5 rounded-md shrink-0">{t('achievements.hiddenBadge', 'скрытое')}</span>
+                          </div>
+                          <p className="text-textMuted text-sm truncate">{t('achievements.hiddenDesc', '???')}</p>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                );
-              });
+                  ))}
+                </>
+              );
             })()}
           </div>
           <div className="p-4 pt-0 text-center">
-            <span className="text-xs text-textMuted">{t('achievements.summary', { unlocked: store.achievementsData?.unlockedIds?.length ?? 0, total: ACHIEVEMENTS.length, defaultValue: '{{unlocked}} / {{total}} получено' })}</span>
+            <span className="text-xs text-textMuted">{t('achievements.summary', { unlocked: store.achievementsData?.unlockedIds?.length ?? 0, total: ACHIEVEMENTS.length + (store.achievementsData?.totalHiddenCount ?? 10), defaultValue: '{{unlocked}} / {{total}} получено' })}</span>
           </div>
         </div>
       )}

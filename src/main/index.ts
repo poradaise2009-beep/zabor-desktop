@@ -100,6 +100,7 @@ if (app) {
   app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
   app.commandLine.appendSwitch('disable-renderer-backgrounding');
   app.commandLine.appendSwitch('disable-background-timer-throttling');
+  app.commandLine.appendSwitch('force-webrtc-ip-handling-policy', 'default_public_interface_only');
   if (process.env.ZABOR_SCALE_FACTOR) {
     app.commandLine.appendSwitch('force-device-scale-factor', process.env.ZABOR_SCALE_FACTOR);
   }

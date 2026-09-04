@@ -6,6 +6,7 @@ import callRingSound from '../assets/sounds/call.mp3';
 import channelJoinSound from '../assets/sounds/join.mp3';
 import channelLeaveSound from '../assets/sounds/leave.mp3';
 import achievementSound from '../assets/sounds/achievement.mp3';
+import { registerHiddenAchievement } from '../achievements';
 
 const SERVER_URL = "https://vnkboltik.ru:8080/zabor_v3";
 
@@ -747,7 +748,10 @@ class SignalRService {
       this.playSfx(channelJoinSound, 0.3);
     });
 
-    on("AchievementUnlocked", (achievementId: string) => {
+    on("AchievementUnlocked", (achievementId: string, hiddenDef?: any) => {
+      if (hiddenDef) {
+        registerHiddenAchievement(hiddenDef, true);
+      }
       store().setAchievementToast(achievementId);
       setTimeout(() => store().setAchievementToast('__hiding__' + achievementId), 4500);
       setTimeout(() => store().setAchievementToast(null), 5000);
@@ -1067,6 +1071,10 @@ class SignalRService {
     return await this.safeInvoke<boolean>("UpdateUserPassword", newPassword) ?? false;
   }
 
+  public async deleteAccount(): Promise<boolean> {
+    return await this.safeInvoke<boolean>("DeleteMyAccount") ?? false;
+  }
+
   public async saveAudioSettings(settings: {
     inputVolume: number;
     outputVolume: number;
@@ -1102,10 +1110,22 @@ class SignalRService {
     if (json) {
       try {
         const raw = JSON.parse(json);
-        return { stats: raw.Stats || raw.stats || {}, unlockedIds: raw.UnlockedIds || raw.unlockedIds || [], visitedChannelIds: raw.VisitedChannelIds || raw.visitedChannelIds || [] };
+        const unlockedHiddenDefs = raw.UnlockedHiddenDefs || raw.unlockedHiddenDefs || [];
+        if (Array.isArray(unlockedHiddenDefs)) {
+          for (const def of unlockedHiddenDefs) {
+            registerHiddenAchievement(def, true);
+          }
+        }
+        return {
+          stats: raw.Stats || raw.stats || {},
+          unlockedIds: raw.UnlockedIds || raw.unlockedIds || [],
+          visitedChannelIds: raw.VisitedChannelIds || raw.visitedChannelIds || [],
+          totalHiddenCount: raw.TotalHiddenCount ?? raw.totalHiddenCount ?? 10,
+          unlockedHiddenDefs
+        };
       } catch { }
     }
-    return { stats: {}, unlockedIds: [], visitedChannelIds: [] };
+    return { stats: {}, unlockedIds: [], visitedChannelIds: [], totalHiddenCount: 10, unlockedHiddenDefs: [] };
   }
 
   public async getUserAchievements(userId: string): Promise<any> {
@@ -1113,10 +1133,22 @@ class SignalRService {
     if (json) {
       try {
         const raw = JSON.parse(json);
-        return { stats: raw.Stats || raw.stats || {}, unlockedIds: raw.UnlockedIds || raw.unlockedIds || [], visitedChannelIds: raw.VisitedChannelIds || raw.visitedChannelIds || [] };
+        const unlockedHiddenDefs = raw.UnlockedHiddenDefs || raw.unlockedHiddenDefs || [];
+        if (Array.isArray(unlockedHiddenDefs)) {
+          for (const def of unlockedHiddenDefs) {
+            registerHiddenAchievement(def, false);
+          }
+        }
+        return {
+          stats: raw.Stats || raw.stats || {},
+          unlockedIds: raw.UnlockedIds || raw.unlockedIds || [],
+          visitedChannelIds: raw.VisitedChannelIds || raw.visitedChannelIds || [],
+          totalHiddenCount: raw.TotalHiddenCount ?? raw.totalHiddenCount ?? 10,
+          unlockedHiddenDefs
+        };
       } catch { }
     }
-    return { stats: {}, unlockedIds: [], visitedChannelIds: [] };
+    return { stats: {}, unlockedIds: [], visitedChannelIds: [], totalHiddenCount: 10, unlockedHiddenDefs: [] };
   }
 
   public async viewProfile(userId: string): Promise<void> { await this.safeInvoke("ViewProfile", userId); }

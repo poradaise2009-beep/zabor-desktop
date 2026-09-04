@@ -101,10 +101,10 @@ interface AppState {
   setPendingChannelSwitch: (channelId: string | null) => void;
 
   achievementToast: string | null;
-  achievementsData: { stats: Record<string, number>; unlockedIds: string[] } | null;
+  achievementsData: { stats: Record<string, number>; unlockedIds: string[]; totalHiddenCount?: number; unlockedHiddenDefs?: any[] } | null;
   achievementsViewUserId: string | null;
   setAchievementToast: (id: string | null) => void;
-  setAchievementsData: (data: { stats: Record<string, number>; unlockedIds: string[] } | null) => void;
+  setAchievementsData: (data: { stats: Record<string, number>; unlockedIds: string[]; totalHiddenCount?: number; unlockedHiddenDefs?: any[] } | null) => void;
   setAchievementsViewUserId: (id: string | null) => void;
 
   setWebRTCConnectionStatus: (userId: string, isConnected: boolean) => void;

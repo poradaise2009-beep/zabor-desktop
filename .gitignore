@@ -45,3 +45,4 @@ GEMINI.md
 .copilot/
 skills-lock.json
 src/renderer/public/deepfilternet3/**/*.download
+scripts/
