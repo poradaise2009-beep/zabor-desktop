@@ -6,12 +6,12 @@
   "author": "vnkdevelop",
   "license": "GPL-3.0-only",
   "scripts": {
-    "start": "node scripts/fetch-deepfilter-assets.cjs && cross-env RUSTFLAGS=\"-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint\" electron-vite dev",
-    "dev": "node scripts/fetch-deepfilter-assets.cjs && cross-env RUSTFLAGS=\"-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint\" electron-vite dev",
+    "start": "node -e \"if(require('fs').existsSync('scripts/fetch-deepfilter-assets.cjs'))require('./scripts/fetch-deepfilter-assets.cjs')\" && cross-env RUSTFLAGS=\"-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint\" electron-vite dev",
+    "dev": "node -e \"if(require('fs').existsSync('scripts/fetch-deepfilter-assets.cjs'))require('./scripts/fetch-deepfilter-assets.cjs')\" && cross-env RUSTFLAGS=\"-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint\" electron-vite dev",
     "dev:4k": "cross-env ZABOR_SCALE_FACTOR=2 npm run dev",
-    "build": "node scripts/fetch-deepfilter-assets.cjs && cross-env RUSTFLAGS=\"-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint\" electron-vite build",
-    "dist:win": "node scripts/fetch-deepfilter-assets.cjs && cross-env RUSTFLAGS=\"-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint\" electron-vite build && electron-builder --win",
-    "postinstall": "node scripts/rebuild-native-audio.cjs && node scripts/fetch-deepfilter-assets.cjs --allow-missing",
+    "build": "node -e \"if(require('fs').existsSync('scripts/fetch-deepfilter-assets.cjs'))require('./scripts/fetch-deepfilter-assets.cjs')\" && cross-env RUSTFLAGS=\"-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint\" electron-vite build",
+    "dist:win": "node -e \"if(require('fs').existsSync('scripts/fetch-deepfilter-assets.cjs'))require('./scripts/fetch-deepfilter-assets.cjs')\" && cross-env RUSTFLAGS=\"-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint\" electron-vite build && electron-builder --win",
+    "postinstall": "node -e \"if(require('fs').existsSync('scripts/rebuild-native-audio.cjs'))require('./scripts/rebuild-native-audio.cjs')\" && node -e \"if(require('fs').existsSync('scripts/fetch-deepfilter-assets.cjs'))require('./scripts/fetch-deepfilter-assets.cjs')\"",
     "release": "release.bat",
     "sandbox": "cd sandbox && npm run dev"
   },
