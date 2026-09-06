@@ -127,7 +127,7 @@ export function GlassSelect({
     };
 
     const handleMouseLeaveDoc = (e: MouseEvent) => {
-      if (!e.relatedTarget && !e.toElement) {
+      if (!e.relatedTarget && !(e as any).toElement) {
         setIsOpen(false);
       }
     };

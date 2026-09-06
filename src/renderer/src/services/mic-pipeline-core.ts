@@ -90,7 +90,7 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
   private readonly VAD_WINDOW_FRAMES = 3.2
   private readonly VAD_RELEASE_MIN_RESULTS = 5
   private readonly VAD_RELEASE_MAX_RESULTS = 12
-  private readonly MANUAL_HOLD_FRAMES = 30
+  private readonly MANUAL_HOLD_FRAMES = 38
   private readonly DECISION_DELAY_FRAMES = 24
   private readonly LOOKAHEAD_DELAY_FRAMES = 1
   private readonly SPEECH_PREROLL_FRAMES = 14
@@ -1152,7 +1152,8 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
         if (i > 0 && (sample >= 0) !== (this.frameToProcess[i - 1] >= 0)) zeroCrossings++
       }
       const currentRms = Math.sqrt(sumSquares / this.FRAME_SIZE)
-      this.rmsSmoothed = 0.2 * currentRms + 0.8 * this.rmsSmoothed
+      const attackFactor = currentRms > this.rmsSmoothed ? 0.6 : 0.2
+      this.rmsSmoothed = attackFactor * currentRms + (1 - attackFactor) * this.rmsSmoothed
       const currentDb = 20 * Math.log10(Math.max(this.rmsSmoothed, 0.000001))
       if (++this.meterFrameCounter >= 5) {
         this.meterFrameCounter = 0
@@ -1252,9 +1253,12 @@ class MicPipelineProcessor extends AudioWorkletProcessor {
 
       if (this.thresholdMode === 'manual') {
         if (currentDb >= this.manualThresholdDb) {
+          if (this.manualVadHoldFrames === 0) {
+            this.markBufferedSpeechFrom(this.audioFrameId - this.SPEECH_PREROLL_FRAMES)
+          }
           this.manualVadHoldFrames = this.MANUAL_HOLD_FRAMES
         } else if (this.manualVadHoldFrames > 0) {
-          if (currentDb >= this.manualThresholdDb - 6) {
+          if (currentDb >= this.manualThresholdDb - 8) {
             this.manualVadHoldFrames = this.MANUAL_HOLD_FRAMES
           } else {
             this.manualVadHoldFrames--

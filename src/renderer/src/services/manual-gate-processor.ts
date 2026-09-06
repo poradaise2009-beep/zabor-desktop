@@ -16,9 +16,9 @@ declare function registerProcessor(
 ): void
 
 class ManualGateProcessor extends AudioWorkletProcessor {
-  private readonly LOOKAHEAD_SAMPLES = 1_440
-  private readonly HOLD_SAMPLES = 12_000
-  private readonly HYSTERESIS_DB = 6
+  private readonly LOOKAHEAD_SAMPLES = 2_880
+  private readonly HOLD_SAMPLES = 18_000
+  private readonly HYSTERESIS_DB = 8
   private readonly MIN_THRESHOLD_DB = -60
   private readonly MAX_THRESHOLD_DB = -12
   private readonly DEFAULT_THRESHOLD_DB = -42
@@ -28,7 +28,7 @@ class ManualGateProcessor extends AudioWorkletProcessor {
   private readonly MAKEUP_RISE = 0.000004
   private readonly MAKEUP_FALL = 0.0004
   private readonly MAKEUP_CEILING = 0.999
-  private readonly GATE_ATTACK = 1 / 144
+  private readonly GATE_ATTACK = 1 / 48
   private readonly GATE_RELEASE = 1 / 5_760
   private readonly METER_INTERVAL_SAMPLES = 2_400
 
@@ -122,9 +122,12 @@ class ManualGateProcessor extends AudioWorkletProcessor {
 
     const adaptingTones = !this.gateOpen
     let squares = 0
+    let blockPeak = 0
     for (let i = 0; i < frames; i++) {
       const sample = this.toneSuppressor.process(mono[i], adaptingTones)
       mono[i] = sample
+      const absSample = Math.abs(sample)
+      if (absSample > blockPeak) blockPeak = absSample
       squares += sample * sample
     }
 
@@ -140,7 +143,9 @@ class ManualGateProcessor extends AudioWorkletProcessor {
       this.port.postMessage({ type: 'micLevelDb', db: this.meterDb })
     }
 
-    const blockDb = 20 * Math.log10(Math.max(Math.sqrt(squares / frames), 0.000001))
+    const blockRms = Math.sqrt(squares / frames)
+    const effectiveLevel = Math.max(blockRms, blockPeak * 0.45)
+    const blockDb = 20 * Math.log10(Math.max(effectiveLevel, 0.000001))
     const gateMuted = this.isMuted && !this.monitorWhileMuted
     if (gateMuted) {
       this.gateOpen = false

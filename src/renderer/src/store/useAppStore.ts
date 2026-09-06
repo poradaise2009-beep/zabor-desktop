@@ -186,6 +186,7 @@ interface AppState {
 
   incomingChannelInvite: ChannelInvite | null;
   setIncomingChannelInvite: (invite: ChannelInvite | null) => void;
+  logout: () => void;
 }
 
 const updateUserInList = (list: User[], userId: string, updates: Partial<User>): User[] => {
@@ -257,6 +258,26 @@ export const useAppStore = create<AppState>((set) => ({
   })),
 
   setCurrentUser: (user) => set({ currentUser: user }),
+  logout: () => set({
+    currentUser: null,
+    channels: [],
+    friends: [],
+    friendRequests: [],
+    channelInvites: [],
+    voiceUsers: [],
+    currentChannelId: null,
+    channelUsersMap: {},
+    channelMembers: [],
+    channelMembersCache: {},
+    selectedChannelForMembers: null,
+    userToKick: null,
+    incomingCall: null,
+    currentCallUser: null,
+    callStatus: 'idle',
+    pendingChannelSwitch: null,
+    activeStreamId: null,
+    remoteVideoStreams: {}
+  }),
   setChannels: (channels) => set({ channels }),
   setFriends: (friends) => set({ friends }),
   setFriendRequests: (reqs) => set({ friendRequests: reqs }),

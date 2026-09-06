@@ -103,7 +103,10 @@
     "max20chars": "максимум 20 символов",
     "creating": "создание...",
     "create": "создать",
-    "cropTitle": "обрезка аватара"
+    "cropTitle": "обрезка аватара",
+    "captcha": "код с картинки",
+    "captchaPlaceholder": "символы",
+    "refreshCaptcha": "обновить"
   },
   "main": {
     "tabs": {
@@ -399,6 +402,9 @@
     "networkError": "ошибка сети, попробуйте ещё раз",
     "registerError": "ошибка регистрации",
     "connectError": "ошибка подключения",
-    "authThrottled": "слишком много попыток входа. попробуйте снова через {{minutes}} мин."
+    "authThrottled": "слишком много попыток входа. попробуйте снова через {{minutes}} мин.",
+    "captchaRequired": "введите код с картинки",
+    "invalidCaptcha": "неверный код с картинки",
+    "expiredCaptcha": "код устарел, обновите картинку"
   }
 }

@@ -124,6 +124,7 @@ class SignalRService {
 
   private pingCallbacks: Set<(ping: number) => void> = new Set();
   private connectionCallbacks: Set<(isConnected: boolean) => void> = new Set();
+  private forceLogoutCallbacks: Set<() => void> = new Set();
   private lastNotifiedConnected: boolean | null = null;
 
   public isConnected(): boolean {
@@ -148,6 +149,11 @@ class SignalRService {
     this.connectionCallbacks.add(callback);
     callback(this.isConnected());
     return () => this.connectionCallbacks.delete(callback);
+  }
+
+  public onForceLogout(callback: () => void): () => void {
+    this.forceLogoutCallbacks.add(callback);
+    return () => this.forceLogoutCallbacks.delete(callback);
   }
 
   private publishPingStats(stats: PingStats) {
@@ -258,9 +264,14 @@ class SignalRService {
 
   private clientRejectedReason: string | null = null;
   private authThrottleMessage: string | null = null;
+  private registerError: string | null = null;
 
   public get lastAuthThrottleMessage(): string | null {
     return this.authThrottleMessage;
+  }
+
+  public get lastRegisterError(): string | null {
+    return this.registerError;
   }
 
   private parseAuthThrottle(error: unknown): string | null {
@@ -766,14 +777,15 @@ class SignalRService {
     });
 
     on("ForceLogout", async () => {
-      try { await window.windowControls.clearSession(); await window.windowControls.wipeAppData(); } catch { }
+      try { await window.windowControls?.clearSession?.(); await window.windowControls?.wipeAppData?.(); } catch { }
       const appStore = useAppStore.getState();
-      appStore.setCurrentUser(null); appStore.setChannels([]); appStore.setFriends([]);
-      appStore.setFriendRequests([]); appStore.setChannelInvites([]); appStore.setVoiceUsers([]);
-      appStore.setCurrentChannelId(null); appStore.setCallStatus('idle'); appStore.setCurrentCallUser(null);
+      appStore.logout();
       appStore.setFullChannelState({});
       appStore.clearChannelMemberData();
-      window.location.reload();
+      this.disconnect();
+      this.forceLogoutCallbacks.forEach(cb => {
+        try { cb(); } catch (e) { console.error('[SignalR] onForceLogout callback error:', e); }
+      });
     });
 
     window.windowControls?.onBeforeQuit?.(() => { void this.prepareForQuit(); });
@@ -1039,14 +1051,55 @@ class SignalRService {
     }
   }
 
-  public async register(username: string, password: string, displayName: string, avatarBase64: string | null, avatarColor: string): Promise<boolean> {
+  public async getRegistrationCaptcha(): Promise<{ id: string; imageBase64: string } | null> {
+    if (!await this.ensureConnected()) return null;
+    try {
+      const res = await this.connection!.invoke<any>("GetRegistrationCaptcha");
+      if (!res) return null;
+      return {
+        id: String(res.id ?? res.Id ?? ''),
+        imageBase64: String(res.imageBase64 ?? res.ImageBase64 ?? '')
+      };
+    } catch (e) {
+      console.error("[SignalR] GetRegistrationCaptcha error:", e);
+      return null;
+    }
+  }
+
+  public async register(
+    username: string,
+    password: string,
+    displayName: string,
+    avatarBase64: string | null,
+    avatarColor: string,
+    captchaId?: string,
+    captchaAnswer?: string
+  ): Promise<boolean> {
     if (!await this.ensureConnected()) return false;
     this.authThrottleMessage = null;
+    this.registerError = null;
     let user: User | null = null;
     try {
-      user = await this.connection!.invoke<User>("Register", username, password, displayName, avatarBase64, avatarColor);
-    } catch (e) {
+      user = await this.connection!.invoke<User>(
+        "Register",
+        username,
+        password,
+        displayName,
+        avatarBase64,
+        avatarColor,
+        captchaId,
+        captchaAnswer
+      );
+    } catch (e: any) {
       this.authThrottleMessage = this.parseAuthThrottle(e);
+      const raw = e instanceof Error ? e.message : String(e ?? '');
+      if (raw.includes("CAPTCHA_INVALID")) {
+        this.registerError = "CAPTCHA_INVALID";
+      } else if (raw.includes("CAPTCHA_EXPIRED")) {
+        this.registerError = "CAPTCHA_EXPIRED";
+      } else if (raw.includes("CAPTCHA_REQUIRED")) {
+        this.registerError = "CAPTCHA_REQUIRED";
+      }
       return false;
     }
     if (user) {

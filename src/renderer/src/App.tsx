@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
-import { Gear as Settings, Microphone as Mic, MicrophoneSlash as MicOff, Headphones, PhoneCall as Phone, Eye, EyeSlash as EyeOff, UserMinus, UserMinus as UserX, Camera, Check, X, SignOut as LogOut, UserPlus, Envelope as Mail, PencilSimple as Edit2, SpeakerHigh as Volume2, SpeakerSlash, PhoneDisconnect as PhoneOff, WifiHigh as Wifi, WifiSlash as WifiOff, Users, SignOut as LeaveIcon, Crown, Globe, Trophy, Plus, Key, UserCircleMinus, UserCheck, Desktop, CornersIn, CornersOut, Sparkle, Trash } from '@phosphor-icons/react';
+import { Gear as Settings, Microphone as Mic, MicrophoneSlash as MicOff, Headphones, PhoneCall as Phone, Eye, EyeSlash as EyeOff, UserMinus, UserMinus as UserX, Camera, Check, X, SignOut as LogOut, UserPlus, Envelope as Mail, PencilSimple as Edit2, SpeakerHigh as Volume2, SpeakerSlash, PhoneDisconnect as PhoneOff, WifiHigh as Wifi, WifiSlash as WifiOff, Users, SignOut as LeaveIcon, Crown, Globe, Trophy, Plus, Key, UserCircleMinus, UserCheck, Desktop, CornersIn, CornersOut, Sparkle, Trash, ArrowsClockwise } from '@phosphor-icons/react';
 import { useTranslation, Trans } from 'react-i18next';
 
 import { useAppStore, User, VoiceChannel } from './store/useAppStore';
@@ -306,6 +306,9 @@ export default function App() {
   const [showPassword, setShowPassword] = useState(false);
   const [authStep, setAuthStep] = useState<'login' | 'confirm' | 'setup'>('login');
   const [error, setError] = useState('');
+  const [captchaData, setCaptchaData] = useState<{ id: string; imageBase64: string } | null>(null);
+  const [captchaAnswer, setCaptchaAnswer] = useState('');
+  const [isCaptchaLoading, setIsCaptchaLoading] = useState(false);
 
   const [displayName, setDisplayName] = useState('');
   const [avatarBase64, setAvatarBase64] = useState<string | null>(null);
@@ -479,6 +482,7 @@ export default function App() {
   const settingsLoadedRef = useRef(false);
   const credentialsRef = useRef<{ login: string; password: string }>({ login: '', password: '' });
   const initCompleteRef = useRef(false);
+  const isLoggingOutRef = useRef(false);
 
   const autoLoginPendingRef = useRef(false);
   const autoLoginInFlightRef = useRef(false);
@@ -1130,7 +1134,7 @@ export default function App() {
     };
 
     const handleMouseLeaveDoc = (e: MouseEvent) => {
-      if (!e.relatedTarget && !e.toElement) {
+      if (!e.relatedTarget && !(e as any).toElement) {
         setContextMenu(null);
       }
     };
@@ -1276,6 +1280,11 @@ export default function App() {
     setIsDragging(false);
     setCalibrationSuccess(false);
 
+    setShowDeleteAccountModal(false);
+    setDeleteConfirmText('');
+    setDeleteAccountError('');
+    setIsDeletingAccount(false);
+
     store.closeAllModals();
   }, [store]);
 
@@ -1308,6 +1317,25 @@ export default function App() {
     }
   }, [store.currentUser?.username]);
 
+  const fetchCaptcha = useCallback(async () => {
+    setIsCaptchaLoading(true);
+    setCaptchaAnswer('');
+    try {
+      const challenge = await signalRService.getRegistrationCaptcha();
+      setCaptchaData(challenge);
+    } catch {
+      setCaptchaData(null);
+    } finally {
+      setIsCaptchaLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (authStep === 'setup') {
+      fetchCaptcha();
+    }
+  }, [authStep, fetchCaptcha]);
+
   const handleAuth = useCallback(async () => {
     setError('');
     const loginErr = validateInput(login);
@@ -1317,6 +1345,7 @@ export default function App() {
     if (authStep === 'setup') {
       const nameErr = validateName(displayName);
       if (nameErr) { setError(nameErr); return; }
+      if (!captchaAnswer.trim()) { setError(t('validation.captchaRequired', 'введите код с картинки')); return; }
     }
 
     setIsLoading(true);
@@ -1362,12 +1391,12 @@ export default function App() {
         }
       } else if (authStep === 'setup') {
         settingsLoadedRef.current = false;
-        resetToDefaults();
 
         const success = await signalRService.register(
-          login, password, displayName.trim(), avatarBase64, avatarColor
+          login, password, displayName.trim(), avatarBase64, avatarColor, captchaData?.id, captchaAnswer.trim()
         );
         if (success) {
+          resetToDefaults();
           const jokeText = await signalRService.getJokeOfTheDay().catch(() => '__NO_JOKE__');
 
           setJoke(jokeText || '__NO_JOKE__');
@@ -1379,15 +1408,29 @@ export default function App() {
           setTimeout(() => { settingsLoadedRef.current = true; }, 1000);
 
         } else {
-          setError(signalRService.lastAuthThrottleMessage ?? t('validation.registerError', 'ошибка регистрации'));
+          setCaptchaAnswer('');
+          fetchCaptcha();
+          if (signalRService.lastRegisterError === 'CAPTCHA_INVALID') {
+            setError(t('validation.invalidCaptcha', 'неверный код с картинки'));
+          } else if (signalRService.lastRegisterError === 'CAPTCHA_EXPIRED') {
+            setError(t('validation.expiredCaptcha', 'код устарел, обновите картинку'));
+          } else if (signalRService.lastRegisterError === 'CAPTCHA_REQUIRED') {
+            setError(t('validation.captchaRequired', 'введите код с картинки'));
+          } else {
+            setError(signalRService.lastAuthThrottleMessage ?? t('validation.registerError', 'ошибка регистрации'));
+          }
         }
       }
     } catch {
+      if (authStep === 'setup') {
+        setCaptchaAnswer('');
+      }
       setError(t('validation.connectError', 'ошибка подключения'));
     } finally {
       setIsLoading(false);
     }
   }, [login, password, authStep, displayName, avatarBase64, avatarColor,
+    captchaData, captchaAnswer, fetchCaptcha,
     validateInput, validateName, saveLocalCache, softClearCache,
     resetToDefaults, applySettings, t]);
 
@@ -1452,68 +1495,74 @@ export default function App() {
   }, [isCalibrating, store, t]);
 
   const handleLogout = useCallback(async () => {
-    settingsLoadedRef.current = false;
+    if (isLoggingOutRef.current) return;
+    isLoggingOutRef.current = true;
+    try {
+      settingsLoadedRef.current = false;
 
-    closeAndResetModals();
+      closeAndResetModals();
 
-    if (store.currentCallUser) {
-      await signalRService.endCall();
-    }
+      if (store.currentCallUser) {
+        await signalRService.endCall();
+      }
 
-    if (store.currentChannelId) {
-      await signalRService.leaveChannel();
-    }
+      if (store.currentChannelId) {
+        await signalRService.leaveChannel();
+      }
 
-    webrtc.stopLocalStream();
-    signalRService.disconnect();
+      webrtc.stopLocalStream();
+      signalRService.disconnect();
 
-    await deepWipeOnLogout();
+      await deepWipeOnLogout();
 
-    resetToDefaults();
+      resetToDefaults();
 
-    store.setCurrentUser(null);
-    store.setChannels([]);
-    store.setFriends([]);
-    store.setFriendRequests([]);
-    store.setChannelInvites([]);
-    store.setVoiceUsers([]);
-    store.setCurrentChannelId(null);
-    store.setCallStatus('idle');
-    store.setCurrentCallUser(null);
-    store.setFullChannelState({});
-    store.clearChannelMemberData();
+      store.logout();
+      store.setFullChannelState({});
+      store.clearChannelMemberData();
 
-    setJoke('');
+      setJoke('');
 
-    setDisplayName('');
-    setAvatarBase64(null);
-    setAvatarColor('#C81E70');
+      setDisplayName('');
+      setAvatarBase64(null);
+      setAvatarColor('#C81E70');
 
-    credentialsRef.current = { login: '', password: '' };
+      credentialsRef.current = { login: '', password: '' };
 
-    setLogin('');
-    setPassword('');
-    setShowPassword(false);
-    setError('');
-    setAuthStep('login');
-    setIsAuth(false);
+      setLogin('');
+      setPassword('');
+      setShowPassword(false);
+      setError('');
+      setAuthStep('login');
+      setIsAuth(false);
 
-    requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        const loginInput = document.querySelector(
-          'input[type="text"]'
-        ) as HTMLInputElement | null;
+        requestAnimationFrame(() => {
+          const loginInput = document.querySelector(
+            'input[type="text"]'
+          ) as HTMLInputElement | null;
 
-        loginInput?.focus();
+          loginInput?.focus();
+        });
       });
-    });
+    } finally {
+      isLoggingOutRef.current = false;
+    }
   }, [
     closeAndResetModals,
     deepWipeOnLogout,
     resetToDefaults,
+    store,
     store.currentCallUser,
     store.currentChannelId
   ]);
+
+  useEffect(() => {
+    const unsub = signalRService.onForceLogout(() => {
+      void handleLogout();
+    });
+    return unsub;
+  }, [handleLogout]);
 
   const handleAutoLaunchToggle = useCallback(async (enabled: boolean) => {
     const prev = autoLaunch;
@@ -1561,13 +1610,8 @@ export default function App() {
       if (ok) {
         setShowDeleteAccountModal(false);
         setDeleteConfirmText('');
-        store.closeAllModals();
-        await deepWipeOnLogout();
-        store.logout();
-        setIsAuth(false);
-        setLogin('');
-        setPassword('');
-        credentialsRef.current = { login: '', password: '' };
+        setDeleteAccountError('');
+        await handleLogout();
       } else {
         setDeleteAccountError(t('settings.privacy.deleteAccountFailed', 'не удалось удалить аккаунт'));
       }
@@ -1576,7 +1620,7 @@ export default function App() {
     } finally {
       setIsDeletingAccount(false);
     }
-  }, [deleteConfirmText, t, store, deepWipeOnLogout]);
+  }, [deleteConfirmText, t, handleLogout]);
 
   const saveProfileChanges = useCallback(async () => {
     const user = store.currentUser;
@@ -2183,22 +2227,54 @@ export default function App() {
                 <p className="text-textMuted mb-8">{t('auth.createNewProfile')}</p>
                 <div className="flex gap-4">
                   <button onClick={() => setAuthStep('login')} className="flex-1 bg-surface/70 text-white py-3 rounded-xl font-bold hover:bg-surfaceHover/80 transition-colors">{t('auth.no')}</button>
-                  <button onClick={() => { setAuthStep('setup'); setDisplayName(login); }} className="flex-1 bg-primary/90 text-white py-3 rounded-xl font-bold hover:opacity-90 transition-opacity">{t('auth.yes')}</button>
+                  <button onClick={() => { setAuthStep('setup'); setDisplayName(login); setCaptchaAnswer(''); }} className="flex-1 bg-primary/90 text-white py-3 rounded-xl font-bold hover:opacity-90 transition-opacity">{t('auth.yes')}</button>
                 </div>
               </div>
             )}
             {authStep === 'setup' && (
-              <div className="glass-modal p-10 w-[400px] flex flex-col">
-                <h1 className="text-2xl font-bold text-center mb-2 text-white">{t('auth.createProfile')}</h1>
-                <p className="text-sm text-textMuted text-center mb-8">{t('auth.howOthersSeeYou')}</p>
-                <label className="w-[103px] h-[103px] rounded-full mx-auto mb-8 flex items-center justify-center cursor-pointer relative hover:opacity-80 transition-opacity">
-                  {avatarBase64 ? <AvatarImg src={avatarBase64} size={103} bgColor={avatarColor} /> : <div className="w-full h-full rounded-full flex items-center justify-center" style={{ backgroundColor: avatarColor }}><Camera weight="bold" size={32} className="text-white" /></div>}
+              <div className="glass-modal p-8 w-[400px] flex flex-col">
+                <h1 className="text-2xl font-bold text-center mb-1 text-white">{t('auth.createProfile')}</h1>
+                <p className="text-sm text-textMuted text-center mb-5">{t('auth.howOthersSeeYou')}</p>
+                <label className="w-[88px] h-[88px] rounded-full mx-auto mb-5 flex items-center justify-center cursor-pointer relative hover:opacity-80 transition-opacity">
+                  {avatarBase64 ? <AvatarImg src={avatarBase64} size={88} bgColor={avatarColor} /> : <div className="w-full h-full rounded-full flex items-center justify-center" style={{ backgroundColor: avatarColor }}><Camera weight="bold" size={28} className="text-white" /></div>}
                   <input type="file" accept="image/*" className="hidden" onChange={e => onFileChange(e, 'setup')} />
                 </label>
-                <label className="text-xs font-bold text-textMuted mb-2 tracking-wider">{t('auth.displayName')}</label>
-                <input type="text" value={displayName} onChange={e => setDisplayName(e.target.value)} maxLength={20} placeholder={t('auth.max20chars')} className="glass-field text-white rounded-xl p-3 mb-6 outline-none focus:ring-2 focus:ring-primary" />
+                <label className="text-xs font-bold text-textMuted mb-1.5 tracking-wider">{t('auth.displayName')}</label>
+                <input type="text" value={displayName} onChange={e => setDisplayName(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAuth()} maxLength={20} placeholder={t('auth.max20chars')} className="glass-field text-white rounded-xl p-3 mb-4 outline-none focus:ring-2 focus:ring-primary" />
+                <label className="text-xs font-bold text-textMuted mb-1.5 tracking-wider">{t('auth.captcha')}</label>
+                <div className="flex gap-2 items-center mb-6 w-full">
+                  <input
+                    type="text"
+                    value={captchaAnswer}
+                    onChange={e => setCaptchaAnswer(e.target.value.toUpperCase())}
+                    maxLength={8}
+                    placeholder={t('auth.captchaPlaceholder')}
+                    onKeyDown={e => e.key === 'Enter' && handleAuth()}
+                    className="glass-field flex-1 min-w-0 text-white rounded-xl h-[52px] px-3 outline-none focus:ring-2 focus:ring-primary tracking-widest text-center uppercase font-mono font-bold text-base"
+                  />
+                  <div
+                    onClick={!isCaptchaLoading ? fetchCaptcha : undefined}
+                    title={t('auth.refreshCaptcha')}
+                    className="w-[154px] h-[52px] px-2.5 rounded-xl bg-surface/60 hover:bg-surfaceHover/80 border border-white/[0.07] border-t-white/[0.14] flex items-center justify-between cursor-pointer select-none active:scale-[0.98] transition-transform shrink-0 group"
+                  >
+                    <div className="w-[112px] h-9 flex items-center justify-center shrink-0 overflow-hidden">
+                      {captchaData?.imageBase64 ? (
+                        <img
+                          src={captchaData.imageBase64}
+                          alt={t('auth.captcha')}
+                          className={`h-9 w-[112px] object-contain pointer-events-none select-none transition-opacity duration-150 ${isCaptchaLoading ? 'opacity-30' : 'opacity-100'}`}
+                        />
+                      ) : isCaptchaLoading ? (
+                        <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                      ) : (
+                        <span className="text-xs text-textMuted px-1">{t('validation.connectError')}</span>
+                      )}
+                    </div>
+                    <ArrowsClockwise weight="bold" size={16} className={`text-textMuted group-hover:text-white transition-colors shrink-0 ${isCaptchaLoading ? 'animate-spin text-primary' : ''}`} />
+                  </div>
+                </div>
                 {error && <p className="text-danger text-sm mb-4 text-center font-medium">{error}</p>}
-                <button onClick={handleAuth} disabled={isLoading} className="bg-primary/90 text-white font-bold py-3 rounded-xl disabled:opacity-50 hover:opacity-90 transition-opacity">{isLoading ? t('auth.creating') : t('auth.create')}</button>
+                <button onClick={handleAuth} disabled={isLoading} className="bg-primary/90 text-white font-bold py-3 rounded-xl disabled:opacity-50 hover:opacity-90 active:scale-[0.98] transition-all">{isLoading ? t('auth.creating') : t('auth.create')}</button>
               </div>
             )}
             {renderCropper()}

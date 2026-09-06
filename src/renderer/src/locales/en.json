@@ -103,7 +103,10 @@
     "max20chars": "maximum 20 characters",
     "creating": "creating...",
     "create": "create",
-    "cropTitle": "crop avatar"
+    "cropTitle": "crop avatar",
+    "captcha": "code from image",
+    "captchaPlaceholder": "characters",
+    "refreshCaptcha": "refresh"
   },
   "main": {
     "tabs": {
@@ -399,6 +402,9 @@
     "networkError": "network error, try again",
     "registerError": "registration error",
     "connectError": "connection error",
-    "authThrottled": "too many sign-in attempts. try again in {{minutes}} min."
+    "authThrottled": "too many sign-in attempts. try again in {{minutes}} min.",
+    "captchaRequired": "enter code from image",
+    "invalidCaptcha": "invalid code from image",
+    "expiredCaptcha": "code expired, refresh image"
   }
 }

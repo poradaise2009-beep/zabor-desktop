@@ -1105,9 +1105,19 @@ export class WebRTCManager {
 
     const ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' })
     this.processedContext = ctx
+    if (ctx.sampleRate !== 48000) {
+      const detail = `AudioContext runs at ${ctx.sampleRate}Hz, 48000Hz required`
+      console.error(`[WebRTC] Audio processing requires 48000Hz, got ${ctx.sampleRate}Hz`)
+      this.audioProcessorError = detail
+      await ctx.close().catch(() => { })
+      this.processedContext = null
+      return createSilentAudioStream()
+    }
     if (ctx.state === 'suspended') await ctx.resume().catch(() => { })
 
     const destination = ctx.createMediaStreamDestination()
+    const track = destination.stream.getAudioTracks()[0]
+    if (track) track.contentHint = 'speech'
     const source = ctx.createMediaStreamSource(rawStream)
     this.processedSource = source
     const inputGain = ctx.createGain()
@@ -1201,6 +1211,8 @@ export class WebRTCManager {
     }
 
     const destination = ctx.createMediaStreamDestination()
+    const localTrack = destination.stream.getAudioTracks()[0]
+    if (localTrack) localTrack.contentHint = 'speech'
     const moduleUrl = model === 'deepfilter' ? micPipelineDeepFilterUrl : micPipelineRnnoiseUrl
     const processorName = model === 'deepfilter' ? 'mic-pipeline-deepfilter' : 'mic-pipeline-rnnoise'
 
@@ -1528,6 +1540,9 @@ export class WebRTCManager {
 
   public setDeafened(deafened: boolean) {
     this.isDeafened = deafened
+    if (this.outputBusGain) {
+      this.outputBusGain.gain.value = deafened ? 0 : Math.pow(10, PLAYBACK_MAKEUP_GAIN_DB / 20)
+    }
     if (this.mixAudioElement) {
       this.mixAudioElement.muted = deafened
     }
@@ -1875,7 +1890,7 @@ export class WebRTCManager {
     this.stopBackgroundMeter()
     if (!this.rawStream?.getAudioTracks().some(track => track.readyState === 'live')) return
 
-    const context = new AudioContext({ latencyHint: 'playback' })
+    const context = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' })
     const source = context.createMediaStreamSource(this.rawStream)
     const analyser = context.createAnalyser()
     analyser.fftSize = 512
@@ -2142,11 +2157,20 @@ export class WebRTCManager {
   }
 
   private async applyOutputDevice() {
-    const audioElement = this.mixAudioElement
-    if (this.micTestContext) await this.applyMicTestSink(this.micTestContext)
-    if (!audioElement) return
-
     const sinkId = this.currentOutputDeviceId === 'default' ? '' : this.currentOutputDeviceId
+
+    if (this.outputMixContext && typeof (this.outputMixContext as any).setSinkId === 'function') {
+      try {
+        await (this.outputMixContext as any).setSinkId(sinkId)
+      } catch (error) {
+        console.warn(`[WebRTC] Failed to select output device "${sinkId}" on outputMixContext`, error)
+      }
+    }
+
+    if (this.micTestContext) await this.applyMicTestSink(this.micTestContext)
+
+    const audioElement = this.mixAudioElement
+    if (!audioElement) return
     const setSinkId = (audioElement as HTMLAudioElement & {
       setSinkId?: (id: string) => Promise<void>
     }).setSinkId
@@ -2990,18 +3014,27 @@ export class WebRTCManager {
       this.outputMixContext.resume().catch(() => { })
     }
     this.outputBusGain = this.outputMixContext.createGain()
-    this.outputBusGain.gain.value = Math.pow(10, PLAYBACK_MAKEUP_GAIN_DB / 20)
+    this.outputBusGain.gain.value = this.isDeafened ? 0 : Math.pow(10, PLAYBACK_MAKEUP_GAIN_DB / 20)
 
     this.outputPeakGuard = this.createPeakGuard(this.outputMixContext)
     this.outputBusGain.connect(this.outputPeakGuard)
 
-    const dest = this.outputMixContext.createMediaStreamDestination()
-    this.outputPeakGuard.connect(dest)
+    const ctx = this.outputMixContext
+    const hasContextSink = typeof (ctx as any).setSinkId === 'function'
 
-    this.mixAudioElement = new Audio()
-    this.mixAudioElement.autoplay = true
-    this.mixAudioElement.srcObject = dest.stream
-    this.mixAudioElement.muted = this.isDeafened
+    if (hasContextSink) {
+      this.outputPeakGuard.connect(ctx.destination)
+    } else {
+      const dest = ctx.createMediaStreamDestination()
+      const destTrack = dest.stream.getAudioTracks()[0]
+      if (destTrack) destTrack.contentHint = 'music'
+      this.outputPeakGuard.connect(dest)
+
+      this.mixAudioElement = new Audio()
+      this.mixAudioElement.autoplay = true
+      this.mixAudioElement.srcObject = dest.stream
+      this.mixAudioElement.muted = this.isDeafened
+    }
     void this.applyOutputDevice()
   }
 
@@ -3057,6 +3090,7 @@ export class WebRTCManager {
         (event.streams[0] && event.streams[0].getVideoTracks().length > 0)
 
       if (isScreenShareAudio) {
+        event.track.contentHint = 'music'
         let dummyAudio = this.streamAudioElements.get(userId)
         if (!dummyAudio) {
           dummyAudio = new Audio()
@@ -3075,7 +3109,7 @@ export class WebRTCManager {
         }
 
         const source = this.outputMixContext!.createMediaStreamSource(new MediaStream([event.track]))
-        const delay = new DelayNode(this.outputMixContext!, { maxDelayTime: 0.5, delayTime: 0 })
+        const delay = new DelayNode(this.outputMixContext!, { maxDelayTime: 1.0, delayTime: 0 })
         const gain = this.outputMixContext!.createGain()
         const limiter = this.createPlaybackLimiter(PLAYBACK_STREAM_LIMIT_DB, 2, 20, 0.002, 0.080)
         source.connect(delay)
@@ -3092,6 +3126,7 @@ export class WebRTCManager {
         this.updateRemoteStreamVolume(userId)
         this.startStreamSyncMonitoring()
       } else {
+        event.track.contentHint = 'speech'
         this.setupVAD(stream, userId, false)
 
         let dummyAudio = this.audioElements.get(userId)
@@ -3475,14 +3510,12 @@ export class WebRTCManager {
     void this.renegotiatePeer(pc, userId)
   }
 
-  private static readonly SYNC_DEADBAND_S = 0.015
-  private static readonly SYNC_MAX_AUDIO_DELAY_S = 0.4
-  private static readonly SYNC_VIDEO_TARGET_FLOOR_MS = 80
-  private static readonly SYNC_MAX_VIDEO_TARGET_MS = 400
-  private static readonly SYNC_EMA_ALPHA = 0.4
-  private static readonly SYNC_CORRECTION_GAIN = 0.6
-  private static readonly SYNC_MAX_DELAY_STEP_S = 0.025
-  private static readonly SYNC_DELAY_RAMP_S = 1.0
+  private static readonly SYNC_DEADBAND_S = 0.025
+  private static readonly SYNC_MAX_AUDIO_DELAY_S = 0.5
+  private static readonly SYNC_EMA_ALPHA = 0.15
+  private static readonly SYNC_CORRECTION_GAIN = 0.5
+  private static readonly SYNC_MAX_DELAY_STEP_S = 0.015
+  private static readonly SYNC_DELAY_RAMP_S = 1.5
 
   private startStreamSyncMonitoring() {
     if (this.streamSyncInterval) return
@@ -3548,18 +3581,17 @@ export class WebRTCManager {
         const rawOffset = this.measureAudioVideoOffset(stats)
         if (rawOffset === null || !Number.isFinite(rawOffset)) continue
 
-        const clampedOffset = Math.max(-1, Math.min(1, rawOffset))
+        const clampedOffset = Math.max(-0.5, Math.min(0.5, rawOffset))
         const previousEma = this.streamSyncOffsetEma.get(userId)
         const smoothed = previousEma === undefined
           ? clampedOffset
           : previousEma + WebRTCManager.SYNC_EMA_ALPHA * (clampedOffset - previousEma)
         this.streamSyncOffsetEma.set(userId, smoothed)
 
-        const maxVideoExtra = (WebRTCManager.SYNC_MAX_VIDEO_TARGET_MS - WebRTCManager.SYNC_VIDEO_TARGET_FLOOR_MS) / 1000
         let skew = this.streamSyncSkew.get(userId) ?? 0
         if (Math.abs(smoothed) > WebRTCManager.SYNC_DEADBAND_S) {
           skew = Math.max(
-            -maxVideoExtra,
+            0,
             Math.min(WebRTCManager.SYNC_MAX_AUDIO_DELAY_S, skew + WebRTCManager.SYNC_CORRECTION_GAIN * smoothed)
           )
           this.streamSyncSkew.set(userId, skew)
@@ -3571,7 +3603,7 @@ export class WebRTCManager {
           -WebRTCManager.SYNC_MAX_DELAY_STEP_S,
           Math.min(WebRTCManager.SYNC_MAX_DELAY_STEP_S, wantedAudioDelay - appliedAudioDelay)
         )
-        if (Math.abs(step) > 0.002) {
+        if (Math.abs(step) > 0.003) {
           const now = ctx.currentTime
           delayNode.delayTime.cancelScheduledValues(now)
           delayNode.delayTime.setValueAtTime(appliedAudioDelay, now)
@@ -3582,12 +3614,8 @@ export class WebRTCManager {
         }
 
         const videoReceiver = pc.getReceivers().find(r => r.track?.kind === 'video')
-        if (videoReceiver && 'jitterBufferTarget' in videoReceiver) {
-          const wantedTargetMs = WebRTCManager.SYNC_VIDEO_TARGET_FLOOR_MS + Math.max(0, -skew) * 1000
-          const currentTargetMs = videoReceiver.jitterBufferTarget
-          if (currentTargetMs === null || Math.abs(currentTargetMs - wantedTargetMs) > 5) {
-            videoReceiver.jitterBufferTarget = wantedTargetMs
-          }
+        if (videoReceiver && 'jitterBufferTarget' in videoReceiver && videoReceiver.jitterBufferTarget !== null) {
+          videoReceiver.jitterBufferTarget = null
         }
       } catch { }
     }

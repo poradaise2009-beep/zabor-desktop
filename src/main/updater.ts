@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell, ipcMain } from 'electron';
 import { join } from 'path';
 import { createWriteStream, mkdirSync, existsSync, rmSync } from 'fs';
+import { spawn } from 'child_process';
 
 export interface UpdateInfo {
   version: string;
@@ -241,31 +242,45 @@ export function setupUpdater(getMainWindow: () => BrowserWindow | null): void {
     }
 
     const installerPath = downloadedInstallerPath;
-    const tempDir = getUpdateTempDir();
 
     try {
-      const openError = await shell.openPath(installerPath);
-      if (openError) {
-        return { success: false, error: openError };
-      }
-
       if (process.platform === 'win32') {
-        try {
-          const { spawn } = require('child_process');
-          const cleanupCmd = `for /l %i in (1,1,30) do (timeout /t 5 /nobreak >nul & rmdir /s /q "${tempDir}" 2>nul & if not exist "${tempDir}" exit /b 0)`;
-          const cleanupProcess = spawn('cmd.exe', ['/c', cleanupCmd], {
+        const prodElevate = join(process.resourcesPath, 'elevate.exe');
+        const devElevate = join(app.getAppPath(), 'release', 'win-unpacked', 'resources', 'elevate.exe');
+        const elevatePath = existsSync(prodElevate) ? prodElevate : existsSync(devElevate) ? devElevate : null;
+
+        if (elevatePath) {
+          const child = spawn(elevatePath, [installerPath, '--updated'], {
             detached: true,
             stdio: 'ignore',
             windowsHide: true
           });
-          cleanupProcess.on('error', () => {});
-          cleanupProcess.unref();
+          child.on('error', () => {});
+          child.unref();
+        } else {
+          const psScript = `Start-Process -FilePath "${installerPath.replace(/"/g, '`"')}" -ArgumentList '--updated' -Verb RunAs`;
+          const child = spawn('powershell.exe', ['-NoProfile', '-WindowStyle', 'Hidden', '-Command', psScript], {
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: true
+          });
+          child.on('error', () => {});
+          child.unref();
+        }
+      } else {
+        await shell.openPath(installerPath);
+      }
+
+      const window = getMainWindow();
+      if (window && !window.isDestroyed()) {
+        try {
+          window.hide();
         } catch {}
       }
 
       setTimeout(() => {
-        app.quit();
-      }, 1000);
+        app.exit(0);
+      }, 100);
 
       return { success: true };
     } catch (err: any) {
